@@ -107,3 +107,157 @@ fn bare_text_unchanged() {
     let result = expand_word_nosplit("hello world", &mut env).unwrap();
     assert_eq!(result, "hello world");
 }
+
+// ── Parameter expansion tests ──
+
+#[test]
+fn brace_simple() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("hello")).unwrap();
+    assert_eq!(expand_word_nosplit("${X}", &mut env).unwrap(), "hello");
+}
+
+#[test]
+fn brace_default_unset() {
+    let mut env = Env::empty();
+    assert_eq!(expand_word_nosplit("${X:-fallback}", &mut env).unwrap(), "fallback");
+}
+
+#[test]
+fn brace_default_set() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("val")).unwrap();
+    assert_eq!(expand_word_nosplit("${X:-fallback}", &mut env).unwrap(), "val");
+}
+
+#[test]
+fn brace_default_empty_with_colon() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("")).unwrap();
+    assert_eq!(expand_word_nosplit("${X:-fallback}", &mut env).unwrap(), "fallback");
+}
+
+#[test]
+fn brace_default_empty_without_colon() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("")).unwrap();
+    assert_eq!(expand_word_nosplit("${X-fallback}", &mut env).unwrap(), "");
+}
+
+#[test]
+fn brace_assign() {
+    let mut env = Env::empty();
+    assert_eq!(expand_word_nosplit("${X:=hello}", &mut env).unwrap(), "hello");
+    assert_eq!(env.get_str("X"), "hello");
+}
+
+#[test]
+fn brace_error_unset() {
+    let mut env = Env::empty();
+    let result = expand_word_nosplit("${X:?variable X is required}", &mut env);
+    assert!(matches!(result, Err(ExpandError::UnsetVarError { .. })));
+}
+
+#[test]
+fn brace_alt_set() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("val")).unwrap();
+    assert_eq!(expand_word_nosplit("${X:+alt}", &mut env).unwrap(), "alt");
+}
+
+#[test]
+fn brace_alt_unset() {
+    let mut env = Env::empty();
+    assert_eq!(expand_word_nosplit("${X:+alt}", &mut env).unwrap(), "");
+}
+
+#[test]
+fn brace_length() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("hello")).unwrap();
+    assert_eq!(expand_word_nosplit("${#X}", &mut env).unwrap(), "5");
+}
+
+#[test]
+fn brace_strip_prefix() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("/path/to/file")).unwrap();
+    assert_eq!(expand_word_nosplit("${X#*/}", &mut env).unwrap(), "path/to/file");
+}
+
+#[test]
+fn brace_strip_prefix_greedy() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("/path/to/file")).unwrap();
+    assert_eq!(expand_word_nosplit("${X##*/}", &mut env).unwrap(), "file");
+}
+
+#[test]
+fn brace_strip_suffix() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("file.tar.gz")).unwrap();
+    assert_eq!(expand_word_nosplit("${X%.*}", &mut env).unwrap(), "file.tar");
+}
+
+#[test]
+fn brace_strip_suffix_greedy() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("file.tar.gz")).unwrap();
+    assert_eq!(expand_word_nosplit("${X%%.*}", &mut env).unwrap(), "file");
+}
+
+#[test]
+fn brace_replace_first() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("hello world hello")).unwrap();
+    assert_eq!(expand_word_nosplit("${X/hello/bye}", &mut env).unwrap(), "bye world hello");
+}
+
+#[test]
+fn brace_replace_all() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("hello world hello")).unwrap();
+    assert_eq!(expand_word_nosplit("${X//hello/bye}", &mut env).unwrap(), "bye world bye");
+}
+
+#[test]
+fn brace_uppercase() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("hello")).unwrap();
+    assert_eq!(expand_word_nosplit("${X^}", &mut env).unwrap(), "Hello");
+}
+
+#[test]
+fn brace_uppercase_all() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("hello")).unwrap();
+    assert_eq!(expand_word_nosplit("${X^^}", &mut env).unwrap(), "HELLO");
+}
+
+#[test]
+fn brace_lowercase_all() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("HELLO")).unwrap();
+    assert_eq!(expand_word_nosplit("${X,,}", &mut env).unwrap(), "hello");
+}
+
+#[test]
+fn brace_substring() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("hello world")).unwrap();
+    assert_eq!(expand_word_nosplit("${X:6}", &mut env).unwrap(), "world");
+}
+
+#[test]
+fn brace_substring_with_length() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("hello world")).unwrap();
+    assert_eq!(expand_word_nosplit("${X:0:5}", &mut env).unwrap(), "hello");
+}
+
+#[test]
+fn brace_nested_default() {
+    let mut env = Env::empty();
+    env.set("FALLBACK", mash::env::Variable::string("default")).unwrap();
+    assert_eq!(expand_word_nosplit("${X:-$FALLBACK}", &mut env).unwrap(), "default");
+}
