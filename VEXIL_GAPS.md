@@ -56,6 +56,18 @@ These are tracked here (not as vexil-lang issues) because they were discovered d
 
 ## ~~Gap 5: Parser treats `@` after bare import as version constraint~~ FIXED (vexil-lang #48)
 
+---
+
+## Gap 6: Sub-byte types >8 bits generate wrong Rust type
+
+**Problem:** `vexil-codegen-rust` generates `u8` for sub-byte types larger than 8 bits (e.g., `u48`). The `read_bits(48)` call returns `u64` but the generated code casts to `u8`, truncating the value.
+
+**Impact:** The `Envelope.timestamp` field (48-bit microsecond timestamp) is typed `u8` in generated code. Values above 255 are silently truncated. This makes the timestamp field unusable for its intended purpose.
+
+**Workaround:** Envelope tests use values within `u8` range. The full 48-bit timestamp will work once this is fixed.
+
+**Requested fix:** Sub-byte types with width >8 should map to the smallest Rust integer that fits: `u8` for 1-8 bits, `u16` for 9-16, `u32` for 17-32, `u64` for 33-64. The `as u8` cast in generated code should be `as u64` (or the appropriate target type).
+
 **Problem:** `vexilc check` fails on any file that has `import malt.common` (without a `@ ^X.Y.Z` version constraint) followed by any `@annotation`. The parser reads the `@` from `@doc(...)` or `@domain(...)` as the start of a version constraint on the import statement, then fails with "expected `^` after `@` in version constraint."
 
 **Impact:** Every domain schema that imports from `common.vexil` fails to compile with `vexilc check`. Only self-contained schemas (no imports) compile.
