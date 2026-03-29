@@ -362,3 +362,89 @@ fn arith_logical() {
     assert_eq!(eval_arithmetic("1&&0", &mut env).unwrap(), 0);
     assert_eq!(eval_arithmetic("1||0", &mut env).unwrap(), 1);
 }
+
+// ── Word splitting tests ──
+
+#[test]
+fn word_split_default_ifs() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("a  b  c")).unwrap();
+    let result = expand_word("$X", &mut env).unwrap();
+    assert_eq!(result, vec!["a", "b", "c"]);
+}
+
+#[test]
+fn word_split_custom_ifs() {
+    let mut env = Env::empty();
+    env.set("IFS", mash::env::Variable::string(":")).unwrap();
+    env.set("X", mash::env::Variable::string("a:b:c")).unwrap();
+    let result = expand_word("$X", &mut env).unwrap();
+    assert_eq!(result, vec!["a", "b", "c"]);
+}
+
+#[test]
+fn word_split_empty_ifs_no_split() {
+    let mut env = Env::empty();
+    env.set("IFS", mash::env::Variable::string("")).unwrap();
+    env.set("X", mash::env::Variable::string("a b c")).unwrap();
+    let result = expand_word("$X", &mut env).unwrap();
+    assert_eq!(result, vec!["a b c"]);
+}
+
+#[test]
+fn word_split_quoted_no_split() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("a b c")).unwrap();
+    let result = expand_word("\"$X\"", &mut env).unwrap();
+    assert_eq!(result, vec!["a b c"]);
+}
+
+#[test]
+fn word_split_leading_trailing_ws_trimmed() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("  a b  ")).unwrap();
+    let result = expand_word("$X", &mut env).unwrap();
+    assert_eq!(result, vec!["a", "b"]);
+}
+
+#[test]
+fn word_split_nonws_ifs_preserves_empty() {
+    let mut env = Env::empty();
+    env.set("IFS", mash::env::Variable::string(":")).unwrap();
+    env.set("X", mash::env::Variable::string("a::b")).unwrap();
+    let result = expand_word("$X", &mut env).unwrap();
+    assert_eq!(result, vec!["a", "", "b"]);
+}
+
+// ── Glob tests ──
+
+#[test]
+fn glob_no_metachar_unchanged() {
+    let mut env = Env::empty();
+    let result = expand_word("hello", &mut env).unwrap();
+    assert_eq!(result, vec!["hello"]);
+}
+
+#[test]
+fn glob_noglob_skips() {
+    let mut env = Env::empty();
+    env.options_mut().noglob = true;
+    // Even with a metachar, noglob prevents expansion.
+    let result = expand_word("*.rs", &mut env).unwrap();
+    assert_eq!(result, vec!["*.rs"]);
+}
+
+#[test]
+fn glob_no_match_returns_pattern() {
+    let mut env = Env::empty();
+    let result = expand_word("*.nonexistent_xyz_42", &mut env).unwrap();
+    assert_eq!(result, vec!["*.nonexistent_xyz_42"]);
+}
+
+#[test]
+fn glob_quoted_star_literal() {
+    let mut env = Env::empty();
+    // Single-quoted: no glob expansion.
+    let result = expand_word("'*.rs'", &mut env).unwrap();
+    assert_eq!(result, vec!["*.rs"]);
+}

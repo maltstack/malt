@@ -1100,16 +1100,277 @@ fn collect_until_close_paren(chars: &mut std::iter::Peekable<std::str::Chars>) -
 
 // ── Word splitting ──
 
-fn split_fields(s: &str, _ifs: &str) -> Vec<(String, bool)> {
-    // Implemented in Task 4
-    vec![(s.to_string(), false)]
+/// Check if a string contains unquoted glob metacharacters.
+/// Respects `\u{E001}..\u{E001}` sentinel pairs: chars inside are treated as literal.
+/// `\u{E004}` (literal-unquoted) regions are glob-eligible.
+fn has_unquoted_glob_chars(s: &str) -> bool {
+    let mut in_truly_quoted = false;
+    for c in s.chars() {
+        match c {
+            '\u{E001}' => in_truly_quoted = !in_truly_quoted,
+            '\u{E004}' => {} // literal-unquoted — glob allowed
+            '*' | '?' | '[' if !in_truly_quoted => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Split a string into fields according to POSIX IFS rules.
+///
+/// Returns `Vec<(field_text, fully_quoted)>` where `fully_quoted=true` means
+/// the field came entirely from quoted regions and glob should be skipped.
+///
+/// Sentinel characters:
+/// - `\u{E001}` (S_QUOTED): toggle quoted region — no splitting, no globbing
+/// - `\u{E002}` (S_BOUNDARY): hard field break (from `$@`)
+/// - `\u{E003}` (S_ZERO): skip entirely (zero fields)
+/// - `\u{E004}` (S_LITERAL): toggle literal region — no splitting, yes globbing
+fn split_fields(s: &str, ifs: &str) -> Vec<(String, bool)> {
+    // ── Empty IFS: no splitting, but S_BOUNDARY still forces split ──
+    if ifs.is_empty() {
+        if s.contains('\u{E002}') {
+            let mut fields = Vec::new();
+            for part in s.split('\u{E002}') {
+                let inner: String = part.chars().filter(|&c| c != '\u{E003}').collect();
+                if inner.is_empty() {
+                    continue;
+                }
+                let has_unquoted = has_unquoted_glob_chars(part);
+                let preserved = part.replace('\u{E003}', "");
+                fields.push((preserved, !has_unquoted));
+            }
+            return fields;
+        }
+        // Entire word is zero-words sentinels → no fields.
+        if !s.is_empty() && s.chars().all(|c| c == '\u{E003}') {
+            return vec![];
+        }
+        let has_unquoted = has_unquoted_glob_chars(s);
+        let preserved = s.replace('\u{E003}', "");
+        return vec![(preserved, !has_unquoted)];
+    }
+
+    // ── Classify IFS characters ──
+    let ifs_ws: Vec<char> = ifs.chars().filter(|c| " \t\n".contains(*c)).collect();
+    let ifs_non_ws: Vec<char> = ifs.chars().filter(|c| !" \t\n".contains(*c)).collect();
+
+    let mut fields: Vec<(String, bool)> = Vec::new();
+    let mut current = String::new();
+    let mut chars = s.chars().peekable();
+    let mut in_quoted = false;
+    let mut in_literal = false;
+    let mut has_content = false;
+    let mut field_has_unquoted = false;
+
+    // Skip leading IFS whitespace (only outside sentinel regions)
+    while let Some(&c) = chars.peek() {
+        if c == '\u{E001}' || c == '\u{E004}' {
+            break;
+        }
+        if ifs_ws.contains(&c) {
+            chars.next();
+        } else {
+            break;
+        }
+    }
+
+    while let Some(c) = chars.next() {
+        if c == '\u{E003}' {
+            // Zero-words sentinel — contributes nothing.
+            continue;
+        }
+
+        if c == '\u{E002}' {
+            // Hard field boundary from "$@" — always split here.
+            if has_content || !current.is_empty() {
+                let fully_quoted = !field_has_unquoted;
+                fields.push((std::mem::take(&mut current), fully_quoted));
+            }
+            has_content = false;
+            field_has_unquoted = false;
+            in_quoted = false;
+            in_literal = false;
+            continue;
+        }
+
+        if c == '\u{E001}' {
+            in_quoted = !in_quoted;
+            current.push('\u{E001}');
+            has_content = true;
+            continue;
+        }
+
+        if c == '\u{E004}' {
+            in_literal = !in_literal;
+            current.push('\u{E004}');
+            has_content = true;
+            continue;
+        }
+
+        if in_quoted || in_literal {
+            // Inside sentinel region — no splitting.
+            current.push(c);
+            has_content = true;
+            if in_literal {
+                field_has_unquoted = true;
+            }
+        } else if ifs_non_ws.contains(&c) {
+            // Non-whitespace IFS delimiter: always produces a field boundary.
+            let fully_quoted = !field_has_unquoted;
+            fields.push((std::mem::take(&mut current), fully_quoted));
+            has_content = false;
+            field_has_unquoted = false;
+            // Skip adjacent IFS whitespace after non-ws delimiter.
+            while let Some(&next) = chars.peek() {
+                if next == '\u{E001}' || next == '\u{E004}' {
+                    break;
+                }
+                if ifs_ws.contains(&next) {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+        } else if ifs_ws.contains(&c) {
+            // IFS whitespace: collapse consecutive.
+            while let Some(&next) = chars.peek() {
+                if next == '\u{E001}' || next == '\u{E004}' {
+                    break;
+                }
+                if ifs_ws.contains(&next) {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            // POSIX: IFS whitespace adjacent to a non-ws IFS char forms a compound
+            // delimiter. Absorb the non-ws char and its trailing whitespace.
+            let absorbed_nonws = if let Some(&next) = chars.peek() {
+                if next != '\u{E001}' && next != '\u{E004}' && ifs_non_ws.contains(&next) {
+                    chars.next();
+                    while let Some(&next2) = chars.peek() {
+                        if next2 == '\u{E001}' || next2 == '\u{E004}' {
+                            break;
+                        }
+                        if ifs_ws.contains(&next2) {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            // Pure IFS whitespace only ends a field when content exists.
+            // Compound ws+nonws always produces a boundary.
+            if has_content || absorbed_nonws {
+                let fully_quoted = !field_has_unquoted;
+                fields.push((std::mem::take(&mut current), fully_quoted));
+                has_content = false;
+                field_has_unquoted = false;
+            }
+        } else {
+            current.push(c);
+            has_content = true;
+            field_has_unquoted = true;
+        }
+    }
+
+    if has_content {
+        let fully_quoted = !field_has_unquoted;
+        fields.push((current, fully_quoted));
+    }
+
+    fields
 }
 
 // ── Pathname expansion ──
 
+/// Check if a string contains unquoted glob metacharacters for pathname expansion.
+/// Characters inside `\u{E001}..\u{E001}` sentinel pairs are treated as literal.
+fn contains_glob_chars(s: &str) -> bool {
+    let mut in_quoted = false;
+    for c in s.chars() {
+        match c {
+            '\u{E001}' => in_quoted = !in_quoted,
+            '*' | '?' | '[' if !in_quoted => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Convert a sentinel-decorated field to a glob pattern string.
+///
+/// Chars inside `\u{E001}..\u{E001}` pairs are quoted (literal); glob metacharacters
+/// inside them are wrapped in single-char bracket expressions (`[*]`, `[?]`, `[[]`, `[]]`)
+/// so the `glob` crate treats them as literals. Sentinel chars are stripped.
+fn sentinel_to_glob_pattern(field: &str) -> String {
+    let mut result = String::with_capacity(field.len() * 2);
+    let mut in_quoted = false;
+    for c in field.chars() {
+        match c {
+            '\u{E001}' => in_quoted = !in_quoted,
+            '\u{E002}' | '\u{E003}' | '\u{E004}' => {}
+            '*' if in_quoted => result.push_str("[*]"),
+            '?' if in_quoted => result.push_str("[?]"),
+            '[' if in_quoted => result.push_str("[[]"),
+            ']' if in_quoted => result.push_str("[]]"),
+            _ => result.push(c),
+        }
+    }
+    result
+}
+
+/// Expand a field using pathname (glob) expansion.
+///
+/// If the field contains unquoted glob metacharacters (`*`, `?`, `[`), match
+/// against the filesystem. Characters inside `\u{E001}` sentinel regions are
+/// treated as literals. If no matches, return the original pattern (POSIX default).
 fn expand_pathname(field: &str) -> Vec<String> {
-    // Implemented in Task 5
-    vec![field.to_string()]
+    if !contains_glob_chars(field) {
+        return vec![strip_sentinels(field)];
+    }
+
+    let original_stripped = strip_sentinels(field);
+    let glob_pat = sentinel_to_glob_pattern(field);
+
+    let opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: false,
+        require_literal_leading_dot: true,
+    };
+
+    match glob::glob_with(&glob_pat, opts) {
+        Ok(paths) => {
+            let mut matches: Vec<String> = paths
+                .filter_map(|r| r.ok())
+                .map(|p| {
+                    #[cfg(windows)]
+                    {
+                        p.to_string_lossy().replace('\\', "/")
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        p.to_string_lossy().into_owned()
+                    }
+                })
+                .collect();
+
+            if matches.is_empty() {
+                vec![original_stripped]
+            } else {
+                matches.sort();
+                matches
+            }
+        }
+        Err(_) => vec![original_stripped],
+    }
 }
 
 // ── Quote removal ──
