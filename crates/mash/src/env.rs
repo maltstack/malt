@@ -445,6 +445,34 @@ impl Env {
         self.traps.remove(signal);
     }
 
+    pub fn traps(&self) -> &HashMap<String, TrapAction> {
+        &self.traps
+    }
+
+    // ── Hash table (PATH cache) ──
+
+    pub fn hash_table(&self) -> &HashMap<String, String> {
+        &self.hash_table
+    }
+
+    pub fn hash_insert(&mut self, name: String, path: String) {
+        self.hash_table.insert(name, path);
+    }
+
+    pub fn hash_remove(&mut self, name: &str) -> bool {
+        self.hash_table.remove(name).is_some()
+    }
+
+    pub fn hash_clear(&mut self) {
+        self.hash_table.clear();
+    }
+
+    // ── Functions (read-only access to map) ──
+
+    pub fn functions(&self) -> &HashMap<String, FunctionDef> {
+        &self.functions
+    }
+
     // ── Persistence ──
 
     pub fn to_snapshot(&self) -> EnvSnapshot {

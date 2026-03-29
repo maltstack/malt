@@ -1216,7 +1216,586 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env) -> Option
                 stderr: Vec::new(),
             })
         }
+
+        // ── test / [ ─────────────────────────────────────────────────
+        "test" => {
+            Some(builtin_test(argv, false))
+        }
+        "[" => {
+            // `[` requires a closing `]` as the last argument.
+            if argv.last().map(|s| s.as_str()) != Some("]") {
+                return Some(ExecResult::failure(2, "mash: [: missing `]'\n"));
+            }
+            let inner = &argv[..argv.len() - 1];
+            Some(builtin_test(inner, true))
+        }
+
+        // ── trap ─────────────────────────────────────────────────────
+        "trap" => {
+            Some(builtin_trap(argv, env))
+        }
+
+        // ── type ─────────────────────────────────────────────────────
+        "type" => {
+            Some(builtin_type(argv, env))
+        }
+
+        // ── hash ─────────────────────────────────────────────────────
+        "hash" => {
+            Some(builtin_hash(argv, env))
+        }
+
+        // ── command ──────────────────────────────────────────────────
+        "command" => {
+            Some(builtin_command(argv, env))
+        }
+
         _ => None,
+    }
+}
+
+// ── test / [ implementation ──────────────────────────────────────────
+
+/// POSIX test builtin — recursive descent on args slice.
+fn builtin_test(args: &[String], _bracket: bool) -> ExecResult {
+    if args.is_empty() {
+        return ExecResult::with_code(1); // test with no args is false
+    }
+    match test_evaluate(args) {
+        Ok(true) => ExecResult::with_code(0),
+        Ok(false) => ExecResult::with_code(1),
+        Err(msg) => ExecResult::failure(2, format!("mash: test: {msg}\n")),
+    }
+}
+
+/// Top-level evaluation: handles -o (OR) at lowest precedence.
+fn test_evaluate(args: &[String]) -> Result<bool, String> {
+    test_eval_or(args, &mut 0, args.len())
+}
+
+fn test_eval_or(args: &[String], pos: &mut usize, end: usize) -> Result<bool, String> {
+    let mut result = test_eval_and(args, pos, end)?;
+    while *pos < end && args[*pos] == "-o" {
+        *pos += 1;
+        let right = test_eval_and(args, pos, end)?;
+        result = result || right;
+    }
+    Ok(result)
+}
+
+fn test_eval_and(args: &[String], pos: &mut usize, end: usize) -> Result<bool, String> {
+    let mut result = test_eval_not(args, pos, end)?;
+    while *pos < end && args[*pos] == "-a" {
+        *pos += 1;
+        let right = test_eval_not(args, pos, end)?;
+        result = result && right;
+    }
+    Ok(result)
+}
+
+fn test_eval_not(args: &[String], pos: &mut usize, end: usize) -> Result<bool, String> {
+    if *pos < end && args[*pos] == "!" {
+        *pos += 1;
+        let val = test_eval_not(args, pos, end)?;
+        Ok(!val)
+    } else {
+        test_eval_primary(args, pos, end)
+    }
+}
+
+fn test_eval_primary(args: &[String], pos: &mut usize, end: usize) -> Result<bool, String> {
+    if *pos >= end {
+        return Ok(false);
+    }
+
+    // Parenthesized expression
+    if args[*pos] == "(" {
+        *pos += 1;
+        let val = test_eval_or(args, pos, end)?;
+        if *pos >= end || args[*pos] != ")" {
+            return Err("missing `)'".to_string());
+        }
+        *pos += 1;
+        return Ok(val);
+    }
+
+    let arg = &args[*pos];
+
+    // Unary operators
+    if arg.starts_with('-') && arg.len() == 2 {
+        let op = arg.as_str();
+        match op {
+            "-z" | "-n" | "-e" | "-f" | "-d" | "-r" | "-w" | "-x" | "-s" | "-L" | "-h"
+            | "-b" | "-c" | "-p" | "-S" | "-g" | "-u" | "-k" | "-t" => {
+                if *pos + 1 >= end {
+                    // Single-arg form: `-z` with no operand? Treat the operator as a non-empty string.
+                    *pos += 1;
+                    return Ok(true); // the string "-z" is non-empty
+                }
+                *pos += 1;
+                let operand = &args[*pos];
+                *pos += 1;
+                return test_unary(op, operand);
+            }
+            _ => {}
+        }
+    }
+
+    // Look ahead for binary operators
+    if *pos + 2 <= end {
+        if *pos + 1 < end {
+            let maybe_op = args[*pos + 1].as_str();
+            match maybe_op {
+                "=" | "!=" | "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" => {
+                    let left = &args[*pos];
+                    *pos += 2; // skip left and operator
+                    if *pos >= end {
+                        return Err(format!("expected operand after `{maybe_op}'"));
+                    }
+                    let right = &args[*pos];
+                    *pos += 1;
+                    return test_binary(left, maybe_op, right);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Single string: true if non-empty
+    *pos += 1;
+    Ok(!arg.is_empty())
+}
+
+fn test_unary(op: &str, operand: &str) -> Result<bool, String> {
+    use std::path::Path;
+    let path = Path::new(operand);
+    match op {
+        "-z" => Ok(operand.is_empty()),
+        "-n" => Ok(!operand.is_empty()),
+        "-e" => Ok(path.exists()),
+        "-f" => Ok(path.is_file()),
+        "-d" => Ok(path.is_dir()),
+        "-s" => Ok(path.metadata().map(|m| m.len() > 0).unwrap_or(false)),
+        "-r" => {
+            // Approximate: exists implies readable on most platforms
+            Ok(path.exists())
+        }
+        "-w" => {
+            Ok(path.metadata().map(|m| !m.permissions().readonly()).unwrap_or(false))
+        }
+        "-x" => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                Ok(path.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false))
+            }
+            #[cfg(not(unix))]
+            {
+                // On Windows, check for executable extensions
+                Ok(path.exists() && path.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| matches!(e.to_lowercase().as_str(), "exe" | "cmd" | "bat" | "com"))
+                    .unwrap_or(false))
+            }
+        }
+        "-L" | "-h" => {
+            Ok(path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false))
+        }
+        "-b" | "-c" | "-p" | "-S" | "-g" | "-u" | "-k" => {
+            // Block/char device, pipe, socket, setgid, setuid, sticky —
+            // not commonly available on all platforms; return false.
+            Ok(false)
+        }
+        "-t" => {
+            // -t fd: is fd a terminal
+            if let Ok(fd) = operand.parse::<i32>() {
+                #[cfg(unix)]
+                {
+                    Ok(unsafe { libc::isatty(fd) } != 0)
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = fd;
+                    Ok(false)
+                }
+            } else {
+                Err(format!("integer expression expected: `{operand}'"))
+            }
+        }
+        _ => Err(format!("unknown unary operator: `{op}'")),
+    }
+}
+
+fn test_binary(left: &str, op: &str, right: &str) -> Result<bool, String> {
+    match op {
+        "=" => Ok(left == right),
+        "!=" => Ok(left != right),
+        "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" => {
+            let l: i64 = left.parse().map_err(|_| format!("integer expression expected: `{left}'"))?;
+            let r: i64 = right.parse().map_err(|_| format!("integer expression expected: `{right}'"))?;
+            let result = match op {
+                "-eq" => l == r,
+                "-ne" => l != r,
+                "-lt" => l < r,
+                "-le" => l <= r,
+                "-gt" => l > r,
+                "-ge" => l >= r,
+                _ => unreachable!(),
+            };
+            Ok(result)
+        }
+        _ => Err(format!("unknown binary operator: `{op}'")),
+    }
+}
+
+// ── trap implementation ──────────────────────────────────────────────
+
+/// Known POSIX signal names.
+const SIGNAL_NAMES: &[&str] = &[
+    "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS", "FPE",
+    "KILL", "USR1", "SEGV", "USR2", "PIPE", "ALRM", "TERM",
+    "STKFLT", "CHLD", "CONT", "STOP", "TSTP", "TTIN", "TTOU",
+    "URG", "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "IO", "PWR", "SYS",
+];
+
+/// Special (pseudo-)signals recognized by POSIX shells.
+const SPECIAL_TRAPS: &[&str] = &["EXIT", "ERR", "DEBUG", "RETURN"];
+
+fn is_valid_signal(name: &str) -> bool {
+    // Accept with or without "SIG" prefix, and special traps.
+    let normalized = name.strip_prefix("SIG").unwrap_or(name);
+    SIGNAL_NAMES.iter().any(|s| s.eq_ignore_ascii_case(normalized))
+        || SPECIAL_TRAPS.iter().any(|s| s.eq_ignore_ascii_case(name))
+        || name.parse::<u32>().is_ok() // numeric signal
+}
+
+fn normalize_signal(name: &str) -> String {
+    let stripped = name.strip_prefix("SIG").unwrap_or(name);
+    stripped.to_uppercase()
+}
+
+fn builtin_trap(argv: &[String], env: &mut Env) -> ExecResult {
+    use crate::env::TrapAction;
+
+    // trap (no args): list all traps
+    if argv.is_empty() {
+        let traps = env.traps();
+        let mut lines: Vec<String> = traps.iter()
+            .map(|(sig, trap)| format!("trap -- '{}' {}\n", trap.action, sig))
+            .collect();
+        lines.sort_unstable();
+        return ExecResult {
+            exit_code: 0,
+            stdout: lines.concat().into_bytes(),
+            stderr: Vec::new(),
+        };
+    }
+
+    // trap -l: list signal names
+    if argv.len() == 1 && argv[0] == "-l" {
+        let mut output = String::new();
+        for (i, name) in SIGNAL_NAMES.iter().enumerate() {
+            if i > 0 {
+                output.push(' ');
+            }
+            output.push_str(&format!("{}) SIG{}", i + 1, name));
+        }
+        output.push('\n');
+        return ExecResult {
+            exit_code: 0,
+            stdout: output.into_bytes(),
+            stderr: Vec::new(),
+        };
+    }
+
+    // trap -p SIGNAL...: print traps for specific signals
+    if argv.first().map(|s| s.as_str()) == Some("-p") {
+        let signals = &argv[1..];
+        let mut output = String::new();
+        for sig in signals {
+            let norm = normalize_signal(sig);
+            if let Some(trap) = env.get_trap(&norm) {
+                output.push_str(&format!("trap -- '{}' {}\n", trap.action, norm));
+            }
+        }
+        return ExecResult {
+            exit_code: 0,
+            stdout: output.into_bytes(),
+            stderr: Vec::new(),
+        };
+    }
+
+    // trap action SIGNAL [SIGNAL...] or trap - SIGNAL
+    if argv.len() < 2 {
+        return ExecResult::failure(2, "mash: trap: usage: trap [-lp] [[action] signal ...]\n");
+    }
+
+    let action = &argv[0];
+    let signals = &argv[1..];
+
+    for sig in signals {
+        let norm = normalize_signal(sig);
+        if !is_valid_signal(sig) {
+            return ExecResult::failure(1, format!("mash: trap: {sig}: invalid signal specification\n"));
+        }
+
+        if action == "-" {
+            // Reset to default
+            env.clear_trap(&norm);
+        } else {
+            env.set_trap(norm, TrapAction {
+                action: action.clone(),
+                inherited: false,
+            });
+        }
+    }
+
+    ExecResult::success()
+}
+
+// ── type implementation ──────────────────────────────────────────────
+
+/// Shell reserved words / keywords.
+const SHELL_KEYWORDS: &[&str] = &[
+    "if", "then", "else", "elif", "fi",
+    "for", "while", "until", "do", "done",
+    "case", "esac", "in",
+    "function", "select", "time",
+    "coproc",
+    "{", "}", "[[", "]]", "!",
+];
+
+/// Names recognized as builtins by this shell.
+const BUILTIN_NAMES: &[&str] = &[
+    "break", "continue", "return", "exit",
+    "true", ":", "false",
+    "echo", "local", "eval", "set", "shift",
+    "source", ".", "export", "unset", "readonly",
+    "cd", "pwd",
+    "test", "[",
+    "trap", "type", "hash", "command",
+];
+
+fn builtin_type(argv: &[String], env: &Env) -> ExecResult {
+    let mut type_only = false;
+    let mut names: &[String] = argv;
+
+    if let Some(first) = argv.first() {
+        if first == "-t" {
+            type_only = true;
+            names = &argv[1..];
+        }
+    }
+
+    if names.is_empty() {
+        return ExecResult::failure(1, "mash: type: usage: type [-t] name [name ...]\n");
+    }
+
+    let mut stdout = String::new();
+    let mut exit_code = 0;
+
+    for name in names {
+        let name_str = name.as_str();
+
+        // Check order: alias → keyword → function → builtin → external
+        if let Some(alias_val) = env.get_alias(name_str) {
+            if type_only {
+                stdout.push_str("alias\n");
+            } else {
+                stdout.push_str(&format!("{} is aliased to `{}'\n", name_str, alias_val));
+            }
+        } else if SHELL_KEYWORDS.contains(&name_str) {
+            if type_only {
+                stdout.push_str("keyword\n");
+            } else {
+                stdout.push_str(&format!("{} is a shell keyword\n", name_str));
+            }
+        } else if env.get_function(name_str).is_some() {
+            if type_only {
+                stdout.push_str("function\n");
+            } else {
+                stdout.push_str(&format!("{} is a function\n", name_str));
+            }
+        } else if BUILTIN_NAMES.contains(&name_str) {
+            if type_only {
+                stdout.push_str("builtin\n");
+            } else {
+                stdout.push_str(&format!("{} is a shell builtin\n", name_str));
+            }
+        } else if let Some(path) = find_in_path(name_str, env) {
+            let path_str = path.to_string_lossy();
+            if type_only {
+                stdout.push_str("file\n");
+            } else {
+                stdout.push_str(&format!("{} is {}\n", name_str, path_str));
+            }
+        } else {
+            if !type_only {
+                stdout.push_str(&format!("mash: type: {}: not found\n", name_str));
+            }
+            exit_code = 1;
+        }
+    }
+
+    ExecResult {
+        exit_code,
+        stdout: stdout.into_bytes(),
+        stderr: Vec::new(),
+    }
+}
+
+// ── hash implementation ──────────────────────────────────────────────
+
+fn builtin_hash(argv: &[String], env: &mut Env) -> ExecResult {
+    // hash -r: clear all cached entries
+    if argv.len() == 1 && argv[0] == "-r" {
+        env.hash_clear();
+        return ExecResult::success();
+    }
+
+    // hash -d name: remove specific entry
+    if argv.len() == 2 && argv[0] == "-d" {
+        env.hash_remove(&argv[1]);
+        return ExecResult::success();
+    }
+
+    // hash (no args): list cached PATH lookups
+    if argv.is_empty() {
+        let table = env.hash_table();
+        if table.is_empty() {
+            return ExecResult {
+                exit_code: 0,
+                stdout: b"hash: hash table empty\n".to_vec(),
+                stderr: Vec::new(),
+            };
+        }
+        let mut lines: Vec<String> = table.iter()
+            .map(|(name, path)| format!("{}\t{}\n", name, path))
+            .collect();
+        lines.sort_unstable();
+        return ExecResult {
+            exit_code: 0,
+            stdout: lines.concat().into_bytes(),
+            stderr: Vec::new(),
+        };
+    }
+
+    // hash name [name...]: force cache entries
+    let mut exit_code = 0;
+    let mut errors = Vec::new();
+    for name in argv {
+        if let Some(path) = find_in_path(name, env) {
+            let path_str = path.to_string_lossy().to_string();
+            env.hash_insert(name.clone(), path_str);
+        } else {
+            errors.extend_from_slice(format!("mash: hash: {}: not found\n", name).as_bytes());
+            exit_code = 1;
+        }
+    }
+
+    ExecResult {
+        exit_code,
+        stdout: Vec::new(),
+        stderr: errors,
+    }
+}
+
+// ── command implementation ───────────────────────────────────────────
+
+fn builtin_command(argv: &[String], env: &mut Env) -> ExecResult {
+    if argv.is_empty() {
+        return ExecResult::success();
+    }
+
+    // command -v name: print path or type identifier
+    if argv[0] == "-v" {
+        if argv.len() < 2 {
+            return ExecResult::failure(1, "");
+        }
+        let mut stdout = String::new();
+        let mut exit_code = 0;
+        for name in &argv[1..] {
+            let name_str = name.as_str();
+            if BUILTIN_NAMES.contains(&name_str) {
+                stdout.push_str(&format!("{}\n", name_str));
+            } else if SHELL_KEYWORDS.contains(&name_str) {
+                stdout.push_str(&format!("{}\n", name_str));
+            } else if env.get_function(name_str).is_some() {
+                stdout.push_str(&format!("{}\n", name_str));
+            } else if let Some(path) = find_in_path(name_str, env) {
+                stdout.push_str(&format!("{}\n", path.to_string_lossy()));
+            } else {
+                exit_code = 1;
+            }
+        }
+        return ExecResult {
+            exit_code,
+            stdout: stdout.into_bytes(),
+            stderr: Vec::new(),
+        };
+    }
+
+    // command -V name: verbose, like `type`
+    if argv[0] == "-V" {
+        if argv.len() < 2 {
+            return ExecResult::failure(1, "");
+        }
+        return builtin_type(&argv[1..], env);
+    }
+
+    // command name args...: execute bypassing functions and aliases.
+    // Check builtins first, then PATH.
+    let cmd_name = &argv[0];
+    let cmd_argv = &argv[1..];
+
+    // Try builtins (but not `command` itself to avoid infinite recursion).
+    if cmd_name != "command" {
+        if let Some(result) = try_execute_builtin(cmd_name, cmd_argv, env) {
+            return result;
+        }
+    }
+
+    // Try external command via PATH.
+    if let Some(path) = find_in_path(cmd_name, env) {
+        let mut config = malt_platform::process::SpawnConfig::new(&path);
+        config.args = cmd_argv.iter().map(|a| a.into()).collect();
+        config.stdout = malt_platform::process::Io::Pipe;
+        config.stderr = malt_platform::process::Io::Pipe;
+        config.env_clear = true;
+        for (k, v) in env.exported_vars() {
+            config.env.push((k.into(), v.into()));
+        }
+        match malt_platform::process::spawn(config) {
+            Ok(mut child) => {
+                let mut stdout_bytes = Vec::new();
+                let mut stderr_bytes = Vec::new();
+                if let Some(mut out) = child.take_stdout() {
+                    let _ = out.read_to_end(&mut stdout_bytes);
+                }
+                if let Some(mut err) = child.take_stderr() {
+                    let _ = err.read_to_end(&mut stderr_bytes);
+                }
+                let exit_code = match child.wait() {
+                    Ok(status) => status.code(),
+                    Err(_) => 1,
+                };
+                ExecResult {
+                    exit_code,
+                    stdout: stdout_bytes,
+                    stderr: stderr_bytes,
+                }
+            }
+            Err(e) => {
+                let code = match &e {
+                    malt_platform::process::SpawnError::NotFound { .. } => 127,
+                    malt_platform::process::SpawnError::PermissionDenied { .. } => 126,
+                    _ => 1,
+                };
+                ExecResult::failure(code, format!("mash: {cmd_name}: {e}\n"))
+            }
+        }
+    } else {
+        ExecResult::failure(127, format!("mash: {cmd_name}: command not found\n"))
     }
 }
 

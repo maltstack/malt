@@ -557,3 +557,242 @@ fn builtin_pwd_output() {
     let output = run_stdout("pwd");
     assert!(!output.trim().is_empty());
 }
+
+// ── test / [ builtin ────────────────────────────────────────────────
+
+#[test]
+fn test_builtin_file_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("exists.txt");
+    std::fs::write(&file, "hi").unwrap();
+    let cmd = format!("test -f {}", shell_path(&file));
+    let (result, _) = run(&cmd);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_file_not_exists() {
+    let (result, _) = run("test -f /nonexistent/file/xyz");
+    assert_ne!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_dir_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let cmd = format!("test -d {}", shell_path(dir.path()));
+    let (result, _) = run(&cmd);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_string_empty() {
+    let (result, _) = run("test -z ''");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_string_nonempty() {
+    let (result, _) = run("test -n 'hello'");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_string_equal() {
+    let (result, _) = run("test hello = hello");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_string_not_equal() {
+    let (result, _) = run("test hello != world");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_arithmetic_eq() {
+    let (result, _) = run("test 5 -eq 5");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_arithmetic_lt() {
+    let (result, _) = run("test 3 -lt 5");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_arithmetic_gt_false() {
+    let (result, _) = run("test 3 -gt 5");
+    assert_ne!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_negation() {
+    let (result, _) = run("test ! -f /nonexistent");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_no_args_is_false() {
+    let (result, _) = run("test");
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn test_builtin_single_string_true() {
+    let (result, _) = run("test hello");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("exists.txt");
+    std::fs::write(&file, "hi").unwrap();
+    let cmd = format!("test -e {}", shell_path(&file));
+    let (result, _) = run(&cmd);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn test_builtin_size_nonzero() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("nonempty.txt");
+    std::fs::write(&file, "content").unwrap();
+    let cmd = format!("test -s {}", shell_path(&file));
+    let (result, _) = run(&cmd);
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn bracket_syntax() {
+    let (result, _) = run("[ hello = hello ]");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn bracket_syntax_missing_close() {
+    let (result, _) = run("[ hello = hello");
+    assert_eq!(result.exit_code, 2);
+}
+
+// ── trap builtin ────────────────────────────────────────────────────
+
+#[test]
+fn trap_set_and_list() {
+    let output = run_stdout("trap 'echo hi' INT; trap");
+    assert!(output.contains("INT"), "got: {output}");
+    assert!(output.contains("echo hi"), "got: {output}");
+}
+
+#[test]
+fn trap_reset() {
+    let output = run_stdout("trap 'echo hi' INT; trap - INT; trap");
+    // After resetting, INT should not appear in the trap list.
+    assert!(!output.contains("INT"), "got: {output}");
+}
+
+#[test]
+fn trap_list_signals() {
+    let output = run_stdout("trap -l");
+    assert!(output.contains("INT"), "got: {output}");
+    assert!(output.contains("TERM"), "got: {output}");
+}
+
+#[test]
+fn trap_print_specific() {
+    let output = run_stdout("trap 'echo bye' EXIT; trap -p EXIT");
+    assert!(output.contains("EXIT"), "got: {output}");
+    assert!(output.contains("echo bye"), "got: {output}");
+}
+
+// ── type builtin ────────────────────────────────────────────────────
+
+#[test]
+fn type_builtin() {
+    let output = run_stdout("type echo");
+    assert!(output.contains("builtin"), "got: {output}");
+}
+
+#[test]
+fn type_t_builtin() {
+    let output = run_stdout("type -t echo");
+    assert_eq!(output.trim(), "builtin");
+}
+
+#[test]
+fn type_function() {
+    let output = run_stdout("f() { :; }; type f");
+    assert!(output.contains("function"), "got: {output}");
+}
+
+#[test]
+fn type_t_function() {
+    let output = run_stdout("f() { :; }; type -t f");
+    assert_eq!(output.trim(), "function");
+}
+
+#[test]
+fn type_keyword() {
+    let output = run_stdout("type -t if");
+    assert_eq!(output.trim(), "keyword");
+}
+
+#[test]
+fn type_not_found() {
+    let (result, _) = run("type nonexistent_xyz_99");
+    assert_eq!(result.exit_code, 1);
+}
+
+// ── hash builtin ────────────────────────────────────────────────────
+
+#[test]
+fn hash_r_clears() {
+    let (result, _) = run("hash -r");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn hash_empty_table() {
+    let output = run_stdout("hash -r; hash");
+    assert!(output.contains("empty"), "got: {output}");
+}
+
+#[test]
+fn hash_not_found() {
+    let (result, _) = run("hash nonexistent_xyz_99");
+    assert_ne!(result.exit_code, 0);
+}
+
+// ── command builtin ─────────────────────────────────────────────────
+
+#[test]
+fn command_v_builtin() {
+    let output = run_stdout("command -v echo");
+    assert_eq!(output.trim(), "echo");
+}
+
+#[test]
+fn command_v_not_found() {
+    let (result, _) = run("command -v nonexistent_xyz_99");
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn command_v_function() {
+    let output = run_stdout("f() { :; }; command -v f");
+    assert_eq!(output.trim(), "f");
+}
+
+#[test]
+fn command_bypasses_function() {
+    // `command echo` should run the builtin echo, not a function named echo.
+    let output = run_stdout("echo() { :; }; command echo hello");
+    assert!(output.contains("hello"), "got: {output}");
+}
+
+#[test]
+fn command_capital_v_verbose() {
+    let output = run_stdout("command -V echo");
+    assert!(output.contains("builtin"), "got: {output}");
+}
