@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/malt-protocol", "crates/malt-platform"]
+members = ["crates/malt-protocol", "crates/malt-platform", "crates/malt-config"]
 
 [workspace.package]
 version = "0.1.0"

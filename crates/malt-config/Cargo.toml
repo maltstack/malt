@@ -1,0 +1,12 @@
+[package]
+name = "malt-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Vexil Store config loading for MALT — schema-validated .vx files"
+
+[dependencies]
+vexil-runtime = { git = "https://github.com/vexil-lang/vexil", branch = "main" }
+vexil-store = { git = "https://github.com/vexil-lang/vexil", branch = "main" }
+thiserror = "2"

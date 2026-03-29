@@ -1,0 +1,9 @@
+@version("0.1.0")
+namespace malt.config.user
+
+config UserConfig {
+    edit_mode        : string           = "emacs"
+    theme            : optional<string> = none
+    shell            : optional<string> = none
+    startup_commands : array<string>    = []
+}

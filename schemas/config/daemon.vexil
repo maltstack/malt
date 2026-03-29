@@ -1,0 +1,12 @@
+@version("0.1.0")
+namespace malt.config.daemon
+
+config DaemonConfig {
+    socket_path           : optional<string> = none
+    max_sessions          : u32              = 64
+    default_tier          : string           = "Bare"
+    scrollback_lines      : u32              = 10000
+    log_level             : string           = "info"
+    persist_dir           : optional<string> = none
+    persist_interval_secs : u32              = 30
+}
