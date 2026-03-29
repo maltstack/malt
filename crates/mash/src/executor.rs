@@ -463,7 +463,9 @@ fn execute_simple_with_io(
     }
 
     // 3. Handle builtins in pipeline context.
-    if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env, stdin_file.take()) {
+    // Only take stdin_file if this IS a builtin (otherwise we need it for the external process).
+    let builtin_stdin = if BUILTIN_NAMES.contains(&cmd_name.as_str()) { stdin_file.take() } else { None };
+    if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env, builtin_stdin) {
         if let Some(mut pipe_out) = stdout_file {
             let _ = pipe_out.write_all(&result.stdout);
             result.stdout = Vec::new();
