@@ -106,3 +106,75 @@ fn empty_command() {
     let (result, _) = run(";");
     assert_eq!(result.exit_code, 0);
 }
+
+// ── Redirect tests ────────────────────────────────────────────────────
+
+#[test]
+fn redirect_output_to_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.txt");
+    // Use forward slashes for cross-platform compatibility with the shell parser.
+    let path_str = path.to_string_lossy().replace('\\', "/");
+    let cmd = format!("echo hello > {path_str}");
+    let (result, _) = run(&cmd);
+    assert_eq!(result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&result.stderr));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.trim().contains("hello"), "got: {contents}");
+}
+
+/// Helper: convert a path to a forward-slash string for shell commands.
+fn shell_path(p: &std::path::Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
+#[test]
+fn redirect_append() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.txt");
+    std::fs::write(&path, "first\n").unwrap();
+    let cmd = format!("echo second >> {}", shell_path(&path));
+    let (result, _) = run(&cmd);
+    assert_eq!(result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&result.stderr));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("first"), "got: {contents}");
+    assert!(contents.contains("second"), "got: {contents}");
+}
+
+#[test]
+fn redirect_clobber() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.txt");
+    std::fs::write(&path, "old content\n").unwrap();
+    let cmd = format!("echo new >| {}", shell_path(&path));
+    let (result, _) = run(&cmd);
+    assert_eq!(result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&result.stderr));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("new"), "got: {contents}");
+    assert!(!contents.contains("old"), "got: {contents}");
+}
+
+#[test]
+fn redirect_output_captures_nothing_in_result() {
+    // When stdout is redirected to a file, ExecResult.stdout should be empty
+    // (the data went to the file, not the pipe).
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.txt");
+    let cmd = format!("echo hello > {}", shell_path(&path));
+    let (result, _) = run(&cmd);
+    assert!(result.stdout.is_empty(), "expected empty stdout in result, got: {:?}", result.stdout);
+    // But the file should have the data.
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.trim().contains("hello"), "file: {contents}");
+}
+
+#[test]
+fn redirect_both_stdout_and_stderr() {
+    // &> redirects both stdout and stderr to the same file.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("both.txt");
+    let cmd = format!("echo combined &> {}", shell_path(&path));
+    let (result, _) = run(&cmd);
+    assert_eq!(result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&result.stderr));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("combined"), "got: {contents}");
+}
