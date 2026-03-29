@@ -261,3 +261,104 @@ fn brace_nested_default() {
     env.set("FALLBACK", mash::env::Variable::string("default")).unwrap();
     assert_eq!(expand_word_nosplit("${X:-$FALLBACK}", &mut env).unwrap(), "default");
 }
+
+// ── Arithmetic evaluation tests ──
+
+#[test]
+fn arith_basic_add() {
+    let mut env = Env::empty();
+    assert_eq!(eval_arithmetic("1+2", &mut env).unwrap(), 3);
+}
+
+#[test]
+fn arith_precedence() {
+    let mut env = Env::empty();
+    assert_eq!(eval_arithmetic("2+3*4", &mut env).unwrap(), 14);
+}
+
+#[test]
+fn arith_parens() {
+    let mut env = Env::empty();
+    assert_eq!(eval_arithmetic("(2+3)*4", &mut env).unwrap(), 20);
+}
+
+#[test]
+fn arith_variable() {
+    let mut env = Env::empty();
+    env.set("x", mash::env::Variable::string("5")).unwrap();
+    assert_eq!(eval_arithmetic("x+1", &mut env).unwrap(), 6);
+}
+
+#[test]
+fn arith_assignment() {
+    let mut env = Env::empty();
+    let val = eval_arithmetic("x=10", &mut env).unwrap();
+    assert_eq!(val, 10);
+    assert_eq!(env.get_str("x"), "10");
+}
+
+#[test]
+fn arith_hex() {
+    let mut env = Env::empty();
+    assert_eq!(eval_arithmetic("0xFF", &mut env).unwrap(), 255);
+}
+
+#[test]
+fn arith_octal() {
+    let mut env = Env::empty();
+    assert_eq!(eval_arithmetic("010", &mut env).unwrap(), 8);
+}
+
+#[test]
+fn arith_power() {
+    let mut env = Env::empty();
+    assert_eq!(eval_arithmetic("2**8", &mut env).unwrap(), 256);
+}
+
+#[test]
+fn arith_ternary() {
+    let mut env = Env::empty();
+    assert_eq!(eval_arithmetic("1>0 ? 42 : -1", &mut env).unwrap(), 42);
+}
+
+#[test]
+fn arith_division_by_zero() {
+    let mut env = Env::empty();
+    let result = eval_arithmetic("1/0", &mut env);
+    assert!(matches!(result, Err(ExpandError::Arithmetic { .. })));
+}
+
+#[test]
+fn arith_compound_assign() {
+    let mut env = Env::empty();
+    env.set("x", mash::env::Variable::string("10")).unwrap();
+    assert_eq!(eval_arithmetic("x+=5", &mut env).unwrap(), 15);
+    assert_eq!(env.get_str("x"), "15");
+}
+
+#[test]
+fn arith_pre_increment() {
+    let mut env = Env::empty();
+    env.set("x", mash::env::Variable::string("5")).unwrap();
+    assert_eq!(eval_arithmetic("++x", &mut env).unwrap(), 6);
+    assert_eq!(env.get_str("x"), "6");
+}
+
+#[test]
+fn arith_in_expansion() {
+    let mut env = Env::empty();
+    assert_eq!(expand_word_nosplit("$((2+3))", &mut env).unwrap(), "5");
+}
+
+#[test]
+fn arith_bitwise() {
+    let mut env = Env::empty();
+    assert_eq!(eval_arithmetic("0xFF & 0x0F", &mut env).unwrap(), 15);
+}
+
+#[test]
+fn arith_logical() {
+    let mut env = Env::empty();
+    assert_eq!(eval_arithmetic("1&&0", &mut env).unwrap(), 0);
+    assert_eq!(eval_arithmetic("1||0", &mut env).unwrap(), 1);
+}

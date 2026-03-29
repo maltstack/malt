@@ -76,9 +76,11 @@ pub fn expand_heredoc_body(body: &str, env: &mut Env) -> Result<String, ExpandEr
 }
 
 /// Evaluate arithmetic expression.
-pub fn eval_arithmetic(_expr: &str, _env: &mut Env) -> Result<i64, ExpandError> {
-    // Implemented in Task 3
-    todo!("arithmetic evaluation")
+pub fn eval_arithmetic(expr: &str, env: &mut Env) -> Result<i64, ExpandError> {
+    let tokens = tokenize_arith(expr)?;
+    let mut parser = ArithParser::new(&tokens, env);
+    let result = parser.parse_expr(0)?;
+    Ok(result)
 }
 
 // ── Core engine ──
@@ -1131,6 +1133,646 @@ fn strip_sentinels_case_pattern(s: &str) -> String {
             }
             _ => result.push(c),
         }
+    }
+    result
+}
+
+// ── Arithmetic evaluation ──
+
+#[derive(Debug, Clone, PartialEq)]
+enum ArithToken {
+    Num(i64),
+    Ident(String),
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    StarStar,
+    LShift,
+    RShift,
+    Amp,
+    Pipe,
+    Caret,
+    AmpAmp,
+    PipePipe,
+    EqEq,
+    BangEq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
+    Bang,
+    Tilde,
+    Question,
+    Colon,
+    Comma,
+    LParen,
+    RParen,
+    PlusPlus,
+    MinusMinus,
+    Eq,
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    Eof,
+}
+
+fn tokenize_arith(expr: &str) -> Result<Vec<ArithToken>, ExpandError> {
+    let mut tokens = Vec::new();
+    let mut chars = expr.chars().peekable();
+
+    while let Some(&ch) = chars.peek() {
+        match ch {
+            ' ' | '\t' | '\n' | '\r' => {
+                chars.next();
+            }
+            '0'..='9' => {
+                let mut num_str = String::new();
+                if ch == '0' {
+                    chars.next();
+                    match chars.peek() {
+                        Some('x') | Some('X') => {
+                            chars.next();
+                            while let Some(&c) = chars.peek() {
+                                if c.is_ascii_hexdigit() {
+                                    num_str.push(c);
+                                    chars.next();
+                                } else {
+                                    break;
+                                }
+                            }
+                            if num_str.is_empty() {
+                                return Err(ExpandError::Arithmetic {
+                                    reason: "invalid hex literal: 0x".into(),
+                                });
+                            }
+                            let n = i64::from_str_radix(&num_str, 16).map_err(|_| {
+                                ExpandError::Arithmetic {
+                                    reason: format!("invalid hex: 0x{}", num_str),
+                                }
+                            })?;
+                            tokens.push(ArithToken::Num(n));
+                            continue;
+                        }
+                        Some('b') | Some('B') => {
+                            chars.next();
+                            while let Some(&c) = chars.peek() {
+                                if c == '0' || c == '1' {
+                                    num_str.push(c);
+                                    chars.next();
+                                } else {
+                                    break;
+                                }
+                            }
+                            if num_str.is_empty() {
+                                return Err(ExpandError::Arithmetic {
+                                    reason: "invalid binary literal: 0b".into(),
+                                });
+                            }
+                            let n = i64::from_str_radix(&num_str, 2).map_err(|_| {
+                                ExpandError::Arithmetic {
+                                    reason: format!("invalid binary: 0b{}", num_str),
+                                }
+                            })?;
+                            tokens.push(ArithToken::Num(n));
+                            continue;
+                        }
+                        Some(c) if c.is_ascii_digit() => {
+                            // Octal
+                            num_str.push('0');
+                            while let Some(&c) = chars.peek() {
+                                if c.is_ascii_digit() {
+                                    num_str.push(c);
+                                    chars.next();
+                                } else {
+                                    break;
+                                }
+                            }
+                            let n = i64::from_str_radix(&num_str, 8).map_err(|_| {
+                                ExpandError::Arithmetic {
+                                    reason: format!("invalid octal: {}", num_str),
+                                }
+                            })?;
+                            tokens.push(ArithToken::Num(n));
+                            continue;
+                        }
+                        _ => {
+                            tokens.push(ArithToken::Num(0));
+                            continue;
+                        }
+                    }
+                }
+                while let Some(&c) = chars.peek() {
+                    if c.is_ascii_digit() {
+                        num_str.push(c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                let n: i64 = num_str.parse().map_err(|_| ExpandError::Arithmetic {
+                    reason: format!("invalid number: {}", num_str),
+                })?;
+                tokens.push(ArithToken::Num(n));
+            }
+            'a'..='z' | 'A'..='Z' | '_' => {
+                let mut name = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c.is_ascii_alphanumeric() || c == '_' {
+                        name.push(c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                tokens.push(ArithToken::Ident(name));
+            }
+            '*' => {
+                chars.next();
+                if chars.peek() == Some(&'*') {
+                    chars.next();
+                    tokens.push(ArithToken::StarStar);
+                } else if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(ArithToken::StarEq);
+                } else {
+                    tokens.push(ArithToken::Star);
+                }
+            }
+            '+' => {
+                chars.next();
+                if chars.peek() == Some(&'+') {
+                    chars.next();
+                    tokens.push(ArithToken::PlusPlus);
+                } else if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(ArithToken::PlusEq);
+                } else {
+                    tokens.push(ArithToken::Plus);
+                }
+            }
+            '-' => {
+                chars.next();
+                if chars.peek() == Some(&'-') {
+                    chars.next();
+                    tokens.push(ArithToken::MinusMinus);
+                } else if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(ArithToken::MinusEq);
+                } else {
+                    tokens.push(ArithToken::Minus);
+                }
+            }
+            '/' => {
+                chars.next();
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(ArithToken::SlashEq);
+                } else {
+                    tokens.push(ArithToken::Slash);
+                }
+            }
+            '%' => {
+                chars.next();
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(ArithToken::PercentEq);
+                } else {
+                    tokens.push(ArithToken::Percent);
+                }
+            }
+            '<' => {
+                chars.next();
+                if chars.peek() == Some(&'<') {
+                    chars.next();
+                    tokens.push(ArithToken::LShift);
+                } else if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(ArithToken::LtEq);
+                } else {
+                    tokens.push(ArithToken::Lt);
+                }
+            }
+            '>' => {
+                chars.next();
+                if chars.peek() == Some(&'>') {
+                    chars.next();
+                    tokens.push(ArithToken::RShift);
+                } else if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(ArithToken::GtEq);
+                } else {
+                    tokens.push(ArithToken::Gt);
+                }
+            }
+            '&' => {
+                chars.next();
+                if chars.peek() == Some(&'&') {
+                    chars.next();
+                    tokens.push(ArithToken::AmpAmp);
+                } else {
+                    tokens.push(ArithToken::Amp);
+                }
+            }
+            '|' => {
+                chars.next();
+                if chars.peek() == Some(&'|') {
+                    chars.next();
+                    tokens.push(ArithToken::PipePipe);
+                } else {
+                    tokens.push(ArithToken::Pipe);
+                }
+            }
+            '^' => {
+                chars.next();
+                tokens.push(ArithToken::Caret);
+            }
+            '=' => {
+                chars.next();
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(ArithToken::EqEq);
+                } else {
+                    tokens.push(ArithToken::Eq);
+                }
+            }
+            '!' => {
+                chars.next();
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(ArithToken::BangEq);
+                } else {
+                    tokens.push(ArithToken::Bang);
+                }
+            }
+            '~' => {
+                chars.next();
+                tokens.push(ArithToken::Tilde);
+            }
+            '?' => {
+                chars.next();
+                tokens.push(ArithToken::Question);
+            }
+            ':' => {
+                chars.next();
+                tokens.push(ArithToken::Colon);
+            }
+            ',' => {
+                chars.next();
+                tokens.push(ArithToken::Comma);
+            }
+            '(' => {
+                chars.next();
+                tokens.push(ArithToken::LParen);
+            }
+            ')' => {
+                chars.next();
+                tokens.push(ArithToken::RParen);
+            }
+            other => {
+                return Err(ExpandError::Arithmetic {
+                    reason: format!("unexpected character: '{}'", other),
+                });
+            }
+        }
+    }
+    tokens.push(ArithToken::Eof);
+    Ok(tokens)
+}
+
+struct ArithParser<'a> {
+    tokens: &'a [ArithToken],
+    pos: usize,
+    env: &'a mut Env,
+}
+
+impl<'a> ArithParser<'a> {
+    fn new(tokens: &'a [ArithToken], env: &'a mut Env) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            env,
+        }
+    }
+
+    fn peek(&self) -> &ArithToken {
+        self.tokens.get(self.pos).unwrap_or(&ArithToken::Eof)
+    }
+
+    fn advance(&mut self) -> &ArithToken {
+        let tok = self.tokens.get(self.pos).unwrap_or(&ArithToken::Eof);
+        self.pos += 1;
+        tok
+    }
+
+    /// Read the current integer value of a shell variable (0 if unset or non-numeric).
+    fn var_value(&self, name: &str) -> i64 {
+        let s = self.env.get_str(name);
+        if s.is_empty() {
+            0
+        } else {
+            s.trim().parse::<i64>().unwrap_or(0)
+        }
+    }
+
+    /// Write an integer back to a shell variable.
+    fn set_var(&mut self, name: &str, val: i64) {
+        let _ = self.env.set(name, Variable::string(val.to_string()));
+    }
+
+    /// Pratt parser: parse expression with minimum binding power `min_bp`.
+    fn parse_expr(&mut self, min_bp: u8) -> Result<i64, ExpandError> {
+        // Prefix / atom
+        let mut lhs = match self.peek().clone() {
+            ArithToken::Num(n) => {
+                self.advance();
+                n
+            }
+            ArithToken::Ident(name) => {
+                self.advance();
+                // Check for postfix ++ / -- or assignment operators
+                match self.peek() {
+                    ArithToken::PlusPlus => {
+                        self.advance();
+                        let old = self.var_value(&name);
+                        self.set_var(&name, old.wrapping_add(1));
+                        old // post-increment returns old value
+                    }
+                    ArithToken::MinusMinus => {
+                        self.advance();
+                        let old = self.var_value(&name);
+                        self.set_var(&name, old.wrapping_sub(1));
+                        old // post-decrement returns old value
+                    }
+                    ArithToken::Eq => {
+                        self.advance();
+                        let val = self.parse_expr(2)?; // right-assoc, low bp
+                        self.set_var(&name, val);
+                        val
+                    }
+                    ArithToken::PlusEq => {
+                        self.advance();
+                        let rhs = self.parse_expr(2)?;
+                        let val = self.var_value(&name).wrapping_add(rhs);
+                        self.set_var(&name, val);
+                        val
+                    }
+                    ArithToken::MinusEq => {
+                        self.advance();
+                        let rhs = self.parse_expr(2)?;
+                        let val = self.var_value(&name).wrapping_sub(rhs);
+                        self.set_var(&name, val);
+                        val
+                    }
+                    ArithToken::StarEq => {
+                        self.advance();
+                        let rhs = self.parse_expr(2)?;
+                        let val = self.var_value(&name).wrapping_mul(rhs);
+                        self.set_var(&name, val);
+                        val
+                    }
+                    ArithToken::SlashEq => {
+                        self.advance();
+                        let rhs = self.parse_expr(2)?;
+                        if rhs == 0 {
+                            return Err(ExpandError::Arithmetic {
+                                reason: "division by zero".into(),
+                            });
+                        }
+                        let val = self.var_value(&name).wrapping_div(rhs);
+                        self.set_var(&name, val);
+                        val
+                    }
+                    ArithToken::PercentEq => {
+                        self.advance();
+                        let rhs = self.parse_expr(2)?;
+                        if rhs == 0 {
+                            return Err(ExpandError::Arithmetic {
+                                reason: "division by zero".into(),
+                            });
+                        }
+                        let val = self.var_value(&name).wrapping_rem(rhs);
+                        self.set_var(&name, val);
+                        val
+                    }
+                    _ => {
+                        // Plain variable lookup
+                        self.var_value(&name)
+                    }
+                }
+            }
+            ArithToken::PlusPlus => {
+                // Pre-increment: ++var
+                self.advance();
+                if let ArithToken::Ident(name) = self.peek().clone() {
+                    self.advance();
+                    let val = self.var_value(&name).wrapping_add(1);
+                    self.set_var(&name, val);
+                    val
+                } else {
+                    return Err(ExpandError::Arithmetic {
+                        reason: "expected variable after '++'".into(),
+                    });
+                }
+            }
+            ArithToken::MinusMinus => {
+                // Pre-decrement: --var
+                self.advance();
+                if let ArithToken::Ident(name) = self.peek().clone() {
+                    self.advance();
+                    let val = self.var_value(&name).wrapping_sub(1);
+                    self.set_var(&name, val);
+                    val
+                } else {
+                    return Err(ExpandError::Arithmetic {
+                        reason: "expected variable after '--'".into(),
+                    });
+                }
+            }
+            ArithToken::LParen => {
+                self.advance();
+                let val = self.parse_expr(0)?;
+                if *self.peek() != ArithToken::RParen {
+                    return Err(ExpandError::Arithmetic {
+                        reason: "expected ')'".into(),
+                    });
+                }
+                self.advance();
+                val
+            }
+            ArithToken::Minus => {
+                self.advance();
+                let val = self.parse_expr(14)?; // unary prefix bp
+                val.wrapping_neg()
+            }
+            ArithToken::Plus => {
+                self.advance();
+                self.parse_expr(14)?
+            }
+            ArithToken::Bang => {
+                self.advance();
+                let val = self.parse_expr(14)?;
+                if val == 0 { 1 } else { 0 }
+            }
+            ArithToken::Tilde => {
+                self.advance();
+                let val = self.parse_expr(14)?;
+                !val
+            }
+            ArithToken::Eof => {
+                // Empty expression evaluates to 0
+                return Ok(0);
+            }
+            other => {
+                return Err(ExpandError::Arithmetic {
+                    reason: format!("unexpected token: {:?}", other),
+                });
+            }
+        };
+
+        // Infix
+        loop {
+            let (op, bp, right_assoc) = match self.peek() {
+                ArithToken::Comma => (ArithToken::Comma, 1, false),
+                ArithToken::Question => {
+                    // Ternary ? : — handle specially
+                    if 2 < min_bp {
+                        break;
+                    }
+                    self.advance(); // consume ?
+                    let then_val = self.parse_expr(0)?;
+                    if *self.peek() != ArithToken::Colon {
+                        return Err(ExpandError::Arithmetic {
+                            reason: "expected ':' in ternary".into(),
+                        });
+                    }
+                    self.advance(); // consume :
+                    let else_val = self.parse_expr(2)?;
+                    lhs = if lhs != 0 { then_val } else { else_val };
+                    continue;
+                }
+                ArithToken::PipePipe => (ArithToken::PipePipe, 3, false),
+                ArithToken::AmpAmp => (ArithToken::AmpAmp, 4, false),
+                ArithToken::Pipe => (ArithToken::Pipe, 5, false),
+                ArithToken::Caret => (ArithToken::Caret, 6, false),
+                ArithToken::Amp => (ArithToken::Amp, 7, false),
+                ArithToken::EqEq => (ArithToken::EqEq, 8, false),
+                ArithToken::BangEq => (ArithToken::BangEq, 8, false),
+                ArithToken::Lt => (ArithToken::Lt, 9, false),
+                ArithToken::Gt => (ArithToken::Gt, 9, false),
+                ArithToken::LtEq => (ArithToken::LtEq, 9, false),
+                ArithToken::GtEq => (ArithToken::GtEq, 9, false),
+                ArithToken::LShift => (ArithToken::LShift, 10, false),
+                ArithToken::RShift => (ArithToken::RShift, 10, false),
+                ArithToken::Plus => (ArithToken::Plus, 11, false),
+                ArithToken::Minus => (ArithToken::Minus, 11, false),
+                ArithToken::Star => (ArithToken::Star, 12, false),
+                ArithToken::Slash => (ArithToken::Slash, 12, false),
+                ArithToken::Percent => (ArithToken::Percent, 12, false),
+                ArithToken::StarStar => (ArithToken::StarStar, 13, true),
+                _ => break,
+            };
+
+            if bp < min_bp {
+                break;
+            }
+
+            self.advance();
+            let next_bp = if right_assoc { bp } else { bp + 1 };
+            let rhs = self.parse_expr(next_bp)?;
+
+            lhs = match op {
+                ArithToken::Plus => lhs.wrapping_add(rhs),
+                ArithToken::Minus => lhs.wrapping_sub(rhs),
+                ArithToken::Star => lhs.wrapping_mul(rhs),
+                ArithToken::Slash => {
+                    if rhs == 0 {
+                        return Err(ExpandError::Arithmetic {
+                            reason: "division by zero".into(),
+                        });
+                    }
+                    if lhs == i64::MIN && rhs == -1 {
+                        return Err(ExpandError::Arithmetic {
+                            reason: "integer overflow: i64::MIN / -1".into(),
+                        });
+                    }
+                    lhs / rhs
+                }
+                ArithToken::Percent => {
+                    if rhs == 0 {
+                        return Err(ExpandError::Arithmetic {
+                            reason: "division by zero".into(),
+                        });
+                    }
+                    if lhs == i64::MIN && rhs == -1 {
+                        return Err(ExpandError::Arithmetic {
+                            reason: "integer overflow: i64::MIN % -1".into(),
+                        });
+                    }
+                    lhs % rhs
+                }
+                ArithToken::StarStar => {
+                    if rhs < 0 {
+                        return Err(ExpandError::Arithmetic {
+                            reason: "negative exponent".into(),
+                        });
+                    }
+                    pow_i64(lhs, rhs as u64)
+                }
+                ArithToken::LShift => lhs.wrapping_shl(rhs as u32),
+                ArithToken::RShift => lhs.wrapping_shr(rhs as u32),
+                ArithToken::Amp => lhs & rhs,
+                ArithToken::Pipe => lhs | rhs,
+                ArithToken::Caret => lhs ^ rhs,
+                ArithToken::AmpAmp => {
+                    if lhs != 0 && rhs != 0 { 1 } else { 0 }
+                }
+                ArithToken::PipePipe => {
+                    if lhs != 0 || rhs != 0 { 1 } else { 0 }
+                }
+                ArithToken::EqEq => {
+                    if lhs == rhs { 1 } else { 0 }
+                }
+                ArithToken::BangEq => {
+                    if lhs != rhs { 1 } else { 0 }
+                }
+                ArithToken::Lt => {
+                    if lhs < rhs { 1 } else { 0 }
+                }
+                ArithToken::Gt => {
+                    if lhs > rhs { 1 } else { 0 }
+                }
+                ArithToken::LtEq => {
+                    if lhs <= rhs { 1 } else { 0 }
+                }
+                ArithToken::GtEq => {
+                    if lhs >= rhs { 1 } else { 0 }
+                }
+                ArithToken::Comma => rhs,
+                _ => {
+                    return Err(ExpandError::Arithmetic {
+                        reason: format!("unhandled operator: {:?}", op),
+                    });
+                }
+            };
+        }
+
+        Ok(lhs)
+    }
+}
+
+/// Integer exponentiation via squaring.
+fn pow_i64(mut base: i64, mut exp: u64) -> i64 {
+    let mut result: i64 = 1;
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result = result.wrapping_mul(base);
+        }
+        base = base.wrapping_mul(base);
+        exp >>= 1;
     }
     result
 }
