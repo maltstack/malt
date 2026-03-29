@@ -9,7 +9,7 @@ use std::io::Write as IoWrite;
 use std::path::PathBuf;
 
 use crate::ast::{Command, ListOp, Redirect, RedirectKind, Span, Spanned};
-use crate::env::{Env, LoopControl, Variable};
+use crate::env::{CallFrame, Env, LoopControl, Variable};
 use crate::expander;
 
 // ── ExecResult ─────────────────────────────────────────────────────────
@@ -109,8 +109,11 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
         }
 
         Command::Subshell { body } => {
-            // For now, execute in the same env (true subshell isolation comes later).
-            execute_list(body, source, env)
+            // Clone env so changes in the subshell don't affect the parent.
+            let mut sub_env = env.clone();
+            let result = execute_list(body, source, &mut sub_env);
+            // Propagate exit code but not env changes.
+            result
         }
 
         Command::Pipeline { commands, negated } => {
@@ -118,9 +121,17 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
         }
 
         Command::Background(inner) => {
-            // Scaffold: just execute synchronously, background spawning comes later.
-            let result = execute(inner, source, env);
-            result
+            // Spawn in a thread with a cloned env. Real PID tracking comes with job control.
+            static BG_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+            let bg_id = BG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut bg_env = env.clone();
+            let bg_source = source.to_string();
+            let bg_cmd = inner.as_ref().clone();
+            std::thread::spawn(move || {
+                execute(&bg_cmd, &bg_source, &mut bg_env);
+            });
+            env.set_last_bg_pid(bg_id);
+            ExecResult::success()
         }
 
         Command::Redirected { cmd: inner, redirects } => {
@@ -135,7 +146,66 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
             result
         }
 
-        // Not yet implemented variants return 127.
+        Command::If { condition, then_body, elif_clauses, else_body } => {
+            execute_if(condition, then_body, elif_clauses, else_body.as_deref(), source, env)
+        }
+
+        Command::While { condition, body } => {
+            execute_while_until(condition, body, /* is_until */ false, source, env)
+        }
+
+        Command::Until { condition, body } => {
+            execute_while_until(condition, body, /* is_until */ true, source, env)
+        }
+
+        Command::For { var, words, body } => {
+            execute_for(var, words, body, source, env)
+        }
+
+        Command::ForArith { init, cond, step, body } => {
+            execute_for_arith(init, cond, step, body, source, env)
+        }
+
+        Command::Case { word, items } => {
+            execute_case(word, items, source, env)
+        }
+
+        Command::Select { var, words, body } => {
+            // Select requires interactive input. Stub with code 1.
+            let _ = (var, words, body);
+            ExecResult::failure(1, "mash: select: not yet implemented (requires interactive input)\n")
+        }
+
+        Command::FunctionDef { name, body } => {
+            let func_name = name.text(source).to_string();
+            // Store the full original source so body spans remain valid.
+            env.define_function(func_name, source.to_string(), body.as_ref().clone());
+            ExecResult::success()
+        }
+
+        Command::Arithmetic { expr } => {
+            execute_arithmetic(expr, source, env)
+        }
+
+        Command::Conditional { expr } => {
+            execute_conditional(expr, source, env)
+        }
+
+        Command::Coproc { name, cmd: inner } => {
+            let _ = name;
+            // Coproc requires bidirectional pipe management. Stub.
+            let result = execute(inner, source, env);
+            result
+        }
+
+        Command::Time { posix_format, command } => {
+            let _ = posix_format;
+            // Time: just execute the command (timing output comes later).
+            execute(command, source, env)
+        }
+
+        // Safety: all Command variants are covered above.
+        #[allow(unreachable_patterns)]
         _ => {
             let msg = format!("mash: not yet implemented: {:?}\n", variant_name(&cmd.node));
             ExecResult::failure(127, msg)
@@ -375,7 +445,17 @@ fn execute_simple_with_io(
         }
     }
 
-    // 3. Temporary env assignments.
+    // 3. Handle builtins in pipeline context.
+    if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env) {
+        drop(stdin_file);
+        if let Some(mut pipe_out) = stdout_file {
+            let _ = pipe_out.write_all(&result.stdout);
+            result.stdout = Vec::new();
+        }
+        return result;
+    }
+
+    // 4. Temporary env assignments.
     let mut child_env: Vec<(String, String)> = Vec::new();
     for (key_span, val_span) in env_assigns {
         let key = key_span.text(source).to_string();
@@ -393,7 +473,43 @@ fn execute_simple_with_io(
         Err(err_result) => return err_result,
     };
 
-    // 5. Resolve executable path.
+    // 5. Check for shell functions (in pipeline context).
+    if let Some(func_def) = env.get_function(&cmd_name).cloned() {
+        if env.call_depth() >= 50 {
+            let msg = format!("mash: {cmd_name}: maximum function nesting level exceeded\n");
+            return ExecResult::failure(1, msg);
+        }
+        env.push_scope();
+        let saved = env.save_positional();
+        env.replace_positional_args(&argv);
+        env.push_call(CallFrame {
+            name: cmd_name.clone(),
+            file: String::new(),
+            line: 0,
+        });
+        for (k, v) in &child_env {
+            let _ = env.set(k, Variable::string(v.clone()));
+        }
+        let stored_source = func_def.source.clone();
+        let func_body = func_def.body.clone();
+        let mut result = execute(&func_body, &stored_source, env);
+        if let LoopControl::Return(code) = env.loop_control().clone() {
+            result.exit_code = code;
+            env.set_loop_control(LoopControl::None);
+        }
+        env.pop_call();
+        env.restore_positional(saved);
+        let _ = env.pop_scope();
+        // Write captured stdout to pipeline.
+        drop(stdin_file);
+        if let Some(mut pipe_out) = stdout_file {
+            let _ = pipe_out.write_all(&result.stdout);
+            result.stdout = Vec::new();
+        }
+        return result;
+    }
+
+    // 6. Resolve executable path.
     let program = match find_in_path(&cmd_name, env) {
         Some(p) => p,
         None => {
@@ -402,7 +518,7 @@ fn execute_simple_with_io(
         }
     };
 
-    // 6. Build SpawnConfig with pipeline I/O + redirect overrides.
+    // 7. Build SpawnConfig with pipeline I/O + redirect overrides.
     let mut config = malt_platform::process::SpawnConfig::new(&program);
     config.args = argv.iter().map(|a| a.into()).collect();
 
@@ -532,7 +648,57 @@ fn execute_simple(
         Err(err_result) => return err_result,
     };
 
-    // 5. Resolve the executable path.
+    // 5. Handle special builtins (break, continue, return, true, false, exit, :, echo).
+    if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env) {
+        apply_output_redirects(&mut result, resolved_io);
+        return result;
+    }
+
+    // 6. Check for shell functions.
+    if let Some(func_def) = env.get_function(&cmd_name).cloned() {
+        // Check call depth limit.
+        if env.call_depth() >= 50 {
+            let msg = format!("mash: {cmd_name}: maximum function nesting level exceeded\n");
+            return ExecResult::failure(1, msg);
+        }
+
+        // Push scope, save/set positional params.
+        env.push_scope();
+        let saved = env.save_positional();
+        env.replace_positional_args(&argv);
+        env.push_call(CallFrame {
+            name: cmd_name.clone(),
+            file: String::new(),
+            line: 0,
+        });
+
+        // Apply temporary env assignments in function scope.
+        for (k, v) in &child_env {
+            let _ = env.set(k, Variable::string(v.clone()));
+        }
+
+        // Execute function body using the stored source (spans reference it).
+        let stored_source = func_def.source.clone();
+        let func_body = func_def.body.clone();
+        let mut result = execute(&func_body, &stored_source, env);
+
+        // Handle return.
+        if let LoopControl::Return(code) = env.loop_control().clone() {
+            result.exit_code = code;
+            env.set_loop_control(LoopControl::None);
+        }
+
+        // Restore state.
+        env.pop_call();
+        env.restore_positional(saved);
+        let _ = env.pop_scope();
+
+        // Apply redirects to function output.
+        apply_output_redirects(&mut result, resolved_io);
+        return result;
+    }
+
+    // 6. Resolve the executable path.
     let program = match find_in_path(&cmd_name, env) {
         Some(p) => p,
         None => {
@@ -541,7 +707,7 @@ fn execute_simple(
         }
     };
 
-    // 6. Build SpawnConfig and execute.
+    // 7. Build SpawnConfig and execute.
     let mut config = malt_platform::process::SpawnConfig::new(&program);
     config.args = argv.iter().map(|a| a.into()).collect();
 
@@ -609,6 +775,573 @@ fn execute_simple(
         exit_code,
         stdout: stdout_bytes,
         stderr: stderr_bytes,
+    }
+}
+
+// ── Builtin commands (minimal set for control flow) ───────────────────
+
+/// Try to execute a builtin command. Returns None if not a builtin.
+fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env) -> Option<ExecResult> {
+    match cmd_name {
+        "break" => {
+            let n: usize = argv.first().and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+            env.set_loop_control(LoopControl::Break(n));
+            Some(ExecResult::success())
+        }
+        "continue" => {
+            let n: usize = argv.first().and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+            env.set_loop_control(LoopControl::Continue(n));
+            Some(ExecResult::success())
+        }
+        "return" => {
+            let code: i32 = argv.first().and_then(|s| s.parse().ok()).unwrap_or(env.exit_code());
+            env.set_loop_control(LoopControl::Return(code));
+            Some(ExecResult::with_code(code))
+        }
+        "exit" => {
+            let code: i32 = argv.first().and_then(|s| s.parse().ok()).unwrap_or(env.exit_code());
+            env.request_exit(code);
+            Some(ExecResult::with_code(code))
+        }
+        "true" | ":" => {
+            Some(ExecResult::success())
+        }
+        "false" => {
+            Some(ExecResult::with_code(1))
+        }
+        "echo" => {
+            // Built-in echo to avoid depending on external echo binary.
+            let mut output = argv.join(" ");
+            output.push('\n');
+            Some(ExecResult {
+                exit_code: 0,
+                stdout: output.into_bytes(),
+                stderr: Vec::new(),
+            })
+        }
+        "local" => {
+            // Basic local: set variables in current scope.
+            for arg in argv {
+                if let Some((name, val)) = arg.split_once('=') {
+                    let _ = env.set(name, Variable::string(val));
+                } else {
+                    // Declare without value.
+                    if env.get(arg).is_none() {
+                        let _ = env.set(arg, Variable::string(""));
+                    }
+                }
+            }
+            Some(ExecResult::success())
+        }
+        "eval" => {
+            // Concatenate args and re-parse/execute.
+            let input = argv.join(" ");
+            if input.is_empty() {
+                return Some(ExecResult::success());
+            }
+            match crate::parser::parse(&input) {
+                Ok(cmds) => {
+                    let result = execute_list(&cmds, &input, env);
+                    Some(result)
+                }
+                Err(e) => {
+                    Some(ExecResult::failure(1, format!("mash: eval: {e}\n")))
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+// ── If statement ──────────────────────────────────────────────────────
+
+fn execute_if(
+    condition: &Spanned<Command>,
+    then_body: &[Spanned<Command>],
+    elif_clauses: &[(Spanned<Command>, Vec<Spanned<Command>>)],
+    else_body: Option<&[Spanned<Command>]>,
+    source: &str,
+    env: &mut Env,
+) -> ExecResult {
+    let mut all_stdout = Vec::new();
+    let mut all_stderr = Vec::new();
+
+    // Suppress errexit for condition evaluation (POSIX).
+    let prev_errexit = env.options().errexit;
+    env.options_mut().errexit = false;
+    let cond_result = execute(condition, source, env);
+    env.options_mut().errexit = prev_errexit;
+    all_stdout.extend_from_slice(&cond_result.stdout);
+    all_stderr.extend_from_slice(&cond_result.stderr);
+
+    if cond_result.exit_code == 0 {
+        let mut body_result = execute_list(then_body, source, env);
+        body_result.stdout.splice(0..0, all_stdout);
+        body_result.stderr.splice(0..0, all_stderr);
+        return body_result;
+    }
+
+    // Check elif clauses.
+    for (elif_cond, elif_body) in elif_clauses {
+        env.options_mut().errexit = false;
+        let elif_result = execute(elif_cond, source, env);
+        env.options_mut().errexit = prev_errexit;
+        all_stdout.extend_from_slice(&elif_result.stdout);
+        all_stderr.extend_from_slice(&elif_result.stderr);
+
+        if elif_result.exit_code == 0 {
+            let mut body_result = execute_list(elif_body, source, env);
+            body_result.stdout.splice(0..0, all_stdout);
+            body_result.stderr.splice(0..0, all_stderr);
+            return body_result;
+        }
+    }
+
+    // Else body.
+    if let Some(body) = else_body {
+        let mut body_result = execute_list(body, source, env);
+        body_result.stdout.splice(0..0, all_stdout);
+        body_result.stderr.splice(0..0, all_stderr);
+        return body_result;
+    }
+
+    ExecResult { exit_code: 0, stdout: all_stdout, stderr: all_stderr }
+}
+
+// ── While / Until ─────────────────────────────────────────────────────
+
+fn execute_while_until(
+    condition: &Spanned<Command>,
+    body: &[Spanned<Command>],
+    is_until: bool,
+    source: &str,
+    env: &mut Env,
+) -> ExecResult {
+    let mut all_stdout = Vec::new();
+    let mut all_stderr = Vec::new();
+    let mut last_code = 0i32;
+    let prev_depth = env.loop_depth();
+    env.set_loop_depth(prev_depth + 1);
+
+    loop {
+        if env.exit_requested().is_some() {
+            break;
+        }
+
+        // Suppress errexit for condition.
+        let prev_errexit = env.options().errexit;
+        env.options_mut().errexit = false;
+        let cond_result = execute(condition, source, env);
+        env.options_mut().errexit = prev_errexit;
+
+        let should_continue = if is_until {
+            cond_result.exit_code != 0
+        } else {
+            cond_result.exit_code == 0
+        };
+
+        if !should_continue {
+            break;
+        }
+
+        let result = execute_list(body, source, env);
+        last_code = result.exit_code;
+        all_stdout.extend_from_slice(&result.stdout);
+        all_stderr.extend_from_slice(&result.stderr);
+
+        // Handle loop control.
+        match env.loop_control().clone() {
+            LoopControl::Break(n) => {
+                if n <= 1 {
+                    env.set_loop_control(LoopControl::None);
+                } else {
+                    env.set_loop_control(LoopControl::Break(n - 1));
+                }
+                break;
+            }
+            LoopControl::Continue(n) => {
+                if n <= 1 {
+                    env.set_loop_control(LoopControl::None);
+                    // Continue to next iteration.
+                } else {
+                    env.set_loop_control(LoopControl::Continue(n - 1));
+                    break;
+                }
+            }
+            LoopControl::Return(code) => {
+                last_code = code;
+                break;
+            }
+            LoopControl::None => {}
+        }
+    }
+
+    env.set_loop_depth(prev_depth);
+    ExecResult { exit_code: last_code, stdout: all_stdout, stderr: all_stderr }
+}
+
+// ── For loop ──────────────────────────────────────────────────────────
+
+fn execute_for(
+    var: &Span,
+    words: &[Span],
+    body: &[Spanned<Command>],
+    source: &str,
+    env: &mut Env,
+) -> ExecResult {
+    let var_name = var.text(source);
+
+    // Expand words.
+    let mut expanded_words: Vec<String> = Vec::new();
+    for word_span in words {
+        let word_text = word_span.text(source);
+        match expander::expand_word(word_text, env) {
+            Ok(fields) => expanded_words.extend(fields),
+            Err(e) => return ExecResult::failure(1, format!("mash: {e}\n")),
+        }
+    }
+
+    let mut all_stdout = Vec::new();
+    let mut all_stderr = Vec::new();
+    let mut last_code = 0i32;
+    let prev_depth = env.loop_depth();
+    env.set_loop_depth(prev_depth + 1);
+
+    for word in &expanded_words {
+        if env.exit_requested().is_some() {
+            break;
+        }
+
+        if let Err(e) = env.set(var_name, Variable::string(word.clone())) {
+            return ExecResult::failure(1, format!("mash: {e}\n"));
+        }
+
+        let result = execute_list(body, source, env);
+        last_code = result.exit_code;
+        all_stdout.extend_from_slice(&result.stdout);
+        all_stderr.extend_from_slice(&result.stderr);
+
+        // Handle loop control.
+        match env.loop_control().clone() {
+            LoopControl::Break(n) => {
+                if n <= 1 {
+                    env.set_loop_control(LoopControl::None);
+                } else {
+                    env.set_loop_control(LoopControl::Break(n - 1));
+                }
+                break;
+            }
+            LoopControl::Continue(n) => {
+                if n <= 1 {
+                    env.set_loop_control(LoopControl::None);
+                } else {
+                    env.set_loop_control(LoopControl::Continue(n - 1));
+                    break;
+                }
+            }
+            LoopControl::Return(code) => {
+                last_code = code;
+                break;
+            }
+            LoopControl::None => {}
+        }
+    }
+
+    env.set_loop_depth(prev_depth);
+    ExecResult { exit_code: last_code, stdout: all_stdout, stderr: all_stderr }
+}
+
+// ── For arithmetic ────────────────────────────────────────────────────
+
+fn execute_for_arith(
+    init: &Span,
+    cond: &Span,
+    step: &Span,
+    body: &[Spanned<Command>],
+    source: &str,
+    env: &mut Env,
+) -> ExecResult {
+    let init_text = init.text(source);
+    let cond_text = cond.text(source);
+    let step_text = step.text(source);
+
+    // Evaluate init.
+    if !init_text.trim().is_empty() {
+        if let Err(e) = expander::eval_arithmetic(init_text, env) {
+            return ExecResult::failure(1, format!("mash: {e}\n"));
+        }
+    }
+
+    let mut all_stdout = Vec::new();
+    let mut all_stderr = Vec::new();
+    let mut last_code = 0i32;
+    let prev_depth = env.loop_depth();
+    env.set_loop_depth(prev_depth + 1);
+
+    loop {
+        if env.exit_requested().is_some() {
+            break;
+        }
+
+        // Evaluate condition (empty condition = infinite loop).
+        if !cond_text.trim().is_empty() {
+            match expander::eval_arithmetic(cond_text, env) {
+                Ok(val) => {
+                    if val == 0 {
+                        break;
+                    }
+                }
+                Err(e) => return ExecResult::failure(1, format!("mash: {e}\n")),
+            }
+        }
+
+        let result = execute_list(body, source, env);
+        last_code = result.exit_code;
+        all_stdout.extend_from_slice(&result.stdout);
+        all_stderr.extend_from_slice(&result.stderr);
+
+        // Handle loop control.
+        match env.loop_control().clone() {
+            LoopControl::Break(n) => {
+                if n <= 1 {
+                    env.set_loop_control(LoopControl::None);
+                } else {
+                    env.set_loop_control(LoopControl::Break(n - 1));
+                }
+                break;
+            }
+            LoopControl::Continue(n) => {
+                if n <= 1 {
+                    env.set_loop_control(LoopControl::None);
+                } else {
+                    env.set_loop_control(LoopControl::Continue(n - 1));
+                    break;
+                }
+            }
+            LoopControl::Return(code) => {
+                last_code = code;
+                break;
+            }
+            LoopControl::None => {}
+        }
+
+        // Evaluate step.
+        if !step_text.trim().is_empty() {
+            if let Err(e) = expander::eval_arithmetic(step_text, env) {
+                return ExecResult::failure(1, format!("mash: {e}\n"));
+            }
+        }
+    }
+
+    env.set_loop_depth(prev_depth);
+    ExecResult { exit_code: last_code, stdout: all_stdout, stderr: all_stderr }
+}
+
+// ── Case ──────────────────────────────────────────────────────────────
+
+fn execute_case(
+    word: &Span,
+    items: &[crate::ast::CaseItem],
+    source: &str,
+    env: &mut Env,
+) -> ExecResult {
+    let word_text = word.text(source);
+    let expanded_word = match expander::expand_word_nosplit(word_text, env) {
+        Ok(w) => w,
+        Err(e) => return ExecResult::failure(1, format!("mash: {e}\n")),
+    };
+
+    for item in items {
+        for pattern_span in &item.patterns {
+            let pattern_text = pattern_span.text(source);
+            let expanded_pattern = match expander::expand_word_for_case_pattern(pattern_text, env) {
+                Ok(p) => p,
+                Err(e) => return ExecResult::failure(1, format!("mash: {e}\n")),
+            };
+
+            if expander::shell_pattern_match(&expanded_word, &expanded_pattern) {
+                return execute_list(&item.body, source, env);
+            }
+        }
+    }
+
+    ExecResult::success()
+}
+
+// ── Arithmetic command ────────────────────────────────────────────────
+
+fn execute_arithmetic(expr: &Span, source: &str, env: &mut Env) -> ExecResult {
+    let expr_text = expr.text(source);
+    match expander::eval_arithmetic(expr_text, env) {
+        Ok(val) => {
+            // POSIX: nonzero result → exit 0, zero result → exit 1.
+            if val != 0 {
+                ExecResult::success()
+            } else {
+                ExecResult::with_code(1)
+            }
+        }
+        Err(e) => ExecResult::failure(1, format!("mash: {e}\n")),
+    }
+}
+
+// ── Conditional command ───────────────────────────────────────────────
+
+fn execute_conditional(expr: &Span, source: &str, env: &mut Env) -> ExecResult {
+    let expr_text = expr.text(source).trim();
+
+    // Simple [[ expr ]] evaluation — parse the expression tokens.
+    let tokens: Vec<&str> = shell_tokenize_conditional(expr_text);
+
+    let result = eval_conditional_tokens(&tokens, env);
+    if result { ExecResult::success() } else { ExecResult::with_code(1) }
+}
+
+/// Tokenize a conditional expression, respecting quotes.
+fn shell_tokenize_conditional(s: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Skip whitespace.
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let start = i;
+        // Handle quoted strings.
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            let quote = bytes[i];
+            i += 1;
+            while i < bytes.len() && bytes[i] != quote {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                    i += 1;
+                }
+                i += 1;
+            }
+            if i < bytes.len() {
+                i += 1;
+            }
+        } else {
+            while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' {
+                i += 1;
+            }
+        }
+        tokens.push(&s[start..i]);
+    }
+    tokens
+}
+
+/// Evaluate conditional tokens for [[ ... ]].
+fn eval_conditional_tokens(tokens: &[&str], env: &Env) -> bool {
+    if tokens.is_empty() {
+        return false;
+    }
+
+    // Handle negation.
+    if tokens[0] == "!" {
+        return !eval_conditional_tokens(&tokens[1..], env);
+    }
+
+    // Handle logical operators (lowest precedence, left-to-right).
+    // Find the rightmost && or || at top level.
+    for i in (0..tokens.len()).rev() {
+        if tokens[i] == "&&" {
+            let left = eval_conditional_tokens(&tokens[..i], env);
+            let right = eval_conditional_tokens(&tokens[i+1..], env);
+            return left && right;
+        }
+        if tokens[i] == "||" {
+            let left = eval_conditional_tokens(&tokens[..i], env);
+            let right = eval_conditional_tokens(&tokens[i+1..], env);
+            return left || right;
+        }
+    }
+
+    // Handle parenthesized expressions.
+    if tokens.first() == Some(&"(") && tokens.last() == Some(&")") {
+        return eval_conditional_tokens(&tokens[1..tokens.len()-1], env);
+    }
+
+    // Unary operators.
+    if tokens.len() == 2 {
+        let val = unquote_conditional(tokens[1]);
+        match tokens[0] {
+            "-f" => return std::path::Path::new(&val).is_file(),
+            "-d" => return std::path::Path::new(&val).is_dir(),
+            "-e" => return std::path::Path::new(&val).exists(),
+            "-z" => return val.is_empty(),
+            "-n" => return !val.is_empty(),
+            "-r" => return std::path::Path::new(&val).exists(), // simplified
+            "-w" => return std::path::Path::new(&val).exists(), // simplified
+            "-x" => return std::path::Path::new(&val).exists(), // simplified
+            "-s" => {
+                return std::fs::metadata(&val)
+                    .map(|m| m.len() > 0)
+                    .unwrap_or(false);
+            }
+            _ => {}
+        }
+    }
+
+    // Binary operators.
+    if tokens.len() == 3 {
+        let left = unquote_conditional(tokens[0]);
+        let right = unquote_conditional(tokens[2]);
+        match tokens[1] {
+            "=" | "==" => return left == right,
+            "!=" => return left != right,
+            "-eq" => {
+                let l: i64 = left.parse().unwrap_or(0);
+                let r: i64 = right.parse().unwrap_or(0);
+                return l == r;
+            }
+            "-ne" => {
+                let l: i64 = left.parse().unwrap_or(0);
+                let r: i64 = right.parse().unwrap_or(0);
+                return l != r;
+            }
+            "-lt" => {
+                let l: i64 = left.parse().unwrap_or(0);
+                let r: i64 = right.parse().unwrap_or(0);
+                return l < r;
+            }
+            "-le" => {
+                let l: i64 = left.parse().unwrap_or(0);
+                let r: i64 = right.parse().unwrap_or(0);
+                return l <= r;
+            }
+            "-gt" => {
+                let l: i64 = left.parse().unwrap_or(0);
+                let r: i64 = right.parse().unwrap_or(0);
+                return l > r;
+            }
+            "-ge" => {
+                let l: i64 = left.parse().unwrap_or(0);
+                let r: i64 = right.parse().unwrap_or(0);
+                return l >= r;
+            }
+            _ => {}
+        }
+    }
+
+    // Single token: true if non-empty.
+    if tokens.len() == 1 {
+        let val = unquote_conditional(tokens[0]);
+        return !val.is_empty();
+    }
+
+    false
+}
+
+/// Remove surrounding quotes from a conditional operand.
+fn unquote_conditional(s: &str) -> String {
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+        s[1..s.len()-1].to_string()
+    } else {
+        s.to_string()
     }
 }
 

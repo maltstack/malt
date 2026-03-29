@@ -759,7 +759,7 @@ fn apply_string_ops(val: &str, ops: &str) -> Result<String, ExpandError> {
 // ── Pattern matching ──
 
 /// Shell glob-style pattern matching against a string (not filesystem).
-fn shell_pattern_match(s: &str, pattern: &str) -> bool {
+pub fn shell_pattern_match(s: &str, pattern: &str) -> bool {
     pattern_match_impl(s.as_bytes(), pattern.as_bytes())
 }
 

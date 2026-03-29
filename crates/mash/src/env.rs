@@ -354,6 +354,8 @@ impl Env {
     pub fn set_interactive(&mut self, v: bool) { self.is_interactive = v; }
     pub fn loop_control(&self) -> &LoopControl { &self.loop_control }
     pub fn set_loop_control(&mut self, ctrl: LoopControl) { self.loop_control = ctrl; }
+    pub fn suppress_errexit(&self) -> bool { self.suppress_errexit }
+    pub fn set_suppress_errexit(&mut self, v: bool) { self.suppress_errexit = v; }
     pub fn call_depth(&self) -> usize { self.call_depth }
     pub fn loop_depth(&self) -> usize { self.loop_depth }
     pub fn set_loop_depth(&mut self, depth: usize) { self.loop_depth = depth; }

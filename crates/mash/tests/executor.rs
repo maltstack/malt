@@ -219,3 +219,193 @@ fn pipeline_single_command_no_pipe() {
     let output = run_stdout("echo solo");
     assert!(output.contains("solo"), "got: {output}");
 }
+
+// ── Control flow tests ───────────────────────────────────────────────
+
+#[test]
+fn if_true_branch() {
+    let output = run_stdout("if true; then echo yes; fi");
+    assert!(output.contains("yes"), "got: {output}");
+}
+
+#[test]
+fn if_false_else() {
+    let output = run_stdout("if false; then echo no; else echo yes; fi");
+    assert!(output.contains("yes"), "got: {output}");
+    assert!(!output.contains("no"), "got: {output}");
+}
+
+#[test]
+fn if_elif() {
+    let output = run_stdout("if false; then echo no1; elif true; then echo yes; else echo no2; fi");
+    assert!(output.contains("yes"), "got: {output}");
+    assert!(!output.contains("no1"), "got: {output}");
+    assert!(!output.contains("no2"), "got: {output}");
+}
+
+#[test]
+fn for_loop_words() {
+    let output = run_stdout("for x in hello world; do echo $x; done");
+    assert!(output.contains("hello"), "got: {output}");
+    assert!(output.contains("world"), "got: {output}");
+}
+
+#[test]
+fn while_loop_with_break() {
+    let output = run_stdout("x=0; while true; do x=$((x+1)); echo $x; if true; then break; fi; done");
+    assert!(output.contains("1"), "got: {output}");
+}
+
+#[test]
+fn until_loop() {
+    // until false (i.e., condition fails, so loop continues; but we break immediately)
+    let _output = run_stdout("until false; do echo never; break; done");
+    // 'until false' → condition exit code is 1 (failure) → loop body runs
+    // Wait, that's wrong. 'until' runs body when condition FAILS.
+    // 'until false' → false returns 1 → condition failed → body runs → break
+    let output2 = run_stdout("until true; do echo never; done");
+    // 'until true' → condition succeeds → don't enter body
+    assert!(!output2.contains("never"), "got: {output2}");
+}
+
+#[test]
+fn case_match() {
+    let output = run_stdout("case hello in h*) echo matched;; *) echo no;; esac");
+    assert!(output.contains("matched"), "got: {output}");
+    assert!(!output.contains("no"), "got: {output}");
+}
+
+#[test]
+fn case_default() {
+    let output = run_stdout("case xyz in h*) echo no;; *) echo default;; esac");
+    assert!(output.contains("default"), "got: {output}");
+    assert!(!output.contains("no"), "got: {output}");
+}
+
+#[test]
+fn case_no_match() {
+    let (result, _) = run("case xyz in h*) echo no;; esac");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn function_def_and_call() {
+    let output = run_stdout("greet() { echo hello; }; greet");
+    assert!(output.contains("hello"), "got: {output}");
+}
+
+#[test]
+fn function_with_args() {
+    let output = run_stdout("f() { echo $1 $2; }; f hello world");
+    assert!(output.contains("hello world"), "got: {output}");
+}
+
+#[test]
+fn function_return() {
+    let (result, _) = run("f() { return 42; }; f");
+    assert_eq!(result.exit_code, 42);
+}
+
+#[test]
+fn subshell_isolation() {
+    // Variable set in subshell shouldn't affect parent.
+    let output = run_stdout("x=before; (x=inside; echo $x); echo $x");
+    assert!(output.contains("inside"), "got: {output}");
+    assert!(output.contains("before"), "got: {output}");
+}
+
+#[test]
+fn arithmetic_command_nonzero() {
+    let (result, _) = run("(( 1 + 1 ))");
+    assert_eq!(result.exit_code, 0, "nonzero result should be success");
+}
+
+#[test]
+fn arithmetic_command_zero() {
+    let (result, _) = run("(( 0 ))");
+    assert_ne!(result.exit_code, 0, "zero result should be failure");
+}
+
+#[test]
+fn brace_group() {
+    let output = run_stdout("{ echo a; echo b; }");
+    assert!(output.contains("a"), "got: {output}");
+    assert!(output.contains("b"), "got: {output}");
+}
+
+#[test]
+fn break_in_for() {
+    let output = run_stdout("for x in a b c; do if echo $x; then break; fi; done");
+    assert!(output.contains("a"), "got: {output}");
+    assert!(!output.contains("b"), "got: {output}");
+}
+
+#[test]
+fn continue_in_for() {
+    let output = run_stdout("for x in a b c; do echo start_$x; continue; echo end_$x; done");
+    assert!(output.contains("start_a"), "got: {output}");
+    assert!(output.contains("start_b"), "got: {output}");
+    assert!(output.contains("start_c"), "got: {output}");
+    assert!(!output.contains("end_"), "got: {output}");
+}
+
+#[test]
+fn nested_loops_break() {
+    // break 2 should exit both loops
+    let output = run_stdout("for i in 1 2; do for j in a b; do echo $i$j; break 2; done; done");
+    assert!(output.contains("1a"), "got: {output}");
+    assert!(!output.contains("1b"), "got: {output}");
+    assert!(!output.contains("2"), "got: {output}");
+}
+
+#[test]
+fn true_builtin() {
+    let (result, _) = run("true");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn false_builtin() {
+    let (result, _) = run("false");
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn colon_builtin() {
+    let (result, _) = run(":");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn builtin_echo() {
+    // Built-in echo should work identically to external echo.
+    let output = run_stdout("echo hello world");
+    assert!(output.contains("hello world"), "got: {output}");
+}
+
+#[test]
+fn for_loop_variable_persists() {
+    let output = run_stdout("for x in last; do true; done; echo $x");
+    assert!(output.contains("last"), "got: {output}");
+}
+
+#[test]
+fn function_scope_positional_restore() {
+    // After function call, positional params should be restored.
+    let output = run_stdout("f() { echo $1; }; f inner; echo done");
+    assert!(output.contains("inner"), "got: {output}");
+    assert!(output.contains("done"), "got: {output}");
+}
+
+#[test]
+fn if_condition_does_not_trigger_errexit() {
+    // With errexit, a failing condition in 'if' should not abort.
+    let mut env = Env::from_os();
+    env.options_mut().errexit = true;
+    let input = "if false; then echo no; else echo yes; fi; echo after";
+    let cmds = parse(input).expect("parse failed");
+    let result = execute_list(&cmds, input, &mut env);
+    let output = String::from_utf8_lossy(&result.stdout);
+    assert!(output.contains("yes"), "got: {output}");
+    assert!(output.contains("after"), "got: {output}");
+}
