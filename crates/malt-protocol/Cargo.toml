@@ -1,0 +1,11 @@
+[package]
+name = "malt-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "VNP message types, wire framing, and protocol primitives for MALT"
+
+[dependencies]
+vexil-runtime = { path = "../../../vexil-lang/crates/vexil-runtime" }
+thiserror = "2"

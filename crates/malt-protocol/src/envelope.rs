@@ -1,0 +1,1 @@
+//! Envelope encode/decode helpers.
