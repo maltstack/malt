@@ -431,6 +431,10 @@ impl Env {
         &self.aliases
     }
 
+    pub fn clear_aliases(&mut self) {
+        self.aliases.clear();
+    }
+
     // ── Traps ──
 
     pub fn set_trap(&mut self, signal: String, action: TrapAction) {

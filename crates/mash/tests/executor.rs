@@ -796,3 +796,210 @@ fn command_capital_v_verbose() {
     let output = run_stdout("command -V echo");
     assert!(output.contains("builtin"), "got: {output}");
 }
+
+// ── read builtin ────────────────────────────────────────────────────
+
+#[test]
+fn builtin_read_from_herestring() {
+    let output = run_stdout("read VAR <<< 'hello'; echo $VAR");
+    assert!(output.contains("hello"), "got: {output}");
+}
+
+#[test]
+fn builtin_read_default_reply() {
+    let output = run_stdout("read <<< 'world'; echo $REPLY");
+    assert!(output.contains("world"), "got: {output}");
+}
+
+#[test]
+fn builtin_read_eof_returns_1() {
+    // Empty here-string still has a newline, so read succeeds.
+    // Use /dev/null for true EOF.
+    let (result, _) = run("read VAR < /dev/null");
+    // On Windows this may fail differently, but we test the concept.
+    // The exit code should be non-zero (1) on EOF.
+    assert!(result.exit_code != 0 || cfg!(windows), "expected non-zero on EOF");
+}
+
+// ── printf builtin ──────────────────────────────────────────────────
+
+#[test]
+fn builtin_printf_string() {
+    let output = run_stdout("printf '%s world' hello");
+    assert_eq!(output, "hello world");
+}
+
+#[test]
+fn builtin_printf_decimal() {
+    let output = run_stdout("printf '%d' 42");
+    assert_eq!(output, "42");
+}
+
+#[test]
+fn builtin_printf_newline() {
+    let output = run_stdout("printf 'hello\\n'");
+    assert_eq!(output, "hello\n");
+}
+
+#[test]
+fn builtin_printf_reuse_format() {
+    let output = run_stdout("printf '%s ' a b c");
+    assert_eq!(output, "a b c ");
+}
+
+#[test]
+fn builtin_printf_octal() {
+    let output = run_stdout("printf '%o' 8");
+    assert_eq!(output, "10");
+}
+
+#[test]
+fn builtin_printf_hex_lower() {
+    let output = run_stdout("printf '%x' 255");
+    assert_eq!(output, "ff");
+}
+
+#[test]
+fn builtin_printf_hex_upper() {
+    let output = run_stdout("printf '%X' 255");
+    assert_eq!(output, "FF");
+}
+
+#[test]
+fn builtin_printf_literal_percent() {
+    let output = run_stdout("printf '100%%'");
+    assert_eq!(output, "100%");
+}
+
+#[test]
+fn builtin_printf_char() {
+    let output = run_stdout("printf '%c' hello");
+    assert_eq!(output, "h");
+}
+
+#[test]
+fn builtin_printf_no_trailing_newline() {
+    let output = run_stdout("printf 'no newline'");
+    assert_eq!(output, "no newline");
+}
+
+// ── alias / unalias builtins ────────────────────────────────────────
+
+#[test]
+fn builtin_alias_set_and_list() {
+    let output = run_stdout("alias ll='ls -la'; alias ll");
+    assert!(output.contains("ls -la"), "got: {output}");
+}
+
+#[test]
+fn builtin_alias_list_all() {
+    let output = run_stdout("alias foo='bar'; alias baz='qux'; alias");
+    assert!(output.contains("foo"), "got: {output}");
+    assert!(output.contains("baz"), "got: {output}");
+}
+
+#[test]
+fn builtin_alias_not_found() {
+    let (result, _) = run("alias nonexistent_alias_xyz");
+    assert_ne!(result.exit_code, 0);
+}
+
+#[test]
+fn builtin_unalias() {
+    let (_, env) = run("alias foo='bar'; unalias foo");
+    assert!(env.get_alias("foo").is_none());
+}
+
+#[test]
+fn builtin_unalias_all() {
+    let (_, env) = run("alias a='1'; alias b='2'; unalias -a");
+    assert!(env.aliases().is_empty());
+}
+
+#[test]
+fn builtin_unalias_not_found() {
+    let (result, _) = run("unalias nonexistent_alias_xyz");
+    assert_ne!(result.exit_code, 0);
+}
+
+// ── getopts builtin ────────────────────────────────────────────────
+
+#[test]
+fn builtin_getopts_basic() {
+    let output = run_stdout("set -- -a -b; while getopts ab opt; do printf '%s ' $opt; done");
+    assert!(output.contains("a"), "got: {output}");
+    assert!(output.contains("b"), "got: {output}");
+}
+
+#[test]
+fn builtin_getopts_with_arg() {
+    let output = run_stdout("set -- -f myfile; getopts f: opt; echo $opt $OPTARG");
+    assert!(output.contains("f"), "got: {output}");
+    assert!(output.contains("myfile"), "got: {output}");
+}
+
+#[test]
+fn builtin_getopts_done_returns_1() {
+    let (result, _) = run("set -- noopt; getopts a opt");
+    assert_ne!(result.exit_code, 0);
+}
+
+// ── umask builtin ───────────────────────────────────────────────────
+
+#[test]
+fn builtin_umask_display() {
+    let output = run_stdout("umask");
+    assert!(!output.trim().is_empty(), "got: {output}");
+}
+
+#[test]
+fn builtin_umask_symbolic() {
+    let output = run_stdout("umask -S");
+    assert!(output.contains("u="), "got: {output}");
+    assert!(output.contains("g="), "got: {output}");
+    assert!(output.contains("o="), "got: {output}");
+}
+
+#[test]
+fn builtin_umask_set_valid() {
+    let (result, _) = run("umask 0077");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn builtin_umask_set_invalid() {
+    let (result, _) = run("umask xyz");
+    assert_ne!(result.exit_code, 0);
+}
+
+// ── type builtin recognizes new builtins ────────────────────────────
+
+#[test]
+fn type_read_is_builtin() {
+    let output = run_stdout("type -t read");
+    assert_eq!(output.trim(), "builtin");
+}
+
+#[test]
+fn type_printf_is_builtin() {
+    let output = run_stdout("type -t printf");
+    assert_eq!(output.trim(), "builtin");
+}
+
+#[test]
+fn type_alias_is_builtin() {
+    let output = run_stdout("type -t alias");
+    assert_eq!(output.trim(), "builtin");
+}
+
+#[test]
+fn type_getopts_is_builtin() {
+    let output = run_stdout("type -t getopts");
+    assert_eq!(output.trim(), "builtin");
+}
+
+#[test]
+fn type_umask_is_builtin() {
+    let output = run_stdout("type -t umask");
+    assert_eq!(output.trim(), "builtin");
+}

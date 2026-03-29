@@ -437,7 +437,7 @@ fn execute_simple_with_io(
     env_assigns: &[(Span, Span)],
     source: &str,
     env: &mut Env,
-    stdin_file: Option<std::fs::File>,
+    mut stdin_file: Option<std::fs::File>,
     stdout_file: Option<std::fs::File>,
 ) -> ExecResult {
     // 1. Expand command name.
@@ -463,8 +463,7 @@ fn execute_simple_with_io(
     }
 
     // 3. Handle builtins in pipeline context.
-    if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env) {
-        drop(stdin_file);
+    if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env, stdin_file.take()) {
         if let Some(mut pipe_out) = stdout_file {
             let _ = pipe_out.write_all(&result.stdout);
             result.stdout = Vec::new();
@@ -660,13 +659,13 @@ fn execute_simple(
     }
 
     // 4. Resolve redirects.
-    let resolved_io = match resolve_redirects(redirects, source, env) {
+    let mut resolved_io = match resolve_redirects(redirects, source, env) {
         Ok(io) => io,
         Err(err_result) => return err_result,
     };
 
     // 5. Handle special builtins (break, continue, return, true, false, exit, :, echo).
-    if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env) {
+    if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env, resolved_io.stdin.take()) {
         apply_output_redirects(&mut result, resolved_io);
         return result;
     }
@@ -798,7 +797,7 @@ fn execute_simple(
 // ── Builtin commands (minimal set for control flow) ───────────────────
 
 /// Try to execute a builtin command. Returns None if not a builtin.
-fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env) -> Option<ExecResult> {
+fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_file: Option<std::fs::File>) -> Option<ExecResult> {
     match cmd_name {
         "break" => {
             let n: usize = argv.first().and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
@@ -1250,6 +1249,36 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env) -> Option
             Some(builtin_command(argv, env))
         }
 
+        // ── read ─────────────────────────────────────────────────────
+        "read" => {
+            Some(builtin_read(argv, env, stdin_file))
+        }
+
+        // ── printf ───────────────────────────────────────────────────
+        "printf" => {
+            Some(builtin_printf(argv))
+        }
+
+        // ── alias ────────────────────────────────────────────────────
+        "alias" => {
+            Some(builtin_alias(argv, env))
+        }
+
+        // ── unalias ──────────────────────────────────────────────────
+        "unalias" => {
+            Some(builtin_unalias(argv, env))
+        }
+
+        // ── getopts ─────────────────────────────────────────────────
+        "getopts" => {
+            Some(builtin_getopts(argv, env))
+        }
+
+        // ── umask ────────────────────────────────────────────────────
+        "umask" => {
+            Some(builtin_umask(argv))
+        }
+
         _ => None,
     }
 }
@@ -1574,6 +1603,7 @@ const BUILTIN_NAMES: &[&str] = &[
     "cd", "pwd",
     "test", "[",
     "trap", "type", "hash", "command",
+    "read", "printf", "alias", "unalias", "getopts", "umask",
 ];
 
 fn builtin_type(argv: &[String], env: &Env) -> ExecResult {
@@ -1750,7 +1780,7 @@ fn builtin_command(argv: &[String], env: &mut Env) -> ExecResult {
 
     // Try builtins (but not `command` itself to avoid infinite recursion).
     if cmd_name != "command" {
-        if let Some(result) = try_execute_builtin(cmd_name, cmd_argv, env) {
+        if let Some(result) = try_execute_builtin(cmd_name, cmd_argv, env, None) {
             return result;
         }
     }
@@ -1797,6 +1827,542 @@ fn builtin_command(argv: &[String], env: &mut Env) -> ExecResult {
     } else {
         ExecResult::failure(127, format!("mash: {cmd_name}: command not found\n"))
     }
+}
+
+// ── read implementation ──────────────────────────────────────────────
+
+fn builtin_read(argv: &[String], env: &mut Env, stdin_file: Option<std::fs::File>) -> ExecResult {
+    use std::io::BufRead;
+
+    // Parse options.
+    let mut raw_mode = false;
+    let mut var_names: Vec<&str> = Vec::new();
+
+    for arg in argv {
+        if arg == "-r" {
+            raw_mode = true;
+        } else {
+            var_names.push(arg);
+        }
+    }
+
+    // Default variable is REPLY.
+    if var_names.is_empty() {
+        var_names.push("REPLY");
+    }
+
+    // Read one line from stdin_file or real stdin.
+    let line = if let Some(file) = stdin_file {
+        let mut reader = std::io::BufReader::new(file);
+        let mut buf = String::new();
+        match reader.read_line(&mut buf) {
+            Ok(0) => return ExecResult::with_code(1), // EOF
+            Ok(_) => buf,
+            Err(_) => return ExecResult::with_code(1),
+        }
+    } else {
+        let stdin = std::io::stdin();
+        let mut buf = String::new();
+        match stdin.lock().read_line(&mut buf) {
+            Ok(0) => return ExecResult::with_code(1), // EOF
+            Ok(_) => buf,
+            Err(_) => return ExecResult::with_code(1),
+        }
+    };
+
+    // Strip trailing newline.
+    let mut line = line.trim_end_matches('\n').trim_end_matches('\r').to_string();
+
+    // Process backslash continuation if not in raw mode.
+    if !raw_mode {
+        line = line.replace("\\n", "\n")
+            .replace("\\t", "\t")
+            .replace("\\\\", "\\");
+    }
+
+    // Split on IFS (default: space/tab/newline).
+    let ifs = env.get_str("IFS");
+    let ifs = if ifs.is_empty() { " \t\n" } else { ifs };
+
+    let fields: Vec<&str> = if var_names.len() == 1 {
+        vec![line.trim_matches(|c: char| ifs.contains(c))]
+    } else {
+        split_on_ifs(&line, ifs, var_names.len())
+    };
+
+    // Assign to variables.
+    for (i, name) in var_names.iter().enumerate() {
+        let value = if i < fields.len() {
+            fields[i].to_string()
+        } else {
+            String::new()
+        };
+        let _ = env.set(name, Variable::string(value));
+    }
+
+    ExecResult::success()
+}
+
+/// Split a string on IFS characters into at most `max_fields` fields.
+/// The last field gets the remainder of the line.
+fn split_on_ifs<'a>(input: &'a str, ifs: &str, max_fields: usize) -> Vec<&'a str> {
+    let mut fields = Vec::new();
+    let trimmed = input.trim_matches(|c: char| ifs.contains(c));
+    if trimmed.is_empty() {
+        return fields;
+    }
+
+    let mut start = 0;
+    let mut in_delim = false;
+
+    for (i, ch) in trimmed.char_indices() {
+        if ifs.contains(ch) {
+            if !in_delim {
+                if fields.len() + 1 >= max_fields {
+                    // Last field gets remainder.
+                    break;
+                }
+                fields.push(&trimmed[start..i]);
+                in_delim = true;
+            }
+        } else {
+            if in_delim {
+                start = i;
+                in_delim = false;
+            }
+        }
+    }
+
+    // Push the remainder as the last field.
+    if start < trimmed.len() {
+        fields.push(&trimmed[start..]);
+    }
+
+    fields
+}
+
+// ── printf implementation ───────────────────────────────────────────
+
+fn builtin_printf(argv: &[String]) -> ExecResult {
+    if argv.is_empty() {
+        return ExecResult::failure(1, "mash: printf: usage: printf format [arguments]\n");
+    }
+
+    let format = &argv[0];
+    let args = &argv[1..];
+    let mut output = String::new();
+
+    // POSIX: reuse format string if more args than specifiers.
+    let mut arg_idx = 0;
+    let mut did_consume = true;
+
+    while did_consume {
+        did_consume = false;
+        let mut chars = format.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '%' {
+                match chars.peek() {
+                    Some('%') => {
+                        chars.next();
+                        output.push('%');
+                    }
+                    Some('s') => {
+                        chars.next();
+                        let val = args.get(arg_idx).map(|s| s.as_str()).unwrap_or("");
+                        output.push_str(val);
+                        arg_idx += 1;
+                        did_consume = true;
+                    }
+                    Some('d') | Some('i') => {
+                        chars.next();
+                        let val = args.get(arg_idx).map(|s| s.as_str()).unwrap_or("0");
+                        let num: i64 = val.parse().unwrap_or(0);
+                        output.push_str(&num.to_string());
+                        arg_idx += 1;
+                        did_consume = true;
+                    }
+                    Some('o') => {
+                        chars.next();
+                        let val = args.get(arg_idx).map(|s| s.as_str()).unwrap_or("0");
+                        let num: i64 = val.parse().unwrap_or(0);
+                        output.push_str(&format!("{:o}", num));
+                        arg_idx += 1;
+                        did_consume = true;
+                    }
+                    Some('x') => {
+                        chars.next();
+                        let val = args.get(arg_idx).map(|s| s.as_str()).unwrap_or("0");
+                        let num: i64 = val.parse().unwrap_or(0);
+                        output.push_str(&format!("{:x}", num));
+                        arg_idx += 1;
+                        did_consume = true;
+                    }
+                    Some('X') => {
+                        chars.next();
+                        let val = args.get(arg_idx).map(|s| s.as_str()).unwrap_or("0");
+                        let num: i64 = val.parse().unwrap_or(0);
+                        output.push_str(&format!("{:X}", num));
+                        arg_idx += 1;
+                        did_consume = true;
+                    }
+                    Some('c') => {
+                        chars.next();
+                        let val = args.get(arg_idx).map(|s| s.as_str()).unwrap_or("");
+                        if let Some(c) = val.chars().next() {
+                            output.push(c);
+                        }
+                        arg_idx += 1;
+                        did_consume = true;
+                    }
+                    Some('b') => {
+                        chars.next();
+                        let val = args.get(arg_idx).map(|s| s.as_str()).unwrap_or("");
+                        output.push_str(&interpret_backslash_escapes(val));
+                        arg_idx += 1;
+                        did_consume = true;
+                    }
+                    _ => {
+                        // Unknown specifier — output literally.
+                        output.push('%');
+                    }
+                }
+            } else if ch == '\\' {
+                // Interpret backslash escapes in the format string.
+                match chars.peek() {
+                    Some('n') => { chars.next(); output.push('\n'); }
+                    Some('t') => { chars.next(); output.push('\t'); }
+                    Some('r') => { chars.next(); output.push('\r'); }
+                    Some('\\') => { chars.next(); output.push('\\'); }
+                    Some('0') => {
+                        chars.next();
+                        // Read up to 3 octal digits.
+                        let mut octal = String::new();
+                        for _ in 0..3 {
+                            if let Some(&c) = chars.peek() {
+                                if c.is_ascii_digit() && c != '8' && c != '9' {
+                                    octal.push(c);
+                                    chars.next();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        let val = u8::from_str_radix(&octal, 8).unwrap_or(0);
+                        output.push(val as char);
+                    }
+                    Some('x') => {
+                        chars.next();
+                        // Read up to 2 hex digits.
+                        let mut hex = String::new();
+                        for _ in 0..2 {
+                            if let Some(&c) = chars.peek() {
+                                if c.is_ascii_hexdigit() {
+                                    hex.push(c);
+                                    chars.next();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        if !hex.is_empty() {
+                            let val = u8::from_str_radix(&hex, 16).unwrap_or(0);
+                            output.push(val as char);
+                        }
+                    }
+                    _ => {
+                        output.push('\\');
+                    }
+                }
+            } else {
+                output.push(ch);
+            }
+        }
+
+        // Only loop if we consumed args AND there are still more args.
+        if !did_consume || arg_idx >= args.len() {
+            break;
+        }
+    }
+
+    ExecResult {
+        exit_code: 0,
+        stdout: output.into_bytes(),
+        stderr: Vec::new(),
+    }
+}
+
+/// Interpret backslash escape sequences in a string (for %b format).
+fn interpret_backslash_escapes(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.peek() {
+                Some('n') => { chars.next(); result.push('\n'); }
+                Some('t') => { chars.next(); result.push('\t'); }
+                Some('r') => { chars.next(); result.push('\r'); }
+                Some('\\') => { chars.next(); result.push('\\'); }
+                Some('a') => { chars.next(); result.push('\x07'); }
+                Some('b') => { chars.next(); result.push('\x08'); }
+                Some('f') => { chars.next(); result.push('\x0C'); }
+                Some('v') => { chars.next(); result.push('\x0B'); }
+                Some('0') => {
+                    chars.next();
+                    let mut octal = String::new();
+                    for _ in 0..3 {
+                        if let Some(&c) = chars.peek() {
+                            if c.is_ascii_digit() && c != '8' && c != '9' {
+                                octal.push(c);
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    let val = u8::from_str_radix(&octal, 8).unwrap_or(0);
+                    result.push(val as char);
+                }
+                _ => {
+                    result.push('\\');
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+// ── alias implementation ────────────────────────────────────────────
+
+fn builtin_alias(argv: &[String], env: &mut Env) -> ExecResult {
+    // No args: list all aliases.
+    if argv.is_empty() {
+        let aliases = env.aliases();
+        let mut lines: Vec<String> = aliases.iter()
+            .map(|(k, v)| format!("alias {}='{}'\n", k, v))
+            .collect();
+        lines.sort_unstable();
+        return ExecResult {
+            exit_code: 0,
+            stdout: lines.concat().into_bytes(),
+            stderr: Vec::new(),
+        };
+    }
+
+    let mut exit_code = 0;
+    let mut stdout = String::new();
+    let mut stderr = Vec::new();
+
+    for arg in argv {
+        if let Some((name, value)) = arg.split_once('=') {
+            // Set alias.
+            env.set_alias(name.to_string(), value.to_string());
+        } else {
+            // Show specific alias.
+            match env.get_alias(arg) {
+                Some(val) => {
+                    stdout.push_str(&format!("alias {}='{}'\n", arg, val));
+                }
+                None => {
+                    stderr.extend_from_slice(
+                        format!("mash: alias: {}: not found\n", arg).as_bytes(),
+                    );
+                    exit_code = 1;
+                }
+            }
+        }
+    }
+
+    ExecResult {
+        exit_code,
+        stdout: stdout.into_bytes(),
+        stderr,
+    }
+}
+
+// ── unalias implementation ──────────────────────────────────────────
+
+fn builtin_unalias(argv: &[String], env: &mut Env) -> ExecResult {
+    if argv.is_empty() {
+        return ExecResult::failure(1, "mash: unalias: usage: unalias [-a] name [name ...]\n");
+    }
+
+    // unalias -a: remove all.
+    if argv.iter().any(|a| a == "-a") {
+        env.clear_aliases();
+        return ExecResult::success();
+    }
+
+    let mut exit_code = 0;
+    let mut stderr = Vec::new();
+
+    for name in argv {
+        if !env.unset_alias(name) {
+            stderr.extend_from_slice(
+                format!("mash: unalias: {}: not found\n", name).as_bytes(),
+            );
+            exit_code = 1;
+        }
+    }
+
+    ExecResult {
+        exit_code,
+        stdout: Vec::new(),
+        stderr,
+    }
+}
+
+// ── getopts implementation ──────────────────────────────────────────
+
+fn builtin_getopts(argv: &[String], env: &mut Env) -> ExecResult {
+    // getopts OPTSTRING VAR [ARGS...]
+    if argv.len() < 2 {
+        return ExecResult::failure(1, "mash: getopts: usage: getopts optstring name [arg ...]\n");
+    }
+
+    let optstring = &argv[0];
+    let varname = &argv[1];
+
+    // If additional args provided, use those; otherwise use positional params.
+    let args: Vec<String> = if argv.len() > 2 {
+        argv[2..].to_vec()
+    } else {
+        let count: usize = env.get_str("#").parse().unwrap_or(0);
+        (1..=count).map(|i| env.get_str(&i.to_string()).to_string()).collect()
+    };
+
+    let silent = optstring.starts_with(':');
+    let opts = if silent { &optstring[1..] } else { optstring.as_str() };
+
+    // Get current OPTIND (1-based index into args).
+    let optind: usize = env.get_str("OPTIND").parse().unwrap_or(1);
+    let idx = optind.saturating_sub(1); // Convert to 0-based.
+
+    if idx >= args.len() {
+        let _ = env.set(varname, Variable::string("?"));
+        return ExecResult::with_code(1);
+    }
+
+    let current_arg = &args[idx];
+
+    // Not an option (doesn't start with -) or is just "-".
+    if !current_arg.starts_with('-') || current_arg == "-" {
+        let _ = env.set(varname, Variable::string("?"));
+        return ExecResult::with_code(1);
+    }
+
+    // "--" signals end of options.
+    if current_arg == "--" {
+        let _ = env.set(varname, Variable::string("?"));
+        let _ = env.set("OPTIND", Variable::string((optind + 1).to_string()));
+        return ExecResult::with_code(1);
+    }
+
+    // Get the option character (skip leading '-').
+    // We handle one option per invocation. For multi-char args like "-abc",
+    // we process one char per call using an internal offset.
+    let opt_chars: Vec<char> = current_arg[1..].chars().collect();
+
+    // Use a sub-index for multi-char option groups (stored as part of OPTIND).
+    // For simplicity, we process the first unprocessed char.
+    // POSIX getopts processes one option per call.
+    let opt_char = opt_chars[0];
+
+    // Look up in optstring.
+    let pos = opts.find(opt_char);
+
+    match pos {
+        Some(p) => {
+            let needs_arg = opts.get(p + 1..p + 2) == Some(":");
+
+            if needs_arg {
+                // Check if argument follows in the same word.
+                if opt_chars.len() > 1 {
+                    let optarg: String = opt_chars[1..].iter().collect();
+                    let _ = env.set("OPTARG", Variable::string(optarg));
+                    let _ = env.set("OPTIND", Variable::string((optind + 1).to_string()));
+                } else if idx + 1 < args.len() {
+                    // Next arg is the option argument.
+                    let _ = env.set("OPTARG", Variable::string(args[idx + 1].clone()));
+                    let _ = env.set("OPTIND", Variable::string((optind + 2).to_string()));
+                } else {
+                    // Missing argument.
+                    if silent {
+                        let _ = env.set(varname, Variable::string(":"));
+                        let _ = env.set("OPTARG", Variable::string(opt_char.to_string()));
+                    } else {
+                        let _ = env.set(varname, Variable::string("?"));
+                        return ExecResult::failure(0,
+                            format!("mash: getopts: option requires an argument -- {opt_char}\n"));
+                    }
+                    let _ = env.set("OPTIND", Variable::string((optind + 1).to_string()));
+                    return ExecResult::success();
+                }
+            } else {
+                // No argument needed. Advance OPTIND based on whether more chars remain.
+                if opt_chars.len() > 1 {
+                    // Multi-char group — for simplicity we only handle single-char options
+                    // per invocation. Advance OPTIND.
+                    let _ = env.set("OPTIND", Variable::string((optind + 1).to_string()));
+                } else {
+                    let _ = env.set("OPTIND", Variable::string((optind + 1).to_string()));
+                }
+                let _ = env.unset("OPTARG");
+            }
+
+            let _ = env.set(varname, Variable::string(opt_char.to_string()));
+            ExecResult::success()
+        }
+        None => {
+            // Unknown option.
+            if silent {
+                let _ = env.set(varname, Variable::string("?"));
+                let _ = env.set("OPTARG", Variable::string(opt_char.to_string()));
+            } else {
+                let _ = env.set(varname, Variable::string("?"));
+                let _ = env.unset("OPTARG");
+            }
+            let _ = env.set("OPTIND", Variable::string((optind + 1).to_string()));
+            ExecResult::success()
+        }
+    }
+}
+
+// ── umask implementation (stub) ─────────────────────────────────────
+
+/// Stub umask builtin. Accepts and validates arguments but uses a default
+/// value on platforms without direct umask support.
+/// TODO: delegate to malt-platform when OS abstraction layer exposes umask.
+fn builtin_umask(argv: &[String]) -> ExecResult {
+    if argv.is_empty() {
+        return ExecResult {
+            exit_code: 0,
+            stdout: b"0022\n".to_vec(),
+            stderr: Vec::new(),
+        };
+    }
+
+    if argv.len() == 1 && argv[0] == "-S" {
+        return ExecResult {
+            exit_code: 0,
+            stdout: b"u=rwx,g=rx,o=rx\n".to_vec(),
+            stderr: Vec::new(),
+        };
+    }
+
+    // Validate the octal number but don't actually set (stub).
+    if let Some(val_str) = argv.last() {
+        if val_str != "-S" {
+            if u32::from_str_radix(val_str, 8).is_err() {
+                return ExecResult::failure(1,
+                    format!("mash: umask: {val_str}: invalid octal number\n"));
+            }
+        }
+    }
+
+    ExecResult::success()
 }
 
 // ── If statement ──────────────────────────────────────────────────────
