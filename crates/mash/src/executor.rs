@@ -987,6 +987,235 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env) -> Option
                 }),
             }
         }
+        "export" => {
+            // -p or no args: list all exported variables.
+            let print_only = argv.is_empty() || (argv.len() == 1 && argv[0] == "-p");
+            if print_only {
+                let exported = env.exported_vars();
+                let mut lines: Vec<String> = exported
+                    .iter()
+                    .map(|(k, v)| {
+                        if v.is_empty() {
+                            format!("export {}\n", k)
+                        } else {
+                            format!("export {}=\"{}\"\n", k, v)
+                        }
+                    })
+                    .collect();
+                lines.sort_unstable();
+                return Some(ExecResult {
+                    exit_code: 0,
+                    stdout: lines.concat().into_bytes(),
+                    stderr: Vec::new(),
+                });
+            }
+
+            let mut exit_code = 0;
+            let mut errors = Vec::new();
+            for (i, arg) in argv.iter().enumerate() {
+                if arg == "-p" || arg == "-n" {
+                    continue;
+                }
+                if let Some((name, val)) = arg.split_once('=') {
+                    if env.get(name).is_some_and(|v| v.readonly) {
+                        errors.extend_from_slice(
+                            format!("mash: export: {}: readonly variable\n", name).as_bytes(),
+                        );
+                        exit_code = 1;
+                        continue;
+                    }
+                    let var = Variable::exported_string(val);
+                    let _ = env.set(name, var);
+                } else {
+                    // Check if previous arg was -n (un-export).
+                    if i > 0 && argv[i - 1] == "-n" {
+                        env.mark_unexported(arg);
+                    } else if env.get(arg).is_some() {
+                        env.mark_exported(arg);
+                    } else {
+                        // Export unset variable with empty value.
+                        let _ = env.set(arg, Variable::exported_string(""));
+                    }
+                }
+            }
+
+            Some(ExecResult {
+                exit_code,
+                stdout: Vec::new(),
+                stderr: errors,
+            })
+        }
+        "unset" => {
+            let mut unset_func = false;
+            let mut names = &argv[..];
+            if let Some(first) = argv.first() {
+                if first == "-f" {
+                    unset_func = true;
+                    names = &argv[1..];
+                } else if first == "-v" {
+                    names = &argv[1..];
+                }
+            }
+
+            let mut exit_code = 0;
+            let mut errors = Vec::new();
+            for name in names {
+                if unset_func {
+                    env.unset_function(name);
+                } else {
+                    match env.unset(name) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            errors.extend_from_slice(
+                                format!("mash: unset: {}\n", e).as_bytes(),
+                            );
+                            exit_code = 1;
+                        }
+                    }
+                }
+            }
+
+            Some(ExecResult {
+                exit_code,
+                stdout: Vec::new(),
+                stderr: errors,
+            })
+        }
+        "readonly" => {
+            // -p or no args: list all readonly variables.
+            let print_only = argv.is_empty() || (argv.len() == 1 && argv[0] == "-p");
+            if print_only {
+                let readonly = env.readonly_vars();
+                let mut lines: Vec<String> = readonly
+                    .iter()
+                    .map(|(k, v)| format!("declare -r {}=\"{}\"\n", k, v))
+                    .collect();
+                lines.sort_unstable();
+                return Some(ExecResult {
+                    exit_code: 0,
+                    stdout: lines.concat().into_bytes(),
+                    stderr: Vec::new(),
+                });
+            }
+
+            let mut exit_code = 0;
+            let mut errors = Vec::new();
+            for arg in argv {
+                if arg == "-p" {
+                    continue;
+                }
+                if let Some((name, val)) = arg.split_once('=') {
+                    if env.get(name).is_some_and(|v| v.readonly) {
+                        errors.extend_from_slice(
+                            format!("mash: readonly: {}: readonly variable\n", name).as_bytes(),
+                        );
+                        exit_code = 1;
+                        continue;
+                    }
+                    let mut var = Variable::string(val);
+                    var.readonly = true;
+                    let _ = env.set(name, var);
+                } else {
+                    env.mark_readonly(arg);
+                }
+            }
+
+            Some(ExecResult {
+                exit_code,
+                stdout: Vec::new(),
+                stderr: errors,
+            })
+        }
+        "cd" => {
+            let target = match argv.first().map(|s| s.as_str()) {
+                Some("-") => {
+                    let oldpwd = env.get_str("OLDPWD").to_string();
+                    if oldpwd.is_empty() {
+                        return Some(ExecResult::failure(1, "mash: cd: OLDPWD not set\n"));
+                    }
+                    oldpwd
+                }
+                Some(dir) => dir.to_string(),
+                None => {
+                    let home = env.get_str("HOME").to_string();
+                    if home.is_empty() {
+                        return Some(ExecResult::failure(1, "mash: cd: HOME not set\n"));
+                    }
+                    home
+                }
+            };
+
+            let old_pwd = env.get_str("PWD").to_string();
+
+            match std::env::set_current_dir(&target) {
+                Ok(()) => {
+                    let new_pwd = std::env::current_dir()
+                        .map(|p| {
+                            let s = p.to_string_lossy().into_owned();
+                            #[cfg(windows)]
+                            { s.replace('\\', "/") }
+                            #[cfg(not(windows))]
+                            { s }
+                        })
+                        .unwrap_or_else(|_| target.clone());
+
+                    let _ = env.set("OLDPWD", Variable::exported_string(&old_pwd));
+                    let _ = env.set("PWD", Variable::exported_string(&new_pwd));
+
+                    // cd - prints the new directory
+                    let print_dir = argv.first().map(|s| s.as_str()) == Some("-");
+                    if print_dir {
+                        Some(ExecResult {
+                            exit_code: 0,
+                            stdout: format!("{}\n", new_pwd).into_bytes(),
+                            stderr: Vec::new(),
+                        })
+                    } else {
+                        Some(ExecResult::success())
+                    }
+                }
+                Err(e) => {
+                    Some(ExecResult::failure(1, format!("mash: cd: {}: {}\n", target, e)))
+                }
+            }
+        }
+        "pwd" => {
+            let physical = argv.iter().any(|a| a == "-P");
+            let dir = if physical {
+                // -P: resolve symlinks via current_dir
+                std::env::current_dir()
+                    .map(|p| {
+                        let s = p.to_string_lossy().into_owned();
+                        #[cfg(windows)]
+                        { s.replace('\\', "/") }
+                        #[cfg(not(windows))]
+                        { s }
+                    })
+                    .unwrap_or_default()
+            } else {
+                // Logical: prefer $PWD, fall back to current_dir
+                let pwd = env.get_str("PWD").to_string();
+                if pwd.is_empty() {
+                    std::env::current_dir()
+                        .map(|p| {
+                            let s = p.to_string_lossy().into_owned();
+                            #[cfg(windows)]
+                            { s.replace('\\', "/") }
+                            #[cfg(not(windows))]
+                            { s }
+                        })
+                        .unwrap_or_default()
+                } else {
+                    pwd
+                }
+            };
+
+            Some(ExecResult {
+                exit_code: 0,
+                stdout: format!("{}\n", dir).into_bytes(),
+                stderr: Vec::new(),
+            })
+        }
         _ => None,
     }
 }

@@ -174,7 +174,10 @@ impl Env {
             env.scopes[0].insert(key, Variable::exported_string(value));
         }
         if let Ok(cwd) = std::env::current_dir() {
-            env.special.insert("PWD".to_string(), cwd.to_string_lossy().to_string());
+            let pwd_str = cwd.to_string_lossy().to_string();
+            // PWD is a regular exported variable, not a special parameter.
+            // Store it in scopes so `set()` / `get()` work correctly for cd.
+            env.scopes[0].insert("PWD".to_string(), Variable::exported_string(pwd_str));
         }
         env
     }
@@ -253,6 +256,26 @@ impl Env {
                 var.exported = true;
             }
         }
+    }
+
+    pub fn mark_unexported(&mut self, name: &str) {
+        if let Some(scope) = self.scopes.iter_mut().rev().find(|s| s.contains_key(name)) {
+            if let Some(var) = scope.get_mut(name) {
+                var.exported = false;
+            }
+        }
+    }
+
+    pub fn readonly_vars(&self) -> HashMap<String, String> {
+        let mut result = HashMap::new();
+        for scope in &self.scopes {
+            for (name, var) in scope {
+                if var.readonly {
+                    result.insert(name.clone(), var.as_str().to_string());
+                }
+            }
+        }
+        result
     }
 
     // ── Scope management ──

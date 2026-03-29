@@ -480,3 +480,80 @@ fn set_positional_params() {
     let output = run_stdout("set -- x y z; echo $1 $2 $3");
     assert!(output.contains("x y z"), "got: {output}");
 }
+
+// ── export / unset / readonly / cd / pwd builtins ────────────────────
+
+#[test]
+fn builtin_export_and_check() {
+    let (_, env) = run("export FOO=hello");
+    assert_eq!(env.get_str("FOO"), "hello");
+    assert!(env.get("FOO").unwrap().exported);
+}
+
+#[test]
+fn builtin_export_existing() {
+    let (_, env) = run("FOO=bar; export FOO");
+    assert!(env.get("FOO").unwrap().exported);
+}
+
+#[test]
+fn builtin_unset() {
+    let (_, env) = run("FOO=bar; unset FOO");
+    assert!(!env.is_set("FOO"));
+}
+
+#[test]
+fn builtin_unset_function() {
+    let (_, env) = run("f() { echo hi; }; unset -f f");
+    assert!(env.get_function("f").is_none());
+}
+
+#[test]
+fn builtin_readonly() {
+    let (result, _) = run("readonly X=5; X=10");
+    assert_ne!(result.exit_code, 0);
+}
+
+#[test]
+fn builtin_cd_and_pwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_string_lossy().replace('\\', "/");
+    let cmd = format!("cd {} && pwd", path);
+    let output = run_stdout(&cmd);
+    assert!(!output.trim().is_empty());
+}
+
+#[test]
+fn builtin_cd_home() {
+    let (_, env) = run("cd");
+    let pwd = env.get_str("PWD").replace('\\', "/");
+    let home = env.get_str("HOME").replace('\\', "/");
+    if !home.is_empty() {
+        assert_eq!(pwd, home);
+    }
+}
+
+#[test]
+fn builtin_cd_dash() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_string_lossy().replace('\\', "/");
+    let cmd = format!("FIRST=$PWD; cd {}; cd -", path);
+    let output = run_stdout(&cmd);
+    // cd - should print the previous directory
+    assert!(!output.trim().is_empty());
+}
+
+#[test]
+fn builtin_cd_updates_oldpwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_string_lossy().replace('\\', "/");
+    let cmd = format!("BEFORE=$PWD; cd {}", path);
+    let (_, env) = run(&cmd);
+    assert!(!env.get_str("OLDPWD").is_empty());
+}
+
+#[test]
+fn builtin_pwd_output() {
+    let output = run_stdout("pwd");
+    assert!(!output.trim().is_empty());
+}
