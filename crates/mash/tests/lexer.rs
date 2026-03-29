@@ -422,6 +422,106 @@ fn bracket_as_word() {
 }
 
 // ---------------------------------------------------------------------------
+// Quoting
+// ---------------------------------------------------------------------------
+
+#[test]
+fn single_quoted_word() {
+    let input = "echo 'hello world'";
+    let toks = spanned(input);
+    assert_eq!(toks.len(), 3); // Word, Word, Eof
+    assert_eq!(toks[1].span.text(input), "'hello world'");
+}
+
+#[test]
+fn double_quoted_word() {
+    let input = r#"echo "hello world""#;
+    let toks = spanned(input);
+    assert_eq!(toks.len(), 3);
+    assert_eq!(toks[1].span.text(input), "\"hello world\"");
+}
+
+#[test]
+fn adjacent_quoted_and_unquoted() {
+    let input = "echo he'llo wo'rld";
+    let toks = spanned(input);
+    assert_eq!(toks.len(), 3); // "echo", "he'llo wo'rld", Eof
+    assert_eq!(toks[1].span.text(input), "he'llo wo'rld");
+}
+
+#[test]
+fn backslash_space_joins_words() {
+    let input = "echo hello\\ world";
+    let toks = spanned(input);
+    assert_eq!(toks.len(), 3); // echo, "hello\ world", Eof
+}
+
+#[test]
+fn line_continuation() {
+    let input = "echo hel\\\nlo";
+    let toks = nodes(input);
+    assert_eq!(toks.len(), 3); // echo, hello (joined), Eof
+}
+
+#[test]
+fn backtick_in_word() {
+    let input = "echo `date`";
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), "`date`");
+}
+
+#[test]
+fn nested_quotes_in_double() {
+    let input = r#"echo "it's here""#;
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), "\"it's here\"");
+}
+
+#[test]
+fn ansi_c_quote() {
+    let input = "echo $'hello\\nworld'";
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), "$'hello\\nworld'");
+}
+
+#[test]
+fn unterminated_single_quote_error() {
+    let input = "echo 'hello";
+    let results: Vec<_> = Lexer::new(input).collect();
+    assert!(results.iter().any(|r| r.is_err()));
+}
+
+#[test]
+fn unterminated_double_quote_error() {
+    let input = r#"echo "hello"#;
+    let results: Vec<_> = Lexer::new(input).collect();
+    assert!(results.iter().any(|r| r.is_err()));
+}
+
+#[test]
+fn backslash_at_eof() {
+    // Trailing backslash without following char
+    let input = "echo hello\\";
+    let toks = nodes(input);
+    // Should include the trailing backslash in the word
+    assert_eq!(toks.len(), 3);
+}
+
+#[test]
+fn empty_single_quotes() {
+    let input = "echo ''";
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), "''");
+}
+
+#[test]
+fn empty_double_quotes() {
+    let input = r#"echo """#;
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), "\"\"");
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

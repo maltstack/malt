@@ -129,34 +129,159 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Read a word starting from position `start` (the first character at `start`
-    /// has already been consumed by the caller). Continues until a word-breaking
-    /// character is found.
+    /// Read a word starting from position `start` (the first character `first_ch`
+    /// at `start` has already been consumed by the caller). Continues until a
+    /// word-breaking character is found.
     ///
-    /// For this initial implementation, quoting and expansion characters are
-    /// included as part of the word -- they do not break it. Later tasks will add
-    /// proper quoting / expansion tracking.
-    fn read_word(&mut self, start: usize) -> Span {
-        // The first character has already been consumed. Keep going until we hit
-        // a word-breaking character.
+    /// Handles quoting: single quotes, double quotes, ANSI-C quotes (`$'...'`),
+    /// backslash escapes, line continuations, and backtick substitutions. Quote
+    /// characters are included in the word span (zero-copy); the expander strips
+    /// them later.
+    fn read_word(&mut self, start: usize, first_ch: char) -> Result<Span, LexError> {
+        // Track the last consumed byte position so we can compute the span end.
+        // The first character (at `start`) has already been consumed.
+        let mut last_byte_end = start + first_ch.len_utf8();
+
+        // If the first character is a quote/backslash/backtick, handle it now.
+        match first_ch {
+            '\'' => {
+                // Cannot be $' since this is the first char.
+                last_byte_end = self.read_single_quoted(start, false)?;
+            }
+            '"' => {
+                last_byte_end = self.read_double_quoted(start)?;
+            }
+            '\\' => {
+                match self.peek() {
+                    Some((_, '\n')) => {
+                        self.next_char();
+                        // Line continuation at word start — the backslash+newline is
+                        // elided. Reset last_byte_end; if nothing follows, we'll
+                        // produce a zero-length span which is fine (caller handles it).
+                    }
+                    Some((_, c)) => {
+                        self.next_char();
+                        last_byte_end = start + 1 + c.len_utf8();
+                    }
+                    None => {
+                        // Trailing backslash at EOF.
+                        last_byte_end = start + 1;
+                    }
+                }
+            }
+            '`' => {
+                last_byte_end = self.read_backtick(start)?;
+            }
+            _ => {}
+        }
+
         loop {
             match self.peek() {
                 None => break,
-                Some((_, ch)) => {
+                Some((pos, ch)) => {
                     if is_word_break(ch) {
                         break;
                     }
-                    self.next_char();
+                    match ch {
+                        '\'' => {
+                            // Check for $'...' (ANSI-C quoting): previous char in span was '$'
+                            let ansi_c = self.input[start..pos].ends_with('$');
+                            self.next_char(); // consume opening '
+                            last_byte_end = self.read_single_quoted(pos, ansi_c)?;
+                        }
+                        '"' => {
+                            self.next_char(); // consume opening "
+                            last_byte_end = self.read_double_quoted(pos)?;
+                        }
+                        '\\' => {
+                            self.next_char(); // consume the backslash
+                            match self.peek() {
+                                Some((_, '\n')) => {
+                                    // Line continuation: consume backslash + newline, continue word.
+                                    // Do NOT extend span to include the \\\n — they are elided.
+                                    self.next_char();
+                                }
+                                Some((_, c)) => {
+                                    self.next_char();
+                                    last_byte_end = pos + 1 + c.len_utf8();
+                                }
+                                None => {
+                                    // Trailing backslash at EOF — include it in the word.
+                                    last_byte_end = pos + 1;
+                                }
+                            }
+                        }
+                        '`' => {
+                            self.next_char(); // consume opening `
+                            last_byte_end = self.read_backtick(pos)?;
+                        }
+                        _ => {
+                            self.next_char();
+                            last_byte_end = pos + ch.len_utf8();
+                        }
+                    }
                 }
             }
         }
-        // Compute end position: either the position of the next char we stopped
-        // at, or end of input.
-        let end = match self.peek() {
-            Some((pos, _)) => pos,
-            None => self.input.len(),
-        };
-        self.make_span(start, end)
+        Ok(self.make_span(start, last_byte_end))
+    }
+
+    /// Read content inside single quotes. The opening `'` has been consumed.
+    /// Returns the byte position just past the closing `'`.
+    ///
+    /// When `ansi_c` is true (`$'...'`), backslash escapes are recognized but
+    /// preserved literally — the span just covers everything including the
+    /// closing quote.
+    fn read_single_quoted(&mut self, open_pos: usize, ansi_c: bool) -> Result<usize, LexError> {
+        loop {
+            match self.next_char() {
+                Some((pos, '\'')) => return Ok(pos + 1),
+                Some((_, '\\')) if ansi_c => {
+                    // In ANSI-C quotes, backslash escapes: consume next char too.
+                    if self.next_char().is_none() {
+                        return Err(LexError::UnterminatedString { pos: open_pos as u32 });
+                    }
+                }
+                Some(_) => {}
+                None => return Err(LexError::UnterminatedString { pos: open_pos as u32 }),
+            }
+        }
+    }
+
+    /// Read content inside double quotes. The opening `"` has been consumed.
+    /// Returns the byte position just past the closing `"`.
+    ///
+    /// Inside double quotes, `\`, `$`, and `` ` `` are special, but we don't
+    /// expand — we just consume through them to find the closing `"`.
+    fn read_double_quoted(&mut self, open_pos: usize) -> Result<usize, LexError> {
+        loop {
+            match self.next_char() {
+                Some((pos, '"')) => return Ok(pos + 1),
+                Some((_, '\\')) => {
+                    // Consume the escaped character (if any).
+                    // Even if next char is `"`, it does NOT close the quote.
+                    let _ = self.next_char();
+                }
+                Some(_) => {}
+                None => return Err(LexError::UnterminatedString { pos: open_pos as u32 }),
+            }
+        }
+    }
+
+    /// Read content inside backtick substitution. The opening `` ` `` has been
+    /// consumed. Returns the byte position just past the closing `` ` ``.
+    fn read_backtick(&mut self, open_pos: usize) -> Result<usize, LexError> {
+        loop {
+            match self.next_char() {
+                Some((pos, '`')) => return Ok(pos + 1),
+                Some((_, '\\')) => {
+                    // `\` inside backticks escapes the next character.
+                    let _ = self.next_char();
+                }
+                Some(_) => {}
+                None => return Err(LexError::UnterminatedString { pos: open_pos as u32 }),
+            }
+        }
     }
 
     /// Try to skip whitespace (space, tab). Returns true if any was skipped.
@@ -337,6 +462,13 @@ impl<'a> Iterator for Lexer<'a> {
 
             // Default: word (includes brackets, quotes, `$`, backslash, etc.)
             _ => {
+                // Backslash-newline at the start of a token position is a line
+                // continuation — skip both characters and restart tokenization.
+                if ch == '\\' && self.peek_char() == Some('\n') {
+                    self.next_char();
+                    return self.next();
+                }
+
                 // `[` at word start: check for `[[`
                 if ch == '[' {
                     if self.peek_char() == Some('[') {
@@ -358,7 +490,10 @@ impl<'a> Iterator for Lexer<'a> {
                 }
 
                 // Read the rest of the word.
-                let word_span = self.read_word(pos);
+                let word_span = match self.read_word(pos, ch) {
+                    Ok(span) => span,
+                    Err(e) => return Some(Err(e)),
+                };
 
                 // IoNumber detection: an all-digit word followed by `<` or `>`.
                 let word_text = word_span.text(self.input);
