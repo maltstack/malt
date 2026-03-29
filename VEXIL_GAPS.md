@@ -51,3 +51,25 @@ These are tracked here (not as vexil-lang issues) because they were discovered d
 **Workaround:** Use raw types with `@doc` annotations.
 
 **Requested fix:** Implement `vexil.std` with at least: `Duration` (i64 microseconds), `Timestamp` (i64 microseconds since epoch), `SemVer` (string with validation).
+
+---
+
+## Gap 5: Parser treats `@` after bare import as version constraint
+
+**Problem:** `vexilc check` fails on any file that has `import malt.common` (without a `@ ^X.Y.Z` version constraint) followed by any `@annotation`. The parser reads the `@` from `@doc(...)` or `@domain(...)` as the start of a version constraint on the import statement, then fails with "expected `^` after `@` in version constraint."
+
+**Impact:** Every domain schema that imports from `common.vexil` fails to compile with `vexilc check`. Only self-contained schemas (no imports) compile.
+
+**Workaround:** None that preserves correct schema semantics. Removing annotations would strip documentation and wire dispatch metadata. The `vexilc build` command (with `--include`) may handle this differently but was not tested.
+
+**Requested fix:** The parser should terminate import statement parsing at the newline (or next non-whitespace token that isn't `@` followed by `^`). An `@` followed by an identifier (like `@doc`) should not be parsed as part of the import's version constraint.
+
+**Reproduction:**
+```vexil
+@version("0.1.0")
+namespace malt.test
+import malt.common
+@doc("This triggers the bug.")
+message Foo { x @0 : u32 }
+```
+Run: `vexilc check test.vexil` → Error: "expected `^` after `@` in version constraint"
