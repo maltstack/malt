@@ -90,6 +90,11 @@ orix/malt/
 | `SignalKind` | Int @0, Tstp @1, Quit @2, Term @3, Hup @4, Usr1 @5, Usr2 @6 | `@non_exhaustive` |
 | `MouseButtonKind` | Left @0, Right @1, Middle @2, ScrollUp @3, ScrollDown @4 | `@non_exhaustive` |
 | `MouseEventKind` | Press @0, Release @1, Move @2 | `@non_exhaustive` |
+| `PaneState` | Running @0, Stopped @1, Exited @2, Error @3 | `@non_exhaustive` — pane process lifecycle |
+| `SessionState` | Active @0, Dormant @1, Checkpoint @2, Destroyed @3 | `@non_exhaustive` — session lifecycle per §13 |
+| `InputAuthority` | Exclusive @0, Shared @1, Observe @2 | `@non_exhaustive` — multi-client input authority mode (architecture spec notes future cooperative sharing extension) |
+| `OnEmpty` | Destroy @0, Keep @1, Checkpoint @2 | `@non_exhaustive` — group policy: what to do when last session detaches |
+| `OnOom` | KillOffender @0, CheckpointThenKill @1, PauseAndNotify @2 | `@non_exhaustive` — group policy: OOM response |
 
 **Flags:**
 
@@ -100,6 +105,7 @@ orix/malt/
 **Compound types (unions):**
 
 ```
+@non_exhaustive
 union SplitSize {
     Ratio @0 { value @0 : f32 }
     Fixed @1 { value @0 : u16 }
@@ -112,11 +118,13 @@ union SplitSize {
 @non_exhaustive
 union LayoutNode {
     Leaf   @0 { pane_id @0 : PaneId }
-    Split  @1 { direction @0 : Direction
-                sizes @1 : array<SplitSize>
+    Split  @1 { split_id @0 : SplitId
+                direction @1 : Direction
+                sizes @2 : array<SplitSize>
+                children @3 : array<LayoutNode> }
+    Tabbed @2 { split_id @0 : SplitId
+                active @1 : u16
                 children @2 : array<LayoutNode> }
-    Tabbed @2 { active @0 : u16
-                children @1 : array<LayoutNode> }
     Float  @3 { pane_id @0 : PaneId
                 x @1 : u16  y @2 : u16
                 width @3 : u16  height @4 : u16 }
@@ -128,26 +136,36 @@ Note: `LayoutNode` is recursive (`Split.children` and `Tabbed.children` contain 
 **Compound types (messages):**
 
 ```
+message TabContext {
+    label       @0 : string
+    is_active   @1 : bool
+    tab_index   @2 : u16
+}
+
 message ResolvedPane {
-    pane_id  @0 : PaneId
-    x        @1 : u16
-    y        @2 : u16
-    width    @3 : u16
-    height   @4 : u16
-    focused  @5 : bool
-    visible  @6 : bool
-    z_order  @7 : u32
+    pane_id     @0 : PaneId
+    x           @1 : u16
+    y           @2 : u16
+    width       @3 : u16
+    height      @4 : u16
+    focused     @5 : bool
+    visible     @6 : bool
+    z_order     @7 : u32
+    tab_context @8 : optional<TabContext>
 }
 ```
 
 ```
 message ResolvedStyle {
-    fg        @0 : rgb
-    bg        @1 : rgb
-    bold      @2 : bool
-    italic    @3 : bool
-    underline @4 : bool
-    dim       @5 : bool
+    fg            @0 : rgb
+    bg            @1 : rgb
+    bold          @2 : bool
+    italic        @3 : bool
+    underline     @4 : bool
+    dim           @5 : bool
+    strikethrough @6 : bool
+    reverse       @7 : bool
+    blink         @8 : bool
 }
 ```
 
@@ -168,6 +186,7 @@ message SessionInfo {
     name        @1 : optional<string>
     pane_count  @2 : @varint u16
     isolation   @3 : IsolationTier
+    state       @4 : SessionState
 }
 ```
 
@@ -188,12 +207,14 @@ message ThemeOverride {
 
 ```
 message Envelope {
-    version    @0 : u4
-    domain     @1 : u4
-    msg_type   @2 : u7
-    session_id @3 : u32
-    timestamp  @4 : u48
-    msg_id     @5 : optional<u32>
+    @doc("Wire format version (0-15). Distinct from Hello.version which is the software protocol version.")
+    wire_version @0 : u4
+    domain       @1 : u4
+    msg_type     @2 : u7
+    session_id   @3 : u32
+    @doc("Microseconds since daemon start. Wraps at ~8.9 years.")
+    timestamp    @4 : u48
+    msg_id       @5 : optional<u32>
 }
 ```
 
@@ -215,6 +236,16 @@ Sub-byte fields (`u4`, `u4`, `u7`) pack continuously LSB-first. The `u48` timest
 
 All messages annotated `@domain(Handshake)`, `@type(0x01..0x03)`, `@revision(1)`.
 
+**Domain ID assignments (4-bit, 0-15):** Only the 8 wire domains consume domain IDs. Envelope, FrameElement, Elevate, and Persist are schema-only organizational namespaces — they do NOT consume domain IDs. Elevate uses its own restricted framing (not the main VNP envelope). Persist schemas are stored via Vexil Store, not sent as VNP messages.
+
+| ID | Domain | ID | Domain |
+|----|--------|----|--------|
+| 0 | Handshake | 4 | Session |
+| 1 | Shell | 5 | Task |
+| 2 | Input | 6 | Render |
+| 3 | Mux | 7 | System |
+| 8-15 | Reserved | | |
+
 ---
 
 ### `schemas/shell.vexil`
@@ -223,10 +254,10 @@ All messages annotated `@domain(Handshake)`, `@type(0x01..0x03)`, `@revision(1)`
 
 | Message | Fields | Priority |
 |---------|--------|----------|
-| `CommandStarted` | cmd @0 : string | Reliable |
-| `CommandFinished` | exit_code @0 : i32, duration_us @1 : u64 | Reliable |
+| `CommandStarted` | command_id @0 : u32, cmd @1 : string | Reliable |
+| `CommandFinished` | command_id @0 : u32, exit_code @1 : i32, duration_us @2 : u64 | Reliable |
 | `PromptReady` | cwd @0 : string | Reliable |
-| `OutputChunk` | data @0 : bytes, command_tag @1 : optional\<string\> | Normal |
+| `OutputChunk` | data @0 : bytes, command_tag @1 : optional\<string\> | Normal — `command_tag` is present whenever output originates from a known command (MASH sets it at emission time); absent for startup output, background jobs with no command association, or raw PTY output from compat panes |
 
 ---
 
@@ -271,11 +302,14 @@ union KeyValue {
 | `PaneCreated` | pane_id @0 : PaneId, kind @1 : PaneKind, title @2 : optional\<string\> | Reliable |
 | `PaneDestroyed` | pane_id @0 : PaneId | Reliable |
 | `LayoutChanged` | layout @0 : LayoutNode | Reliable |
-| `SplitPane` | target @0 : PaneId, direction @1 : Direction, size @2 : SplitSize | Reliable |
+| `SplitPane` | target @0 : PaneId, direction @1 : Direction, size @2 : SplitSize, kind @3 : optional\<PaneKind\> | Reliable |
 | `ClosePane` | pane_id @0 : PaneId | Reliable |
 | `FloatPane` | pane_id @0 : PaneId, x @1 : u16, y @2 : u16, width @3 : u16, height @4 : u16 | Reliable |
 | `SwapPanes` | a @0 : PaneId, b @1 : PaneId | Reliable |
 | `FocusDirection` | direction @0 : FocusDir | Reliable |
+| `ResizeSplit` | split_id @0 : SplitId, child_index @1 : u16, size @2 : SplitSize | Reliable |
+| `SaveLayout` | name @0 : string | Reliable |
+| `LoadLayout` | name @0 : string | Reliable |
 
 ---
 
@@ -285,11 +319,13 @@ union KeyValue {
 
 | Message | Fields | Priority |
 |---------|--------|----------|
-| `CreateSession` | name @0 : optional\<string\>, isolation @1 : IsolationTier | Reliable |
-| `AttachSession` | session_id @0 : SessionId | Reliable |
+| `CreateSession` | name @0 : optional\<string\>, isolation @1 : IsolationTier, group @2 : optional\<GroupId\> | Reliable |
+| `AttachSession` | session_id @0 : SessionId, authority @1 : InputAuthority | Reliable |
 | `DetachSession` | session_id @0 : SessionId | Reliable |
 | `ListSessions` | *(empty)* | Reliable |
 | `SessionList` | sessions @0 : array\<SessionInfo\> | Reliable |
+| `InputClaim` | session_id @0 : SessionId, authority @1 : InputAuthority | Reliable |
+| `InputAuthorityChanged` | session_id @0 : SessionId, holder @1 : optional\<string\>, authority @2 : InputAuthority | Reliable |
 
 ---
 
@@ -335,11 +371,12 @@ union RenderCommand {
     ScrollRegion @8 { x @0 : u16  y @1 : u16  width @2 : u16  height @3 : u16  delta @4 : i16 }
     PushLayer    @9 {}
     PopLayer     @10 {}
-    WriteRaw     @11 { data @0 : bytes }
+    WriteRaw     @11 { data @0 : bytes  x @1 : u16  y @2 : u16  width @3 : u16  height @4 : u16 }
     Clear        @12 {}
     Flush        @13 {}
 }
 
+@non_exhaustive
 enum ImageFormat {
     Rgba @0
     Png  @1
@@ -350,7 +387,7 @@ enum ImageFormat {
 | Message | Fields | Priority |
 |---------|--------|----------|
 | `RenderBatch` | frame_seq @0 : u64, commands @1 : array\<RenderCommand\> | High |
-| `FrameAck` | frame_seq @0 : u64 | High |
+| `FrameAck` | frame_seq @0 : u64 | Normal |
 | `InitialState` | frame_seq @0 : u64, layout @1 : LayoutNode, panes @2 : array\<ResolvedPane\>, commands @3 : array\<RenderCommand\> | Reliable |
 | `SyncRequest` | *(empty)* | Reliable |
 | `SlowClientDisconnect` | reason @0 : string | Reliable |
@@ -375,8 +412,12 @@ union FrameElement {
                        sizes @1 : array<SplitSize>
                        children @2 : array<FrameElement> }
     Stack         @4 { children @0 : array<FrameElement> }
-    VtPassthrough @5 { data @0 : bytes }
-    Custom        @6 { type_id @0 : string  data @1 : bytes  fallback @2 : optional<FrameElement> }
+    Padded        @5 { top @0 : u16  right @1 : u16  bottom @2 : u16  left @3 : u16
+                       child @4 : FrameElement }
+    Centered      @6 { child @0 : FrameElement }
+    Scrollable    @7 { offset @0 : u32  child @1 : FrameElement }
+    VtPassthrough @8 { data @0 : bytes }
+    Custom        @9 { type_id @0 : string  data @1 : bytes  fallback @2 : optional<FrameElement> }
 }
 ```
 
@@ -403,7 +444,7 @@ enum PluginEventType {
 | `StructuredOutput` | kind @0 : string, content @1 : bytes | Reliable |
 | `PluginEvent` | plugin_id @0 : string, event_type @1 : PluginEventType, data @2 : optional\<bytes\> | Low |
 | `Diagnostic` | severity @0 : Severity, message @1 : string, source @2 : optional\<string\> | Low |
-| `Heartbeat` | *(empty)* | Low |
+| `Heartbeat` | seq @0 : @varint u32, source @1 : optional\<string\> | Low |
 | `Error` | code @0 : @varint u32, message @1 : string, context @2 : optional\<string\> | Reliable |
 
 ---
@@ -426,12 +467,27 @@ message ElevateHelloAck {
     reason   @2 : optional<string>
 }
 
+message ElevateRequestEnvelope {
+    request_id @0 : u32
+    request    @1 : ElevateRequest
+}
+
 @non_exhaustive
 union ElevateRequest {
-    CreateNamespace @0 { pid @0 : u32  tier @1 : IsolationTier }
-    MountOverlay    @1 { lower @0 : string  upper @1 : string  merged @2 : string }
-    SetCgroup       @2 { pid @0 : u32  memory_mb @1 : u32  cpu_pct @2 : u16 }
-    BindPort        @3 { port @0 : u16  socket_path @1 : string }
+    // Linux
+    CreateNamespace  @0 { pid @0 : u32  tier @1 : IsolationTier }
+    MountOverlay     @1 { lower @0 : string  upper @1 : string  merged @2 : string }
+    SetCgroup        @2 { pid @0 : u32  memory_mb @1 : u32  cpu_pct @2 : u16 }
+    SetupNetns       @3 { pid @0 : u32  bridge @1 : string  veth_host @2 : string  veth_ns @3 : string }
+    ApplySeccomp     @4 { pid @0 : u32  policy @1 : bytes }
+    // Windows
+    CreateSymlink    @5 { target @0 : string  link @1 : string }
+    CreateRestrictedToken @6 { pid @0 : u32  tier @1 : IsolationTier }
+    ManageHcsContainer @7 { operation @0 : string  config @1 : bytes }
+    // macOS
+    ApplySeatbelt    @8 { pid @0 : u32  profile @1 : string }
+    // Cross-platform
+    BindPort         @9 { port @0 : u16  socket_path @1 : string }
 }
 
 message ElevateResponse {
@@ -452,15 +508,15 @@ message ElevateShutdown {
 
 ```
 message PersistedSession {
-    id             @0 : SessionId
-    name           @1 : optional<string>
-    layout         @2 : LayoutNode
-    focus          @3 : PaneId
-    panes          @4 : map<u32, PersistedPane>   // key is PaneId (see VEXIL_GAPS.md)
-    theme          @5 : optional<ThemeOverride>
-    group          @6 : optional<GroupId>
-    isolation      @7 : IsolationTier
-    schema_version @8 : u32
+    schema_version @0 : u32    // starts at 1; read first for version-gating before parsing remaining fields
+    id             @1 : SessionId
+    name           @2 : optional<string>
+    layout         @3 : LayoutNode
+    focus          @4 : PaneId
+    panes          @5 : map<u32, PersistedPane>   // key is PaneId (see VEXIL_GAPS.md)
+    theme          @6 : optional<ThemeOverride>
+    group          @7 : optional<GroupId>
+    isolation      @8 : IsolationTier
 }
 
 message PersistedPane {
@@ -485,16 +541,28 @@ union PersistedPaneType {
 
 ```
 message DaemonState {
-    sessions        @0 : array<SessionId>
-    active_groups   @1 : array<GroupState>
-    next_session_id @2 : u32
-    next_pane_id    @3 : u32
+    schema_version  @0 : u32    // starts at 1; read first for version-gating before parsing remaining fields
+    sessions        @1 : array<SessionId>
+    active_groups   @2 : array<GroupState>
+    next_session_id @3 : u32
+    next_pane_id    @4 : u32
+}
+
+message GroupPolicy {
+    min_tier         @0 : IsolationTier
+    max_memory_mb    @1 : @varint u32
+    max_cpu_cores    @2 : u16
+    max_sessions     @3 : @varint u16
+    ttl_secs         @4 : optional<u32>
+    idle_timeout_secs @5 : optional<u32>
+    on_empty         @6 : OnEmpty
+    on_oom           @7 : OnOom
 }
 
 message GroupState {
     id          @0 : GroupId
     name        @1 : string
-    policy      @2 : optional<bytes>
+    policy      @2 : optional<GroupPolicy>
     session_ids @3 : array<SessionId>
 }
 ```
@@ -580,20 +648,20 @@ Documented in `VEXIL_GAPS.md` in the malt repo root.
 
 | Domain | Messages | Types/Enums/Unions |
 |--------|----------|--------------------|
-| Common (shared) | 5 messages | 4 newtypes, 11 enums, 1 flags, 2 unions |
+| Common (shared) | 6 messages | 4 newtypes, 16 enums, 1 flags, 2 unions |
 | Envelope | 1 message | — |
 | Handshake | 3 messages | — |
 | Shell | 4 messages | — |
 | Input | 4 messages | 1 enum, 1 union |
-| Mux | 8 messages | — |
-| Session | 5 messages | — |
+| Mux | 11 messages | — |
+| Session | 7 messages | — |
 | Task | 3 messages | 1 enum |
 | Render | 7 messages | 1 union (14 variants), 1 enum |
-| FrameElement | — | 1 union (7 variants) |
+| FrameElement | — | 1 union (10 variants) |
 | System | 5 messages | 1 enum |
-| Elevate | 5 messages | 1 union (4 variants) |
-| Persist | 4 messages | 1 union (3 variants) |
-| **Total** | **54 messages** | **4 newtypes, 15 enums, 1 flags, 6 unions** |
+| Elevate | 5 messages | 1 union (10 variants) |
+| Persist | 6 messages | 1 union (3 variants) |
+| **Total** | **62 messages** | **4 newtypes, 20 enums, 1 flags, 7 unions** |
 
 ---
 
