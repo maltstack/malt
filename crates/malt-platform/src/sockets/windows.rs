@@ -1,0 +1,1 @@
+//! Windows named pipe operations.
