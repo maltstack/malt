@@ -229,9 +229,12 @@ fn expand_dollar(
                 let val = eval_arithmetic(&expr, env)?;
                 result.push_str(&val.to_string());
             } else {
-                // $(cmd) — command substitution (stub)
+                // $(cmd) — command substitution
                 let cmd = collect_until_close_paren(chars);
-                return Err(ExpandError::CommandSubstitution(cmd));
+                match crate::executor::capture_command(&cmd, env) {
+                    Ok(output) => result.push_str(&output),
+                    Err(e) => return Err(e),
+                }
             }
         }
         Some(&c) if c.is_ascii_alphanumeric() || c == '_' || c == '?' || c == '!'
@@ -1038,8 +1041,8 @@ fn expand_simple_var(
 
 fn expand_backtick(
     chars: &mut std::iter::Peekable<std::str::Chars>,
-    _result: &mut String,
-    _env: &mut Env,
+    result: &mut String,
+    env: &mut Env,
 ) -> Result<(), ExpandError> {
     let mut cmd = String::new();
     while let Some(&c) = chars.peek() {
@@ -1055,7 +1058,11 @@ fn expand_backtick(
             cmd.push(c);
         }
     }
-    Err(ExpandError::CommandSubstitution(cmd))
+    match crate::executor::capture_command(&cmd, env) {
+        Ok(output) => result.push_str(&output),
+        Err(e) => return Err(e),
+    }
+    Ok(())
 }
 
 fn collect_until_double_paren(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {

@@ -95,10 +95,10 @@ fn backslash_escape() {
 }
 
 #[test]
-fn command_sub_returns_error() {
+fn command_sub_captures_output() {
     let mut env = Env::empty();
-    let result = expand_word_nosplit("$(echo hello)", &mut env);
-    assert!(matches!(result, Err(ExpandError::CommandSubstitution(_))));
+    let result = expand_word_nosplit("$(echo hello)", &mut env).unwrap();
+    assert_eq!(result, "hello");
 }
 
 #[test]

@@ -86,6 +86,23 @@ pub fn execute_list(commands: &[Spanned<Command>], source: &str, env: &mut Env) 
     }
 }
 
+/// Execute a command string and capture stdout. Used by expander for $(cmd).
+/// Runs in a cloned Env (subshell semantics). Strips trailing newlines.
+pub fn capture_command(cmd_str: &str, env: &mut Env) -> Result<String, crate::expander::ExpandError> {
+    let cmds = match crate::parser::parse(cmd_str) {
+        Ok(cmds) => cmds,
+        Err(e) => return Err(crate::expander::ExpandError::CommandSubstitution(e.to_string())),
+    };
+    let mut sub_env = env.clone();
+    let result = execute_list(&cmds, cmd_str, &mut sub_env);
+    env.set_exit_code(result.exit_code);
+    let mut output = String::from_utf8_lossy(&result.stdout).to_string();
+    // Strip trailing newlines (POSIX).
+    while output.ends_with('\n') { output.pop(); }
+    while output.ends_with('\r') { output.pop(); }
+    Ok(output)
+}
+
 // ── Dispatch ───────────────────────────────────────────────────────────
 
 fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecResult {
@@ -847,6 +864,127 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env) -> Option
                 Err(e) => {
                     Some(ExecResult::failure(1, format!("mash: eval: {e}\n")))
                 }
+            }
+        }
+        "set" => {
+            // Handle set options and positional parameters.
+            let mut i = 0;
+            while i < argv.len() {
+                let arg = &argv[i];
+                if arg == "--" {
+                    // Everything after -- becomes positional parameters.
+                    let args: Vec<String> = argv[i + 1..].to_vec();
+                    env.replace_positional_args(&args);
+                    return Some(ExecResult::success());
+                } else if arg.starts_with('-') && arg.len() > 1 {
+                    for flag in arg[1..].chars() {
+                        match flag {
+                            'e' => env.options_mut().errexit = true,
+                            'u' => env.options_mut().nounset = true,
+                            'x' => env.options_mut().xtrace = true,
+                            'v' => env.options_mut().verbose = true,
+                            'f' => env.options_mut().noglob = true,
+                            'b' => env.options_mut().notify = true,
+                            'm' => env.options_mut().monitor = true,
+                            'C' => env.options_mut().noclobber = true,
+                            'n' => env.options_mut().noexec = true,
+                            'h' => env.options_mut().hash_cmds = true,
+                            'o' => {
+                                // set -o pipefail, etc.
+                                if i + 1 < argv.len() {
+                                    i += 1;
+                                    match argv[i].as_str() {
+                                        "errexit" => env.options_mut().errexit = true,
+                                        "nounset" => env.options_mut().nounset = true,
+                                        "xtrace" => env.options_mut().xtrace = true,
+                                        "verbose" => env.options_mut().verbose = true,
+                                        "noglob" => env.options_mut().noglob = true,
+                                        "pipefail" => env.options_mut().pipefail = true,
+                                        "noclobber" => env.options_mut().noclobber = true,
+                                        "noexec" => env.options_mut().noexec = true,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                } else if arg.starts_with('+') && arg.len() > 1 {
+                    for flag in arg[1..].chars() {
+                        match flag {
+                            'e' => env.options_mut().errexit = false,
+                            'u' => env.options_mut().nounset = false,
+                            'x' => env.options_mut().xtrace = false,
+                            'v' => env.options_mut().verbose = false,
+                            'f' => env.options_mut().noglob = false,
+                            'b' => env.options_mut().notify = false,
+                            'm' => env.options_mut().monitor = false,
+                            'C' => env.options_mut().noclobber = false,
+                            'n' => env.options_mut().noexec = false,
+                            'h' => env.options_mut().hash_cmds = false,
+                            'o' => {
+                                if i + 1 < argv.len() {
+                                    i += 1;
+                                    match argv[i].as_str() {
+                                        "errexit" => env.options_mut().errexit = false,
+                                        "nounset" => env.options_mut().nounset = false,
+                                        "xtrace" => env.options_mut().xtrace = false,
+                                        "verbose" => env.options_mut().verbose = false,
+                                        "noglob" => env.options_mut().noglob = false,
+                                        "pipefail" => env.options_mut().pipefail = false,
+                                        "noclobber" => env.options_mut().noclobber = false,
+                                        "noexec" => env.options_mut().noexec = false,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    // Bare args become positional parameters.
+                    let args: Vec<String> = argv[i..].to_vec();
+                    env.replace_positional_args(&args);
+                    return Some(ExecResult::success());
+                }
+                i += 1;
+            }
+            Some(ExecResult::success())
+        }
+        "shift" => {
+            let n: usize = argv.first().and_then(|s| s.parse().ok()).unwrap_or(1);
+            let current_count: usize = env.get_str("#").parse().unwrap_or(0);
+            if n > current_count {
+                return Some(ExecResult::with_code(1));
+            }
+            let args: Vec<String> = (n + 1..=current_count)
+                .map(|i| env.get_str(&i.to_string()).to_string())
+                .collect();
+            env.replace_positional_args(&args);
+            Some(ExecResult::success())
+        }
+        "source" | "." => {
+            let file = match argv.first() {
+                Some(f) => f,
+                None => return Some(ExecResult::with_code(2)),
+            };
+            let contents = match std::fs::read_to_string(file) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(ExecResult {
+                        exit_code: 1,
+                        stdout: Vec::new(),
+                        stderr: format!("source: {}: {}\n", file, e).into_bytes(),
+                    });
+                }
+            };
+            match crate::parser::parse(&contents) {
+                Ok(cmds) => Some(execute_list(&cmds, &contents, env)),
+                Err(e) => Some(ExecResult {
+                    exit_code: 1,
+                    stdout: Vec::new(),
+                    stderr: format!("source: parse error: {}\n", e).into_bytes(),
+                }),
             }
         }
         _ => None,

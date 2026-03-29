@@ -409,3 +409,74 @@ fn if_condition_does_not_trigger_errexit() {
     assert!(output.contains("yes"), "got: {output}");
     assert!(output.contains("after"), "got: {output}");
 }
+
+// ── Command substitution tests ───────────────────────────────────────
+
+#[test]
+fn command_substitution_basic() {
+    let output = run_stdout("echo $(echo hello)");
+    assert!(output.contains("hello"), "got: {output}");
+}
+
+#[test]
+fn command_substitution_nested() {
+    let output = run_stdout("echo $(echo $(echo deep))");
+    assert!(output.contains("deep"), "got: {output}");
+}
+
+#[test]
+fn command_substitution_in_variable() {
+    let (_, env) = run("x=$(echo captured)");
+    assert_eq!(env.get_str("x"), "captured");
+}
+
+#[test]
+fn command_substitution_strips_trailing_newlines() {
+    let output = run_stdout("echo \"$(echo hello)\"");
+    // The inner echo outputs "hello\n", capture_command strips trailing newlines
+    assert!(output.trim() == "hello", "got: {}", output.trim());
+}
+
+#[test]
+fn backtick_substitution() {
+    let output = run_stdout("echo `echo world`");
+    assert!(output.contains("world"), "got: {output}");
+}
+
+#[test]
+fn command_sub_captures_output() {
+    // Command substitution should capture the stdout of the inner command.
+    let output = run_stdout("echo the answer is $(echo 42)");
+    assert!(output.contains("the answer is 42"), "got: {output}");
+}
+
+#[test]
+fn set_e_stops_execution() {
+    let output = run_stdout("set -e; nonexistent_xyz; echo unreachable");
+    assert!(!output.contains("unreachable"));
+}
+
+#[test]
+fn set_e_suppressed_in_if() {
+    let output = run_stdout("set -e; if nonexistent_xyz; then echo no; else echo yes; fi; echo after");
+    assert!(output.contains("yes"));
+    assert!(output.contains("after"));
+}
+
+#[test]
+fn shift_builtin() {
+    let output = run_stdout("set -- a b c; shift; echo $1");
+    assert!(output.contains("b"), "got: {output}");
+}
+
+#[test]
+fn shift_two() {
+    let output = run_stdout("set -- a b c d; shift 2; echo $1");
+    assert!(output.contains("c"), "got: {output}");
+}
+
+#[test]
+fn set_positional_params() {
+    let output = run_stdout("set -- x y z; echo $1 $2 $3");
+    assert!(output.contains("x y z"), "got: {output}");
+}
