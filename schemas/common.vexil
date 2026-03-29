@@ -1,0 +1,263 @@
+@version("0.1.0")
+namespace malt.common
+
+# ─── Newtypes (ID types) ───
+
+@doc("Content pane identifier.")
+newtype PaneId : u32
+
+@doc("Session identifier. 0 = daemon-global (not scoped to a session).")
+newtype SessionId : u32
+
+@doc("Layout structure identifier. Every non-leaf node has a stable SplitId.")
+newtype SplitId : u32
+
+@doc("Session group identifier.")
+newtype GroupId : u32
+
+# ─── Enums ───
+
+@non_exhaustive
+@doc("Kind of content hosted in a pane.")
+enum PaneKind {
+    Shell  @0
+    App    @1
+    Compat @2
+}
+
+@doc("Isolation tier for session processes. Fixed set — platform capabilities are finite.")
+enum IsolationTier {
+    Bare       @0
+    Restricted @1
+    Capped     @2
+    Contained  @3
+}
+
+@doc("Split direction for layout operations.")
+enum Direction {
+    Horizontal @0
+    Vertical   @1
+}
+
+@doc("Directional focus navigation.")
+enum FocusDir {
+    Up   @0
+    Down @1
+    Left @2
+    Right @3
+    Next  @4
+    Prev  @5
+}
+
+@non_exhaustive
+@doc("Client color rendering depth.")
+enum ColorDepth {
+    None     @0
+    Basic256 @1
+    TrueColor @2
+}
+
+@non_exhaustive
+@doc("Client Unicode rendering support.")
+enum UnicodeLevel {
+    None  @0
+    Basic @1
+    Full  @2
+}
+
+@non_exhaustive
+@doc("Client inline image protocol support.")
+enum ImageProtocol {
+    None          @0
+    Sixel         @1
+    KittyGraphics @2
+    ItermInline   @3
+}
+
+@non_exhaustive
+@doc("Log/diagnostic severity level.")
+enum Severity {
+    Debug @0
+    Info  @1
+    Warn  @2
+    Error @3
+}
+
+@non_exhaustive
+@doc("Signal types delivered through VNP messages.")
+enum SignalKind {
+    Int  @0
+    Tstp @1
+    Quit @2
+    Term @3
+    Hup  @4
+    Usr1 @5
+    Usr2 @6
+}
+
+@non_exhaustive
+@doc("Mouse button identifier.")
+enum MouseButtonKind {
+    Left     @0
+    Right    @1
+    Middle   @2
+    ScrollUp @3
+    ScrollDown @4
+}
+
+@non_exhaustive
+@doc("Mouse event type.")
+enum MouseEventKind {
+    Press   @0
+    Release @1
+    Move    @2
+}
+
+@non_exhaustive
+@doc("Pane process lifecycle state.")
+enum PaneState {
+    Running @0
+    Stopped @1
+    Exited  @2
+    Error   @3
+}
+
+@non_exhaustive
+@doc("Session lifecycle state per architecture §13.")
+enum SessionState {
+    Active     @0
+    Dormant    @1
+    Checkpoint @2
+    Destroyed  @3
+}
+
+@non_exhaustive
+@doc("Multi-client input authority mode. Architecture spec notes future cooperative sharing extension.")
+enum InputAuthority {
+    Exclusive @0
+    Shared    @1
+    Observe   @2
+}
+
+@non_exhaustive
+@doc("Group policy: action when last session detaches.")
+enum OnEmpty {
+    Destroy    @0
+    Keep       @1
+    Checkpoint @2
+}
+
+@non_exhaustive
+@doc("Group policy: OOM response strategy.")
+enum OnOom {
+    KillOffender       @0
+    CheckpointThenKill @1
+    PauseAndNotify     @2
+}
+
+# ─── Flags ───
+
+@doc("Keyboard modifier flags. 4-bit, sub-byte packed.")
+flags KeyModifiers {
+    Shift @0
+    Ctrl  @1
+    Alt   @2
+    Meta  @3
+}
+
+# ─── Unions ───
+
+@non_exhaustive
+@doc("Split size constraint for layout children.")
+union SplitSize {
+    Ratio @0 { value @0 : f32 }
+    Fixed @1 { value @0 : u16 }
+    Min   @2 { value @0 : u16 }
+    Max   @3 { value @0 : u16 }
+}
+
+@non_exhaustive
+@doc("Abstract layout tree. Recursive — Split and Tabbed contain child LayoutNodes.")
+union LayoutNode {
+    Leaf   @0 { pane_id @0 : PaneId }
+    Split  @1 {
+        split_id  @0 : SplitId
+        direction @1 : Direction
+        sizes     @2 : array<SplitSize>
+        children  @3 : array<LayoutNode>
+    }
+    Tabbed @2 {
+        split_id @0 : SplitId
+        active   @1 : u16
+        children @2 : array<LayoutNode>
+    }
+    Float  @3 {
+        pane_id @0 : PaneId
+        x       @1 : u16
+        y       @2 : u16
+        width   @3 : u16
+        height  @4 : u16
+    }
+}
+
+# ─── Messages (shared compound types) ───
+
+@doc("Tab metadata for panes that are members of a tabbed layout.")
+message TabContext {
+    label     @0 : string
+    is_active @1 : bool
+    tab_index @2 : u16
+}
+
+@doc("Resolved pane with absolute screen coordinates.")
+message ResolvedPane {
+    pane_id     @0 : PaneId
+    x           @1 : u16
+    y           @2 : u16
+    width       @3 : u16
+    height      @4 : u16
+    focused     @5 : bool
+    visible     @6 : bool
+    z_order     @7 : u32
+    tab_context @8 : optional<TabContext>
+}
+
+@doc("Fully resolved text style. All theme tokens eliminated, colors resolved to RGB.")
+message ResolvedStyle {
+    fg            @0 : rgb
+    bg            @1 : rgb
+    bold          @2 : bool
+    italic        @3 : bool
+    underline     @4 : bool
+    dim           @5 : bool
+    strikethrough @6 : bool
+    reverse       @7 : bool
+    blink         @8 : bool
+}
+
+@doc("Client capability declaration for capability-based rendering adaptation.")
+message ClientCapabilities {
+    color_depth    @0 : ColorDepth
+    unicode        @1 : UnicodeLevel
+    image_protocol @2 : ImageProtocol
+    overlay        @3 : bool
+    vt_passthrough @4 : bool
+    max_fps        @5 : u16
+}
+
+@doc("Summary info for a session, used in ListSessions response and HelloAck.")
+message SessionInfo {
+    session_id @0 : SessionId
+    name       @1 : optional<string>
+    pane_count @2 @varint : u16
+    isolation  @3 : IsolationTier
+    state      @4 : SessionState
+}
+
+@doc("Per-session theme color overrides.")
+message ThemeOverride {
+    fg        @0 : optional<rgb>
+    bg        @1 : optional<rgb>
+    cursor    @2 : optional<rgb>
+    selection @3 : optional<rgb>
+}
