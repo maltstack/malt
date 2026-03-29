@@ -54,7 +54,7 @@ These are tracked here (not as vexil-lang issues) because they were discovered d
 
 ---
 
-## Gap 5: Parser treats `@` after bare import as version constraint
+## ~~Gap 5: Parser treats `@` after bare import as version constraint~~ FIXED (vexil-lang #48)
 
 **Problem:** `vexilc check` fails on any file that has `import malt.common` (without a `@ ^X.Y.Z` version constraint) followed by any `@annotation`. The parser reads the `@` from `@doc(...)` or `@domain(...)` as the start of a version constraint on the import statement, then fails with "expected `^` after `@` in version constraint."
 
