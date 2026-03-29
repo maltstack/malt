@@ -10,3 +10,7 @@ description = "MASH — POSIX shell for MALT"
 glob = "0.3"
 thiserror = "2"
 tracing = "0.1"
+malt-platform = { path = "../malt-platform" }
+
+[dev-dependencies]
+tempfile = "3"
