@@ -448,3 +448,57 @@ fn glob_quoted_star_literal() {
     let result = expand_word("'*.rs'", &mut env).unwrap();
     assert_eq!(result, vec!["*.rs"]);
 }
+
+// ── Heredoc expansion tests ──
+
+#[test]
+fn heredoc_expands_vars() {
+    let mut env = Env::empty();
+    env.set("NAME", mash::env::Variable::string("world")).unwrap();
+    let result = expand_heredoc_body("hello $NAME\n", &mut env).unwrap();
+    assert_eq!(result, "hello world\n");
+}
+
+#[test]
+fn heredoc_quotes_literal() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("val")).unwrap();
+    let result = expand_heredoc_body("it's \"here\" $X\n", &mut env).unwrap();
+    assert_eq!(result, "it's \"here\" val\n");
+}
+
+// ── Full pipeline / multi-var tests ──
+
+#[test]
+fn full_pipeline_mixed() {
+    let mut env = Env::empty();
+    env.set("USER", mash::env::Variable::string("alice")).unwrap();
+    env.set("HOME", mash::env::Variable::string("/home/alice")).unwrap();
+    let result = expand_word_nosplit("Welcome $USER to $HOME", &mut env).unwrap();
+    assert_eq!(result, "Welcome alice to /home/alice");
+}
+
+#[test]
+fn mixed_quoting_and_expansion() {
+    let mut env = Env::empty();
+    env.set("X", mash::env::Variable::string("world")).unwrap();
+    let result = expand_word_nosplit("'hello' \"$X\"", &mut env).unwrap();
+    assert_eq!(result, "hello world");
+}
+
+// ── Nested expansion tests ──
+
+#[test]
+fn nested_parameter_default() {
+    let mut env = Env::empty();
+    env.set("FALLBACK", mash::env::Variable::string("default")).unwrap();
+    let result = expand_word_nosplit("${X:-${FALLBACK}}", &mut env).unwrap();
+    assert_eq!(result, "default");
+}
+
+#[test]
+fn arith_in_word() {
+    let mut env = Env::empty();
+    let result = expand_word_nosplit("count=$((5 + 3))", &mut env).unwrap();
+    assert_eq!(result, "count=8");
+}
