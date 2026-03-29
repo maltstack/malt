@@ -7,5 +7,5 @@ license.workspace = true
 description = "VNP message types, wire framing, and protocol primitives for MALT"
 
 [dependencies]
-vexil-runtime = { path = "../../../vexil-lang/crates/vexil-runtime" }
+vexil-runtime = { git = "https://github.com/vexil-lang/vexil", branch = "main" }
 thiserror = "2"
