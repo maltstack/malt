@@ -1,0 +1,59 @@
+@version("0.1.0")
+namespace malt.system
+
+import malt.common
+
+@non_exhaustive
+@doc("Plugin lifecycle event type.")
+enum PluginEventType {
+    Loaded   @0
+    Unloaded @1
+    Error    @2
+    Log      @3
+}
+
+# Priority: Reliable
+@doc("Structured output from a command, parsed by the Structured Output Parser.")
+@domain(System) @type(0x01) @revision(1)
+message StructuredOutput {
+    @doc("Parser kind, e.g. 'CargoBuild', 'RustcError', 'GitStatus'.")
+    kind    @0 : string
+    content @1 : bytes
+}
+
+# Priority: Low
+@doc("Plugin lifecycle or diagnostic event.")
+@domain(System) @type(0x02) @revision(1)
+message PluginEvent {
+    plugin_id  @0 : string
+    event_type @1 : PluginEventType
+    data       @2 : optional<bytes>
+}
+
+# Priority: Low
+@doc("Diagnostic message from any subsystem.")
+@domain(System) @type(0x03) @revision(1)
+message Diagnostic {
+    severity @0 : Severity
+    message  @1 : string
+    source   @2 : optional<string>
+}
+
+# Priority: Low
+@doc("Liveness heartbeat. Used by compat workers and other subsystems.")
+@domain(System) @type(0x04) @revision(1)
+message Heartbeat {
+    @doc("Monotonic sequence number for detecting missed heartbeats.")
+    seq    @0 @varint : u32
+    @doc("Identifies the heartbeat source, e.g. 'compat-worker-3'.")
+    source @1 : optional<string>
+}
+
+# Priority: Reliable
+@doc("Recoverable error from a subsystem.")
+@domain(System) @type(0x05) @revision(1)
+message Error {
+    code    @0 @varint : u32
+    message @1 : string
+    context @2 : optional<string>
+}

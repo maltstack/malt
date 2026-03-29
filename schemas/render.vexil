@@ -1,0 +1,127 @@
+@version("0.1.0")
+namespace malt.render
+
+import malt.common
+
+@non_exhaustive
+@doc("Image pixel data format for DrawImage.")
+enum ImageFormat {
+    Rgba  @0
+    Png   @1
+    Sixel @2
+}
+
+@non_exhaustive
+@doc("Concrete drawing instruction. All positions absolute, all colors resolved to RGB.")
+union RenderCommand {
+    SetCursor    @0 { x @0 : u16  y @1 : u16 }
+    SetClip      @1 { x @0 : u16  y @1 : u16  width @2 : u16  height @3 : u16 }
+    ClearClip    @2 {}
+    DrawText     @3 {
+        x     @0 : u16
+        y     @1 : u16
+        text  @2 : string
+        style @3 : ResolvedStyle
+    }
+    DrawRect     @4 {
+        x      @0 : u16
+        y      @1 : u16
+        width  @2 : u16
+        height @3 : u16
+        style  @4 : ResolvedStyle
+    }
+    DrawBorder   @5 {
+        x      @0 : u16
+        y      @1 : u16
+        width  @2 : u16
+        height @3 : u16
+        style  @4 : ResolvedStyle
+    }
+    DrawLine     @6 {
+        x1    @0 : u16
+        y1    @1 : u16
+        x2    @2 : u16
+        y2    @3 : u16
+        style @4 : ResolvedStyle
+    }
+    DrawImage    @7 {
+        x      @0 : u16
+        y      @1 : u16
+        width  @2 : u16
+        height @3 : u16
+        data   @4 : bytes
+        format @5 : ImageFormat
+    }
+    ScrollRegion @8 {
+        x      @0 : u16
+        y      @1 : u16
+        width  @2 : u16
+        height @3 : u16
+        delta  @4 : i16
+    }
+    PushLayer    @9 {}
+    PopLayer     @10 {}
+    @doc("VT passthrough for compat panes. rect defines the pane's screen region.")
+    WriteRaw     @11 {
+        data   @0 : bytes
+        x      @1 : u16
+        y      @2 : u16
+        width  @3 : u16
+        height @4 : u16
+    }
+    Clear        @12 {}
+    Flush        @13 {}
+}
+
+# Priority: High
+@doc("One frame's worth of drawing instructions.")
+@domain(Render) @type(0x01) @revision(1)
+message RenderBatch {
+    frame_seq @0 : u64
+    commands  @1 : array<RenderCommand>
+}
+
+# Priority: Normal
+@doc("Client acknowledges receipt of a frame. Backpressure mechanism.")
+@domain(Render) @type(0x02) @revision(1)
+message FrameAck {
+    frame_seq @0 : u64
+}
+
+# Priority: Reliable
+@doc("Atomic snapshot sent on client attach. Includes full layout and initial frame.")
+@domain(Render) @type(0x03) @revision(1)
+message InitialState {
+    frame_seq @0 : u64
+    layout    @1 : LayoutNode
+    panes     @2 : array<ResolvedPane>
+    commands  @3 : array<RenderCommand>
+}
+
+# Priority: Reliable
+@doc("Client requests a fresh InitialState snapshot.")
+@domain(Render) @type(0x04) @revision(1)
+message SyncRequest {}
+
+# Priority: Reliable
+@doc("Daemon disconnects a client that hasn't sent FrameAck in 10 seconds.")
+@domain(Render) @type(0x05) @revision(1)
+message SlowClientDisconnect {
+    reason @0 : string
+}
+
+# Priority: Normal
+@doc("Client requests scrollback content for a pane.")
+@domain(Render) @type(0x06) @revision(1)
+message ScrollbackRequest {
+    pane_id @0 : PaneId
+    lines   @1 @varint : u32
+}
+
+# Priority: Normal
+@doc("Scrollback content response.")
+@domain(Render) @type(0x07) @revision(1)
+message ScrollbackResponse {
+    pane_id @0 : PaneId
+    data    @1 : bytes
+}

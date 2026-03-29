@@ -1,0 +1,34 @@
+@version("0.1.0")
+namespace malt.persist.session
+
+import malt.common
+
+@doc("Persisted session state. Stored in .vx (text) and optionally .vxb (binary).")
+message PersistedSession {
+    @doc("Persistence format version. Starts at 1. Read first for version-gating.")
+    schema_version @0 : u32
+    id             @1 : SessionId
+    name           @2 : optional<string>
+    layout         @3 : LayoutNode
+    focus          @4 : PaneId
+    @doc("Key is PaneId as raw u32. See VEXIL_GAPS.md — newtypes cannot be map keys.")
+    panes          @5 : map<u32, PersistedPane>
+    theme          @6 : optional<ThemeOverride>
+    group          @7 : optional<GroupId>
+    isolation      @8 : IsolationTier
+}
+
+@doc("Persisted pane state within a session.")
+message PersistedPane {
+    cwd       @0 : string
+    title     @1 : optional<string>
+    pane_type @2 : PersistedPaneType
+}
+
+@non_exhaustive
+@doc("Discriminated pane type with type-specific restoration data.")
+union PersistedPaneType {
+    Shell  @0 { shell_path @0 : string }
+    App    @1 { app_id @0 : string  config @1 : optional<bytes> }
+    Compat @2 { program @0 : string  args @1 : array<string> }
+}

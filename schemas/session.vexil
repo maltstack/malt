@@ -1,0 +1,52 @@
+@version("0.1.0")
+namespace malt.session
+
+import malt.common
+
+# All session messages are Priority: Reliable
+
+@doc("Create a new session.")
+@domain(Session) @type(0x01) @revision(1)
+message CreateSession {
+    name      @0 : optional<string>
+    isolation @1 : IsolationTier
+    group     @2 : optional<GroupId>
+}
+
+@doc("Attach to an existing session.")
+@domain(Session) @type(0x02) @revision(1)
+message AttachSession {
+    session_id @0 : SessionId
+    authority  @1 : InputAuthority
+}
+
+@doc("Detach from a session.")
+@domain(Session) @type(0x03) @revision(1)
+message DetachSession {
+    session_id @0 : SessionId
+}
+
+@doc("Request the list of available sessions.")
+@domain(Session) @type(0x04) @revision(1)
+message ListSessions {}
+
+@doc("Response to ListSessions.")
+@domain(Session) @type(0x05) @revision(1)
+message SessionList {
+    sessions @0 : array<SessionInfo>
+}
+
+@doc("Request to claim or change input authority on a session.")
+@domain(Session) @type(0x06) @revision(1)
+message InputClaim {
+    session_id @0 : SessionId
+    authority  @1 : InputAuthority
+}
+
+@doc("Notification that input authority has changed.")
+@domain(Session) @type(0x07) @revision(1)
+message InputAuthorityChanged {
+    session_id @0 : SessionId
+    holder     @1 : optional<string>
+    authority  @2 : InputAuthority
+}

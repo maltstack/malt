@@ -1,0 +1,34 @@
+@version("0.1.0")
+namespace malt.persist.daemon
+
+import malt.common
+
+@doc("Group policy governing resource limits and lifecycle behavior.")
+message GroupPolicy {
+    min_tier          @0 : IsolationTier
+    max_memory_mb     @1 @varint : u32
+    max_cpu_cores     @2 : u16
+    max_sessions      @3 @varint : u16
+    ttl_secs          @4 : optional<u32>
+    idle_timeout_secs @5 : optional<u32>
+    on_empty          @6 : OnEmpty
+    on_oom            @7 : OnOom
+}
+
+@doc("Persisted state for a session group.")
+message GroupState {
+    id          @0 : GroupId
+    name        @1 : string
+    policy      @2 : optional<GroupPolicy>
+    session_ids @3 : array<SessionId>
+}
+
+@doc("Top-level daemon state file. Stored in daemon.vx.")
+message DaemonState {
+    @doc("Persistence format version. Starts at 1. Read first for version-gating.")
+    schema_version  @0 : u32
+    sessions        @1 : array<SessionId>
+    active_groups   @2 : array<GroupState>
+    next_session_id @3 : u32
+    next_pane_id    @4 : u32
+}

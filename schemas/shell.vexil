@@ -1,0 +1,40 @@
+@version("0.1.0")
+namespace malt.shell
+
+import malt.common
+
+# Priority: Reliable
+@doc("A command has started executing in a shell pane.")
+@domain(Shell) @type(0x01) @revision(1)
+message CommandStarted {
+    @doc("Monotonic command ID for correlating with CommandFinished and OutputChunk.")
+    command_id @0 : u32
+    cmd        @1 : string
+}
+
+# Priority: Reliable
+@doc("A command has finished executing.")
+@domain(Shell) @type(0x02) @revision(1)
+message CommandFinished {
+    command_id  @0 : u32
+    exit_code   @1 : i32
+    duration_us @2 : u64
+}
+
+# Priority: Reliable
+@doc("Shell is ready for the next command. Emitted after prompt is displayed.")
+@domain(Shell) @type(0x03) @revision(1)
+message PromptReady {
+    cwd @0 : string
+}
+
+# Priority: Normal
+@doc("Raw output data from a command or PTY.")
+@doc("command_tag is present when output originates from a known command")
+@doc("(MASH sets it at emission time); absent for startup output, background")
+@doc("jobs with no command association, or raw PTY output from compat panes.")
+@domain(Shell) @type(0x04) @revision(1)
+message OutputChunk {
+    data        @0 : bytes
+    command_tag @1 : optional<string>
+}

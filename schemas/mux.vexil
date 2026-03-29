@@ -1,0 +1,85 @@
+@version("0.1.0")
+namespace malt.mux
+
+import malt.common
+
+# All mux messages are Priority: Reliable
+
+@doc("A new pane has been created.")
+@domain(Mux) @type(0x01) @revision(1)
+message PaneCreated {
+    pane_id @0 : PaneId
+    kind    @1 : PaneKind
+    title   @2 : optional<string>
+}
+
+@doc("A pane has been destroyed.")
+@domain(Mux) @type(0x02) @revision(1)
+message PaneDestroyed {
+    pane_id @0 : PaneId
+}
+
+@doc("The layout tree has changed. Sent after any structural operation.")
+@domain(Mux) @type(0x03) @revision(1)
+message LayoutChanged {
+    layout @0 : LayoutNode
+}
+
+@doc("Split an existing pane, creating a new sibling.")
+@domain(Mux) @type(0x04) @revision(1)
+message SplitPane {
+    target    @0 : PaneId
+    direction @1 : Direction
+    size      @2 : SplitSize
+    @doc("Kind of pane to create. Defaults to Shell when absent.")
+    kind      @3 : optional<PaneKind>
+}
+
+@doc("Close a pane and remove it from the layout.")
+@domain(Mux) @type(0x05) @revision(1)
+message ClosePane {
+    pane_id @0 : PaneId
+}
+
+@doc("Convert a pane to a floating overlay.")
+@domain(Mux) @type(0x06) @revision(1)
+message FloatPane {
+    pane_id @0 : PaneId
+    x       @1 : u16
+    y       @2 : u16
+    width   @3 : u16
+    height  @4 : u16
+}
+
+@doc("Swap the positions of two panes in the layout.")
+@domain(Mux) @type(0x07) @revision(1)
+message SwapPanes {
+    a @0 : PaneId
+    b @1 : PaneId
+}
+
+@doc("Move focus in a direction.")
+@domain(Mux) @type(0x08) @revision(1)
+message FocusDirection {
+    direction @0 : FocusDir
+}
+
+@doc("Resize a specific child within a split node.")
+@domain(Mux) @type(0x09) @revision(1)
+message ResizeSplit {
+    split_id    @0 : SplitId
+    child_index @1 : u16
+    size        @2 : SplitSize
+}
+
+@doc("Save the current layout as a named preset.")
+@domain(Mux) @type(0x0A) @revision(1)
+message SaveLayout {
+    name @0 : string
+}
+
+@doc("Load a named layout preset, replacing the current layout.")
+@domain(Mux) @type(0x0B) @revision(1)
+message LoadLayout {
+    name @0 : string
+}

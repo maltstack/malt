@@ -1,0 +1,65 @@
+@version("0.1.0")
+namespace malt.input
+
+import malt.common
+
+@non_exhaustive
+@doc("Named keyboard keys (non-printable).")
+enum NamedKey {
+    Enter     @0
+    Escape    @1
+    Tab       @2
+    Backspace @3
+    Insert    @4
+    Delete    @5
+    Home      @6
+    End       @7
+    PageUp    @8
+    PageDown  @9
+    Up        @10
+    Down      @11
+    Left      @12
+    Right     @13
+}
+
+@non_exhaustive
+@doc("Key value — Unicode character, named key, or function key.")
+union KeyValue {
+    Char     @0 { codepoint @0 : u32 }
+    Named    @1 { key @0 : NamedKey }
+    Function @2 { number @0 : u8 }
+}
+
+# Priority: Critical (not on bus — direct routing)
+@doc("Keyboard input event. Routed directly from daemon core to focused pane owner.")
+@domain(Input) @type(0x01) @revision(1)
+message KeyEvent {
+    key       @0 : KeyValue
+    modifiers @1 : KeyModifiers
+}
+
+# Priority: Critical
+@doc("Mouse input event.")
+@domain(Input) @type(0x02) @revision(1)
+message MouseEvent {
+    x         @0 : u16
+    y         @1 : u16
+    kind      @2 : MouseEventKind
+    button    @3 : MouseButtonKind
+    modifiers @4 : KeyModifiers
+}
+
+# Priority: Critical
+@doc("Signal delivery via VNP. Daemon translates Ctrl-C → SignalInput{Int}, etc.")
+@domain(Input) @type(0x03) @revision(1)
+message SignalInput {
+    signal @0 : SignalKind
+}
+
+# Priority: Critical
+@doc("Terminal resize event. Daemon enforces PTY resize before emitting RenderCommands.")
+@domain(Input) @type(0x04) @revision(1)
+message Resize {
+    cols @0 : u16
+    rows @1 : u16
+}

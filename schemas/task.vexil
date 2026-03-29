@@ -1,0 +1,37 @@
+@version("0.1.0")
+namespace malt.task
+
+import malt.common
+
+@non_exhaustive
+@doc("Task lifecycle state.")
+enum TaskState {
+    Pending  @0
+    Running  @1
+    Complete @2
+    Failed   @3
+}
+
+# All task messages are Priority: Reliable
+
+@doc("Create a new background task.")
+@domain(Task) @type(0x01) @revision(1)
+message TaskCreate {
+    kind     @0 : string
+    metadata @1 : optional<string>
+}
+
+@doc("Task status update.")
+@domain(Task) @type(0x02) @revision(1)
+message TaskStatus {
+    task_id  @0 : u32
+    state    @1 : TaskState
+    progress @2 : optional<u8>
+}
+
+@doc("Task has completed (success or failure).")
+@domain(Task) @type(0x03) @revision(1)
+message TaskComplete {
+    task_id @0 : u32
+    result  @1 : result<string, string>
+}

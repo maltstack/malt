@@ -1,0 +1,10 @@
+@version("0.1.0")
+namespace malt.persist.layout
+
+import malt.common
+
+@doc("Named layout preset for SaveLayout/LoadLayout.")
+message PersistedLayout {
+    name   @0 : string
+    layout @1 : LayoutNode
+}

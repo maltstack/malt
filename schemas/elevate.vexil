@@ -1,0 +1,54 @@
+@version("0.1.0")
+namespace malt.elevate
+
+import malt.common
+
+@doc("Daemon → helper: initiate authenticated connection.")
+message ElevateHello {
+    @doc("Single-use nonce from the nonce file. Rotated hourly with 30s overlap.")
+    nonce   @0 : u64
+    version @1 : u32
+}
+
+@doc("Helper → daemon: authentication result.")
+message ElevateHelloAck {
+    nonce    @0 : u64
+    accepted @1 : bool
+    reason   @2 : optional<string>
+}
+
+@doc("Wrapper carrying correlation ID for request/response pairing.")
+message ElevateRequestEnvelope {
+    request_id @0 : u32
+    request    @1 : ElevateRequest
+}
+
+@non_exhaustive
+@doc("Privileged operation request. Platform-specific variants.")
+union ElevateRequest {
+    # Linux
+    CreateNamespace  @0 { pid @0 : u32  tier @1 : IsolationTier }
+    MountOverlay     @1 { lower @0 : string  upper @1 : string  merged @2 : string }
+    SetCgroup        @2 { pid @0 : u32  memory_mb @1 : u32  cpu_pct @2 : u16 }
+    SetupNetns       @3 { pid @0 : u32  bridge @1 : string  veth_host @2 : string  veth_ns @3 : string }
+    ApplySeccomp     @4 { pid @0 : u32  policy @1 : bytes }
+    # Windows
+    CreateSymlink    @5 { target @0 : string  link @1 : string }
+    CreateRestrictedToken @6 { pid @0 : u32  tier @1 : IsolationTier }
+    ManageHcsContainer @7 { operation @0 : string  config @1 : bytes }
+    # macOS
+    ApplySeatbelt    @8 { pid @0 : u32  profile @1 : string }
+    # Cross-platform
+    BindPort         @9 { port @0 : u16  socket_path @1 : string }
+}
+
+@doc("Helper → daemon: operation result.")
+message ElevateResponse {
+    request_id @0 : u32
+    result     @1 : result<bytes, string>
+}
+
+@doc("Either side: graceful shutdown.")
+message ElevateShutdown {
+    reason @0 : string
+}

@@ -1,0 +1,23 @@
+@version("0.1.0")
+namespace malt.envelope
+
+@doc("VNP message envelope. Bit-packed header preceding every payload.")
+message Envelope {
+    @doc("Wire format version (0-15). Distinct from Hello.version which is the software protocol version.")
+    wire_version @0 : u4
+
+    @doc("Message domain (0-15). See domain ID assignment table in schema design spec.")
+    domain       @1 : u4
+
+    @doc("Message type within domain (0-127).")
+    msg_type     @2 : u7
+
+    @doc("Target session. 0 = daemon-global.")
+    session_id   @3 : u32
+
+    @doc("Microseconds since daemon start. Wraps at ~8.9 years.")
+    timestamp    @4 : u48
+
+    @doc("Optional correlation ID for request/response pairing.")
+    msg_id       @5 : optional<u32>
+}
