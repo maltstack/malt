@@ -623,6 +623,100 @@ fn nested_arith_in_command_subst() {
 }
 
 // ---------------------------------------------------------------------------
+// Heredocs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn heredoc_basic() {
+    let input = "cat <<EOF\nhello\nworld\nEOF\n";
+    let toks = nodes(input);
+    let body = toks.iter().find_map(|t| match t {
+        Token::HereDocBody { body, quoted } => Some((body.clone(), *quoted)),
+        _ => None,
+    });
+    assert_eq!(body, Some(("hello\nworld\n".to_string(), false)));
+}
+
+#[test]
+fn heredoc_strip_tabs() {
+    let input = "cat <<-EOF\n\thello\n\tworld\nEOF\n";
+    let toks = nodes(input);
+    let body = toks.iter().find_map(|t| match t {
+        Token::HereDocBody { body, .. } => Some(body.clone()),
+        _ => None,
+    });
+    assert_eq!(body, Some("hello\nworld\n".to_string()));
+}
+
+#[test]
+fn heredoc_quoted_delimiter_single() {
+    let input = "cat <<'EOF'\nhello $var\nEOF\n";
+    let toks = nodes(input);
+    let body = toks.iter().find_map(|t| match t {
+        Token::HereDocBody { body, quoted } => Some((body.clone(), *quoted)),
+        _ => None,
+    });
+    assert_eq!(body, Some(("hello $var\n".to_string(), true)));
+}
+
+#[test]
+fn heredoc_quoted_delimiter_double() {
+    let input = "cat <<\"EOF\"\nhello $var\nEOF\n";
+    let toks = nodes(input);
+    let body = toks.iter().find_map(|t| match t {
+        Token::HereDocBody { quoted, .. } => Some(*quoted),
+        _ => None,
+    });
+    assert_eq!(body, Some(true));
+}
+
+#[test]
+fn heredoc_unterminated() {
+    let input = "cat <<EOF\nhello\n";
+    let results: Vec<_> = Lexer::new(input).collect();
+    assert!(results.iter().any(|r| r.is_err()));
+}
+
+#[test]
+fn heredoc_empty_body() {
+    let input = "cat <<EOF\nEOF\n";
+    let toks = nodes(input);
+    let body = toks.iter().find_map(|t| match t {
+        Token::HereDocBody { body, .. } => Some(body.clone()),
+        _ => None,
+    });
+    assert_eq!(body, Some(String::new()));
+}
+
+#[test]
+fn heredoc_token_sequence() {
+    // Verify the token order: Word(cat), Redirect(HereDoc), Word(EOF), Newline, HereDocBody, Eof
+    let input = "cat <<EOF\nhello\nEOF\n";
+    let toks = nodes(input);
+    assert!(matches!(&toks[0], Token::Word(_)));           // cat
+    assert!(matches!(&toks[1], Token::Redirect(RedirectKind::HereDoc)));
+    assert!(matches!(&toks[2], Token::Word(_)));           // EOF (delimiter)
+    assert!(matches!(&toks[3], Token::Newline));
+    assert!(matches!(&toks[4], Token::HereDocBody { .. }));
+}
+
+#[test]
+fn multiple_heredocs() {
+    let input = "cat <<A <<B\nline_a\nA\nline_b\nB\n";
+    let toks = nodes(input);
+    let bodies: Vec<_> = toks
+        .iter()
+        .filter_map(|t| match t {
+            Token::HereDocBody { body, .. } => Some(body.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0], "line_a\n");
+    assert_eq!(bodies[1], "line_b\n");
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

@@ -17,10 +17,12 @@
 use crate::ast::{LexError, RedirectKind, Span, Spanned, Token};
 
 /// A pending heredoc whose `<<` / `<<-` has been emitted but whose delimiter
-/// has not yet been consumed.
+/// has not yet been consumed (or has been consumed but body not yet read).
 #[derive(Debug)]
 pub struct PendingHeredoc {
+    pub delimiter: String,
     pub strip_tabs: bool,
+    pub quoted: bool,
 }
 
 /// Streaming zero-copy lexer for MASH shell input.
@@ -29,6 +31,11 @@ pub struct Lexer<'a> {
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
     /// Heredocs awaiting delimiter words and body accumulation.
     pub pending_heredocs: Vec<PendingHeredoc>,
+    /// Number of `<<`/`<<-` operators whose delimiter word has not yet been consumed.
+    awaiting_heredoc_count: usize,
+    /// Buffer for tokens that were generated ahead of time (e.g. HereDocBody tokens
+    /// resolved at a newline boundary).
+    buffered_tokens: Vec<Spanned<Token>>,
     finished: bool,
 }
 
@@ -39,6 +46,8 @@ impl<'a> Lexer<'a> {
             input,
             chars: input.char_indices().peekable(),
             pending_heredocs: Vec::new(),
+            awaiting_heredoc_count: 0,
+            buffered_tokens: Vec::new(),
             finished: false,
         }
     }
@@ -76,12 +85,22 @@ impl<'a> Lexer<'a> {
                     }
                     Some('-') => {
                         self.next_char();
-                        self.pending_heredocs.push(PendingHeredoc { strip_tabs: true });
+                        self.pending_heredocs.push(PendingHeredoc {
+                            delimiter: String::new(),
+                            strip_tabs: true,
+                            quoted: false,
+                        });
+                        self.awaiting_heredoc_count += 1;
                         let span = self.make_span(start, start + 3);
                         Ok(Spanned { node: Token::Redirect(RedirectKind::HereDocStrip), span })
                     }
                     _ => {
-                        self.pending_heredocs.push(PendingHeredoc { strip_tabs: false });
+                        self.pending_heredocs.push(PendingHeredoc {
+                            delimiter: String::new(),
+                            strip_tabs: false,
+                            quoted: false,
+                        });
+                        self.awaiting_heredoc_count += 1;
                         let span = self.make_span(start, start + 2);
                         Ok(Spanned { node: Token::Redirect(RedirectKind::HereDoc), span })
                     }
@@ -610,6 +629,103 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Extract a heredoc delimiter from a word token's text.
+    ///
+    /// Returns `(delimiter, quoted)` where `quoted` is true when any quoting
+    /// mechanism was used (meaning no expansion should occur in the body).
+    fn extract_heredoc_delimiter(word: &str) -> (String, bool) {
+        let trimmed = word.trim();
+        // Fully single-quoted: 'DELIM' -> (DELIM, true)
+        if trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2 {
+            return (trimmed[1..trimmed.len() - 1].to_string(), true);
+        }
+        // Fully double-quoted: "DELIM" -> (DELIM, true)
+        if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+            return (trimmed[1..trimmed.len() - 1].to_string(), true);
+        }
+        // Backslash-escaped: \D\E\L -> (DEL, true)
+        if trimmed.contains('\\') {
+            let stripped: String = trimmed.chars().filter(|&c| c != '\\').collect();
+            return (stripped, true);
+        }
+        // Unquoted
+        (trimmed.to_string(), false)
+    }
+
+    /// Read the body of a heredoc, consuming characters until a line matching
+    /// `delimiter` is found. For `<<-` (strip_tabs), leading tabs are stripped
+    /// from each line including the delimiter line.
+    ///
+    /// Returns the accumulated body string (without the delimiter line).
+    fn read_heredoc_body(
+        &mut self,
+        delimiter: &str,
+        strip_tabs: bool,
+    ) -> Result<String, LexError> {
+        let mut body = String::new();
+        let mut line = String::new();
+
+        loop {
+            match self.next_char() {
+                Some((_, '\r')) => {
+                    // Handle \r\n as a single newline.
+                    if self.peek_char() == Some('\n') {
+                        self.next_char();
+                    }
+                    let check_line = if strip_tabs {
+                        line.trim_start_matches('\t')
+                    } else {
+                        &line
+                    };
+                    if check_line == delimiter {
+                        return Ok(body);
+                    }
+                    if strip_tabs {
+                        body.push_str(line.trim_start_matches('\t'));
+                    } else {
+                        body.push_str(&line);
+                    }
+                    body.push('\n');
+                    line.clear();
+                }
+                Some((_, '\n')) => {
+                    let check_line = if strip_tabs {
+                        line.trim_start_matches('\t')
+                    } else {
+                        &line
+                    };
+                    if check_line == delimiter {
+                        return Ok(body);
+                    }
+                    if strip_tabs {
+                        body.push_str(line.trim_start_matches('\t'));
+                    } else {
+                        body.push_str(&line);
+                    }
+                    body.push('\n');
+                    line.clear();
+                }
+                Some((_, ch)) => {
+                    line.push(ch);
+                }
+                None => {
+                    // Check final line (no trailing newline).
+                    let check_line = if strip_tabs {
+                        line.trim_start_matches('\t')
+                    } else {
+                        &line
+                    };
+                    if check_line == delimiter {
+                        return Ok(body);
+                    }
+                    return Err(LexError::UnterminatedHeredoc {
+                        delimiter: delimiter.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
     /// Try to skip whitespace (space, tab). Returns true if any was skipped.
     fn skip_whitespace(&mut self) -> bool {
         let mut skipped = false;
@@ -663,6 +779,11 @@ impl<'a> Iterator for Lexer<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         if self.finished {
             return None;
+        }
+
+        // Drain buffered tokens first (e.g. HereDocBody tokens queued at newline).
+        if let Some(tok) = self.buffered_tokens.pop() {
+            return Some(Ok(tok));
         }
 
         // Skip whitespace.
@@ -865,6 +986,63 @@ impl<'a> Iterator for Lexer<'a> {
                 Ok(Spanned { node: Token::Word(word_span), span: word_span })
             }
         };
+
+        // Phase 2: If the token is a Word and we are awaiting heredoc delimiters,
+        // extract the delimiter from the word text and fill it into the most recent
+        // PendingHeredoc that still has an empty delimiter.
+        if let Ok(ref spanned) = result {
+            if self.awaiting_heredoc_count > 0 {
+                if let Token::Word(span) = &spanned.node {
+                    let word_text = span.text(self.input);
+                    let (delimiter, quoted) = Self::extract_heredoc_delimiter(word_text);
+                    // Find the first pending heredoc with an empty delimiter.
+                    for hd in &mut self.pending_heredocs {
+                        if hd.delimiter.is_empty() {
+                            hd.delimiter = delimiter;
+                            hd.quoted = quoted;
+                            break;
+                        }
+                    }
+                    self.awaiting_heredoc_count -= 1;
+                }
+            }
+        }
+
+        // Phase 3: If the token is a Newline and there are pending heredocs with
+        // delimiters ready, resolve their bodies now. Buffer the HereDocBody tokens
+        // to be drained on subsequent next() calls.
+        if let Ok(ref spanned) = result {
+            if matches!(spanned.node, Token::Newline) {
+                let ready = self
+                    .pending_heredocs
+                    .iter()
+                    .all(|hd| !hd.delimiter.is_empty());
+                if ready && !self.pending_heredocs.is_empty() {
+                    let heredocs: Vec<PendingHeredoc> =
+                        self.pending_heredocs.drain(..).collect();
+                    let mut bodies = Vec::new();
+                    for hd in heredocs {
+                        match self.read_heredoc_body(&hd.delimiter, hd.strip_tabs) {
+                            Ok(body) => {
+                                let eof_pos = self.input.len();
+                                let span = self.make_span(eof_pos, eof_pos);
+                                bodies.push(Spanned {
+                                    node: Token::HereDocBody {
+                                        body,
+                                        quoted: hd.quoted,
+                                    },
+                                    span,
+                                });
+                            }
+                            Err(e) => return Some(Err(e)),
+                        }
+                    }
+                    // Reverse so that pop() yields them in order.
+                    bodies.reverse();
+                    self.buffered_tokens = bodies;
+                }
+            }
+        }
 
         Some(result)
     }
