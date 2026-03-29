@@ -324,3 +324,290 @@ fn nested_for_in_if() {
     let cmds = parse("if true; then for x in a b; do echo $x; done; fi").unwrap();
     assert!(matches!(&cmds[0].node, Command::If { .. }));
 }
+
+// ---------------------------------------------------------------------------
+// Regression tests — complex POSIX constructs ported from vexil-shell suite
+// ---------------------------------------------------------------------------
+//
+// The vexil-shell posix_regression.rs tests are all execution tests (they call
+// execute_list + Env).  These regression tests are parse-only: every case below
+// must parse without error.  If a test panics here the parser has a bug.
+
+mod regression {
+    use super::*;
+
+    // Complex real-world patterns that must parse successfully
+
+    #[test]
+    fn nested_command_substitution_in_assignment() {
+        parse("x=$(echo $(date +%Y))").unwrap();
+    }
+
+    #[test]
+    fn heredoc_in_pipeline() {
+        parse("cat <<EOF | grep foo\nhello foo\nbar\nEOF\n").unwrap();
+    }
+
+    #[test]
+    fn multiline_pipeline() {
+        parse("echo hello |\n  grep h |\n  wc -l").unwrap();
+    }
+
+    #[test]
+    fn case_with_complex_patterns() {
+        parse("case $1 in\n  -h|--help) echo help ;;\n  -v|--version) echo 1.0 ;;\n  *) echo unknown ;;\nesac").unwrap();
+    }
+
+    #[test]
+    fn function_with_redirects() {
+        parse("log() { echo \"$@\" >> /tmp/log; }").unwrap();
+    }
+
+    #[test]
+    fn arithmetic_for_with_nested_arith() {
+        parse("for (( i=0; i < $((n*2)); i++ )); do echo $i; done").unwrap();
+    }
+
+    #[test]
+    fn conditional_with_regex() {
+        parse("[[ $x =~ ^[0-9]+$ ]]").unwrap();
+    }
+
+    #[test]
+    fn subshell_with_env() {
+        parse("(export FOO=bar; echo $FOO)").unwrap();
+    }
+
+    #[test]
+    fn complex_redirect_chain() {
+        parse("cmd 2>&1 1>/dev/null").unwrap();
+    }
+
+    #[test]
+    fn nested_if_for_case() {
+        parse("if true; then\n  for x in a b c; do\n    case $x in\n      a) echo first ;;\n      *) echo other ;;\n    esac\n  done\nfi").unwrap();
+    }
+
+    #[test]
+    fn while_with_redirect_on_done() {
+        parse("while read line; do echo $line; done < input.txt").unwrap();
+    }
+
+    #[test]
+    fn brace_group_in_pipeline() {
+        parse("{ echo a; echo b; } | grep a").unwrap();
+    }
+
+    #[test]
+    fn multiple_heredocs_with_process_sub() {
+        parse("diff <(cat <<A\nfoo\nA\n) <(cat <<B\nbar\nB\n)").unwrap();
+    }
+
+    #[test]
+    fn env_assign_array() {
+        parse("arr=(one two three)").unwrap();
+    }
+
+    #[test]
+    fn function_def_with_local() {
+        parse("f() { local x=1; echo $x; }").unwrap();
+    }
+
+    #[test]
+    fn coproc_with_brace_group() {
+        parse("coproc myproc { read line; echo got: $line; }").unwrap();
+    }
+
+    #[test]
+    fn time_complex_brace_group() {
+        parse("time -p { cat largefile | sort | uniq -c | sort -rn | head; }").unwrap();
+    }
+
+    #[test]
+    fn nested_double_quotes_with_expansion() {
+        parse(r#"echo "hello $(echo "world")""#).unwrap();
+    }
+
+    #[test]
+    fn here_string() {
+        parse("grep foo <<< 'hello foo bar'").unwrap();
+    }
+
+    #[test]
+    fn complex_parameter_expansion() {
+        parse("echo ${var:-${OTHER:-default}}").unwrap();
+    }
+
+    #[test]
+    fn semicolon_separated_in_brace() {
+        parse("{ cmd1; cmd2; cmd3; }").unwrap();
+    }
+
+    #[test]
+    fn background_pipeline() {
+        parse("cmd1 | cmd2 | cmd3 &").unwrap();
+    }
+
+    #[test]
+    fn select_with_case_body() {
+        parse("select opt in start stop restart; do\n  case $opt in\n    start) echo starting ;;\n    stop) echo stopping ;;\n    *) echo unknown ;;\n  esac\ndone").unwrap();
+    }
+
+    #[test]
+    fn empty_case_arm_body() {
+        parse("case $x in a) ;; b) echo b ;; esac").unwrap();
+    }
+
+    #[test]
+    fn if_with_pipeline_condition() {
+        parse("if cmd1 | cmd2; then echo yes; fi").unwrap();
+    }
+
+    #[test]
+    fn for_without_in_newline_do() {
+        parse("for x\ndo\n  echo $x\ndone").unwrap();
+    }
+
+    #[test]
+    fn consecutive_redirects() {
+        parse("cmd >file1 2>file2 3>&1").unwrap();
+    }
+
+    // ----- Additional POSIX edge cases -----
+
+    #[test]
+    fn heredoc_strip_tabs() {
+        parse("cat <<-EOF\n\thello\n\tEOF\n").unwrap();
+    }
+
+    #[test]
+    fn heredoc_quoted_delimiter_no_expansion() {
+        parse("cat <<'NOEXP'\n$HOME\nNOEXP\n").unwrap();
+    }
+
+    #[test]
+    fn double_negated_pipeline() {
+        // Two separate negated pipelines separated by semicolon
+        parse("! grep foo f; ! grep bar f").unwrap();
+    }
+
+    #[test]
+    fn function_def_keyword_form_with_parens() {
+        parse("function greet() { echo hello; }").unwrap();
+    }
+
+    #[test]
+    fn and_or_chain_three_ops() {
+        parse("a && b || c && d").unwrap();
+    }
+
+    #[test]
+    fn redirect_input_output() {
+        parse("cmd <>file").unwrap();
+    }
+
+    #[test]
+    fn redirect_clobber() {
+        parse("cmd >|file").unwrap();
+    }
+
+    #[test]
+    fn redirect_append() {
+        parse("cmd >> log.txt").unwrap();
+    }
+
+    #[test]
+    fn deeply_nested_subshells() {
+        parse("(( (echo inner) ))").unwrap();
+    }
+
+    #[test]
+    fn for_arith_empty_clauses() {
+        parse("for (( ; ; )); do break; done").unwrap();
+    }
+
+    #[test]
+    fn case_first_pattern_with_open_paren() {
+        parse("case $x in (a) echo a ;; (b) echo b ;; esac").unwrap();
+    }
+
+    #[test]
+    fn while_pipeline_condition() {
+        parse("while read -r line | grep foo; do echo $line; done").unwrap();
+    }
+
+    #[test]
+    fn until_compound_condition() {
+        parse("until [ $i -ge 10 ]; do i=$((i+1)); done").unwrap();
+    }
+
+    #[test]
+    fn pipeline_with_negation_in_list() {
+        parse("! cmd1 | cmd2 && cmd3").unwrap();
+    }
+
+    #[test]
+    fn coproc_unnamed_simple() {
+        parse("coproc sort").unwrap();
+    }
+
+    #[test]
+    fn time_pipeline() {
+        parse("time cat file | sort | uniq").unwrap();
+    }
+
+    #[test]
+    fn multiline_function_body() {
+        parse("setup() {\n  mkdir -p /tmp/work\n  cd /tmp/work\n  export WORK=/tmp/work\n}").unwrap();
+    }
+
+    #[test]
+    fn nested_arithmetic_in_condition() {
+        parse("[[ $((a+b)) -gt $((c*d)) ]]").unwrap();
+    }
+
+    #[test]
+    fn here_string_double_quoted() {
+        parse(r#"cat <<< "hello world""#).unwrap();
+    }
+
+    #[test]
+    fn redirected_while_loop() {
+        parse("while IFS= read -r line; do echo \"$line\"; done < file.txt > out.txt").unwrap();
+    }
+
+    #[test]
+    fn subshell_background() {
+        parse("(long_running_cmd arg1 arg2) &").unwrap();
+    }
+
+    #[test]
+    fn brace_group_with_redirects() {
+        parse("{ echo header; cat body.txt; echo footer; } > result.txt").unwrap();
+    }
+
+    #[test]
+    fn case_glob_patterns() {
+        parse("case $file in\n  *.tar.gz) echo tgz ;;\n  *.zip)    echo zip ;;\n  *)        echo other ;;\nesac").unwrap();
+    }
+
+    #[test]
+    fn nested_param_expansion_assign() {
+        parse("echo ${X:=${Y:=default}}").unwrap();
+    }
+
+    #[test]
+    fn multiple_env_assigns_before_command() {
+        parse("A=1 B=2 C=3 cmd arg").unwrap();
+    }
+
+    #[test]
+    fn process_substitution_in_command() {
+        parse("diff <(sort file1) <(sort file2)").unwrap();
+    }
+
+    #[test]
+    fn output_process_substitution() {
+        parse("tee >(grep error > errors.log) < input").unwrap();
+    }
+}

@@ -115,6 +115,23 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Drain any pending HereDocBody tokens at statement boundaries.
+    ///
+    /// When a heredoc is part of a pipeline (e.g. `cat <<EOF | grep foo\n...`),
+    /// the lexer emits the HereDocBody AFTER the pipeline's terminating newline,
+    /// because it can only read the body once a newline is seen. By the time
+    /// `parse_command_list_until` consumes the terminating newline for a
+    /// pipeline command, the HereDocBody token is already buffered in the lexer
+    /// and will be the next token peeked. These tokens have already been
+    /// accounted for by the `<<` redirect in the pipeline; draining them here
+    /// prevents the parser from treating them as a new command.
+    fn drain_heredoc_bodies(&mut self) -> Result<(), ParseError> {
+        while matches!(self.peek().node, Token::HereDocBody { .. }) {
+            self.advance()?;
+        }
+        Ok(())
+    }
+
     /// Skip Semicolon and Newline tokens.
     fn skip_terminators(&mut self) -> Result<(), ParseError> {
         while matches!(self.peek().node, Token::Semicolon | Token::Newline) {
@@ -164,9 +181,14 @@ impl<'a> Parser<'a> {
         self.skip_newlines()?;
 
         while !is_end(&self.peek().node) && !matches!(self.peek().node, Token::Eof) {
-            // Skip stray terminators between commands.
-            if matches!(self.peek().node, Token::Semicolon | Token::Newline) {
+            // Skip stray terminators between commands (including any HereDocBody
+            // tokens that were buffered after a newline for pipeline heredocs).
+            if matches!(
+                self.peek().node,
+                Token::Semicolon | Token::Newline | Token::HereDocBody { .. }
+            ) {
                 self.skip_terminators()?;
+                self.drain_heredoc_bodies()?;
                 continue;
             }
 
@@ -176,6 +198,9 @@ impl<'a> Parser<'a> {
             match &self.peek().node {
                 Token::Semicolon | Token::Newline => {
                     self.advance()?;
+                    // Drain any HereDocBody tokens buffered after the newline;
+                    // they belong to a heredoc redirect on the preceding command.
+                    self.drain_heredoc_bodies()?;
                     self.skip_newlines()?;
                     if !matches!(cmd.node, Command::Empty) {
                         commands.push(cmd);

@@ -724,3 +724,4 @@ fn multiple_heredocs() {
 fn word_span(start: u32, end: u32) -> Token {
     Token::Word(Span::new(start, end))
 }
+
