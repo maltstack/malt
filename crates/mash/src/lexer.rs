@@ -142,7 +142,7 @@ impl<'a> Lexer<'a> {
         // The first character (at `start`) has already been consumed.
         let mut last_byte_end = start + first_ch.len_utf8();
 
-        // If the first character is a quote/backslash/backtick, handle it now.
+        // If the first character is a quote/backslash/backtick/dollar, handle it now.
         match first_ch {
             '\'' => {
                 // Cannot be $' since this is the first char.
@@ -172,6 +172,10 @@ impl<'a> Lexer<'a> {
             '`' => {
                 last_byte_end = self.read_backtick(start)?;
             }
+            '$' => {
+                // Check for $(...), $((...)), ${...} at the start of the word.
+                last_byte_end = self.handle_dollar_expansion(start, last_byte_end)?;
+            }
             _ => {}
         }
 
@@ -179,6 +183,8 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 None => break,
                 Some((pos, ch)) => {
+                    // Word-break characters stop the word — but `(` and `{` after
+                    // `$` are expansion starts, not word breaks.
                     if is_word_break(ch) {
                         break;
                     }
@@ -215,6 +221,10 @@ impl<'a> Lexer<'a> {
                             self.next_char(); // consume opening `
                             last_byte_end = self.read_backtick(pos)?;
                         }
+                        '$' => {
+                            self.next_char(); // consume '$'
+                            last_byte_end = self.handle_dollar_expansion(pos, pos + 1)?;
+                        }
                         _ => {
                             self.next_char();
                             last_byte_end = pos + ch.len_utf8();
@@ -224,6 +234,32 @@ impl<'a> Lexer<'a> {
             }
         }
         Ok(self.make_span(start, last_byte_end))
+    }
+
+    /// After consuming `$` at `dollar_pos`, check for `$(`, `$((`, or `${` and
+    /// delegate to the appropriate balanced reader. Returns the updated
+    /// `last_byte_end`.
+    fn handle_dollar_expansion(
+        &mut self,
+        dollar_pos: usize,
+        default_end: usize,
+    ) -> Result<usize, LexError> {
+        match self.peek_char() {
+            Some('(') => {
+                self.next_char(); // consume '('
+                if self.peek_char() == Some('(') {
+                    self.next_char(); // consume second '('
+                    Ok(self.read_balanced_arith(dollar_pos)?)
+                } else {
+                    Ok(self.read_balanced_parens(dollar_pos)?)
+                }
+            }
+            Some('{') => {
+                self.next_char(); // consume '{'
+                Ok(self.read_balanced_braces(dollar_pos)?)
+            }
+            _ => Ok(default_end),
+        }
     }
 
     /// Read content inside single quotes. The opening `'` has been consumed.
@@ -251,8 +287,9 @@ impl<'a> Lexer<'a> {
     /// Read content inside double quotes. The opening `"` has been consumed.
     /// Returns the byte position just past the closing `"`.
     ///
-    /// Inside double quotes, `\`, `$`, and `` ` `` are special, but we don't
-    /// expand — we just consume through them to find the closing `"`.
+    /// Inside double quotes, `\`, `$`, and `` ` `` are special. When `$` is
+    /// followed by `(`, `((`, or `{`, we delegate to the balanced-tracking
+    /// methods so nested expansions are correctly consumed.
     fn read_double_quoted(&mut self, open_pos: usize) -> Result<usize, LexError> {
         loop {
             match self.next_char() {
@@ -262,10 +299,299 @@ impl<'a> Lexer<'a> {
                     // Even if next char is `"`, it does NOT close the quote.
                     let _ = self.next_char();
                 }
+                Some((pos, '$')) => {
+                    match self.peek_char() {
+                        Some('(') => {
+                            self.next_char(); // consume '('
+                            if self.peek_char() == Some('(') {
+                                self.next_char(); // consume second '('
+                                self.read_balanced_arith(pos)?;
+                            } else {
+                                self.read_balanced_parens(pos)?;
+                            }
+                        }
+                        Some('{') => {
+                            self.next_char(); // consume '{'
+                            self.read_balanced_braces(pos)?;
+                        }
+                        _ => {}
+                    }
+                }
+                Some((pos, '`')) => {
+                    self.read_backtick(pos)?;
+                }
                 Some(_) => {}
                 None => return Err(LexError::UnterminatedString { pos: open_pos as u32 }),
             }
         }
+    }
+
+    /// Read balanced parentheses for `$(...)` command substitution.
+    /// The `$(` has already been consumed. Returns the byte position just past
+    /// the closing `)`.
+    ///
+    /// Tracks `case...esac` nesting so that a `)` inside a case pattern is not
+    /// mistaken for the closing paren of the command substitution.
+    fn read_balanced_parens(&mut self, _open_pos: usize) -> Result<usize, LexError> {
+        let mut depth: usize = 1;
+        let mut at_word_start = true;
+        let mut case_depth: usize = 0;
+        let mut in_case_pattern = false;
+        let mut cur_word = String::new();
+
+        while let Some((pos, c)) = self.next_char() {
+            // # at word-start begins a comment — skip to end of line.
+            if c == '#' && at_word_start {
+                loop {
+                    match self.next_char() {
+                        Some((_, '\n')) | None => break,
+                        Some(_) => {}
+                    }
+                }
+                at_word_start = true;
+                cur_word.clear();
+                continue;
+            }
+
+            match c {
+                '(' => {
+                    depth += 1;
+                    at_word_start = true;
+                    cur_word.clear();
+                }
+                ')' => {
+                    // Check keywords ending at ')'.
+                    match cur_word.as_str() {
+                        "case" => case_depth += 1,
+                        "esac" => {
+                            case_depth = case_depth.saturating_sub(1);
+                            in_case_pattern = false;
+                        }
+                        "in" if case_depth > 0 => in_case_pattern = true,
+                        _ => {}
+                    }
+                    cur_word.clear();
+
+                    if case_depth > 0 && in_case_pattern && depth == 1 {
+                        // Case-pattern delimiter, not a subshell close.
+                        in_case_pattern = false;
+                        at_word_start = true;
+                    } else {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Ok(pos + 1);
+                        }
+                        at_word_start = false;
+                    }
+                }
+                '$' => {
+                    at_word_start = false;
+                    cur_word.clear();
+                    match self.peek_char() {
+                        Some('(') => {
+                            self.next_char();
+                            if self.peek_char() == Some('(') {
+                                self.next_char();
+                                self.read_balanced_arith(pos)?;
+                            } else {
+                                self.read_balanced_parens(pos)?;
+                            }
+                        }
+                        Some('{') => {
+                            self.next_char();
+                            self.read_balanced_braces(pos)?;
+                        }
+                        _ => {}
+                    }
+                }
+                '\'' => {
+                    self.read_single_quoted(pos, false)?;
+                    at_word_start = false;
+                    cur_word.clear();
+                }
+                '"' => {
+                    self.read_double_quoted(pos)?;
+                    at_word_start = false;
+                    cur_word.clear();
+                }
+                '\\' => {
+                    let _ = self.next_char();
+                    at_word_start = false;
+                    cur_word.clear();
+                }
+                ' ' | '\t' | '\n' => {
+                    match cur_word.as_str() {
+                        "case" => case_depth += 1,
+                        "esac" => {
+                            case_depth = case_depth.saturating_sub(1);
+                            in_case_pattern = false;
+                        }
+                        "in" if case_depth > 0 => in_case_pattern = true,
+                        _ => {}
+                    }
+                    at_word_start = true;
+                    cur_word.clear();
+                }
+                ';' => {
+                    if case_depth > 0 {
+                        in_case_pattern = true;
+                    }
+                    at_word_start = true;
+                    cur_word.clear();
+                }
+                '&' | '|' | '{' | '}' | '<' | '>' => {
+                    at_word_start = true;
+                    cur_word.clear();
+                }
+                '`' => {
+                    self.read_backtick(pos)?;
+                    at_word_start = false;
+                    cur_word.clear();
+                }
+                _ => {
+                    if at_word_start {
+                        cur_word.clear();
+                        cur_word.push(c);
+                    } else {
+                        cur_word.push(c);
+                    }
+                    at_word_start = false;
+                }
+            }
+        }
+        // Unterminated — let the expander catch it.
+        Ok(self.input.len())
+    }
+
+    /// Read a `$((...))` arithmetic expansion. The `$((` has been consumed.
+    /// Returns the byte position just past the closing `))`.
+    fn read_balanced_arith(&mut self, _open_pos: usize) -> Result<usize, LexError> {
+        let mut depth: u32 = 1;
+        loop {
+            let (pos, c) = match self.next_char() {
+                Some(v) => v,
+                None => return Ok(self.input.len()), // unterminated
+            };
+            match c {
+                '$' => {
+                    match self.peek_char() {
+                        Some('(') => {
+                            self.next_char();
+                            if self.peek_char() == Some('(') {
+                                self.next_char();
+                                self.read_balanced_arith(pos)?;
+                            } else {
+                                self.read_balanced_parens(pos)?;
+                            }
+                        }
+                        Some('{') => {
+                            self.next_char();
+                            self.read_balanced_braces(pos)?;
+                        }
+                        _ => {}
+                    }
+                }
+                '(' => {
+                    depth += 1;
+                }
+                ')' => {
+                    if self.peek_char() == Some(')') {
+                        depth -= 1;
+                        if depth == 0 {
+                            let (close_pos, _) = self.next_char().unwrap_or((pos, ')'));
+                            return Ok(close_pos + 1);
+                        }
+                        // depth > 0: the second ')' will be processed next iteration.
+                    } else {
+                        depth = depth.saturating_sub(1);
+                    }
+                }
+                '\'' => {
+                    self.read_single_quoted(pos, false)?;
+                }
+                '"' => {
+                    self.read_double_quoted(pos)?;
+                }
+                '\\' => {
+                    let _ = self.next_char();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Read balanced braces for `${...}` parameter expansion. The `${` has been
+    /// consumed. Returns the byte position just past the closing `}`.
+    fn read_balanced_braces(&mut self, _open_pos: usize) -> Result<usize, LexError> {
+        let mut depth: usize = 1;
+        while let Some((pos, c)) = self.next_char() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(pos + 1);
+                    }
+                }
+                '\'' => {
+                    self.read_single_quoted(pos, false)?;
+                }
+                '"' => {
+                    self.read_double_quoted(pos)?;
+                }
+                '\\' => {
+                    let _ = self.next_char();
+                }
+                _ => {}
+            }
+        }
+        Ok(self.input.len()) // unterminated
+    }
+
+    /// Read a process substitution `<(...)` or `>(...)`. The `<(` or `>(` has
+    /// been consumed. Returns the byte position just past the closing `)`.
+    fn read_process_sub(&mut self, open_pos: usize) -> Result<usize, LexError> {
+        let mut depth: usize = 1;
+        while let Some((pos, c)) = self.next_char() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(pos + 1);
+                    }
+                }
+                '\'' => {
+                    self.read_single_quoted(pos, false)?;
+                }
+                '"' => {
+                    self.read_double_quoted(pos)?;
+                }
+                '\\' => {
+                    let _ = self.next_char();
+                }
+                '$' => {
+                    match self.peek_char() {
+                        Some('(') => {
+                            self.next_char();
+                            if self.peek_char() == Some('(') {
+                                self.next_char();
+                                self.read_balanced_arith(pos)?;
+                            } else {
+                                self.read_balanced_parens(pos)?;
+                            }
+                        }
+                        Some('{') => {
+                            self.next_char();
+                            self.read_balanced_braces(pos)?;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err(LexError::UnterminatedProcessSub { pos: open_pos as u32 })
     }
 
     /// Read content inside backtick substitution. The opening `` ` `` has been
@@ -456,9 +782,35 @@ impl<'a> Iterator for Lexer<'a> {
                 Ok(Spanned { node: Token::RBrace, span })
             }
 
-            // Redirects
-            '<' => self.lex_less_than(pos),
-            '>' => self.lex_greater_than(pos),
+            // Redirects / process substitution
+            '<' => {
+                if self.peek_char() == Some('(') {
+                    // Process substitution: <(...)
+                    self.next_char(); // consume '('
+                    let end = match self.read_process_sub(pos) {
+                        Ok(end) => end,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let span = self.make_span(pos, end);
+                    Ok(Spanned { node: Token::Word(span), span })
+                } else {
+                    self.lex_less_than(pos)
+                }
+            }
+            '>' => {
+                if self.peek_char() == Some('(') {
+                    // Process substitution: >(...)
+                    self.next_char(); // consume '('
+                    let end = match self.read_process_sub(pos) {
+                        Ok(end) => end,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let span = self.make_span(pos, end);
+                    Ok(Spanned { node: Token::Word(span), span })
+                } else {
+                    self.lex_greater_than(pos)
+                }
+            }
 
             // Default: word (includes brackets, quotes, `$`, backslash, etc.)
             _ => {

@@ -522,6 +522,107 @@ fn empty_double_quotes() {
 }
 
 // ---------------------------------------------------------------------------
+// Expansions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn command_substitution() {
+    let input = "echo $(date)";
+    let toks = spanned(input);
+    assert_eq!(toks.len(), 3);
+    assert_eq!(toks[1].span.text(input), "$(date)");
+}
+
+#[test]
+fn nested_command_substitution() {
+    let input = "echo $(echo $(date))";
+    let toks = spanned(input);
+    assert_eq!(toks.len(), 3);
+    assert_eq!(toks[1].span.text(input), "$(echo $(date))");
+}
+
+#[test]
+fn arithmetic_expansion() {
+    let input = "echo $((1 + 2))";
+    let toks = spanned(input);
+    assert_eq!(toks.len(), 3);
+    assert_eq!(toks[1].span.text(input), "$((1 + 2))");
+}
+
+#[test]
+fn parameter_expansion_simple() {
+    let input = "echo ${var}";
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), "${var}");
+}
+
+#[test]
+fn parameter_expansion_with_default() {
+    let input = "echo ${var:-default}";
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), "${var:-default}");
+}
+
+#[test]
+fn parameter_expansion_nested_quotes() {
+    let input = r#"echo ${var:-"hello"}"#;
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), r#"${var:-"hello"}"#);
+}
+
+#[test]
+fn process_substitution_input() {
+    let input = "diff <(sort a) <(sort b)";
+    let toks = spanned(input);
+    assert_eq!(toks.len(), 4); // diff, <(sort a), <(sort b), Eof
+    assert_eq!(toks[1].span.text(input), "<(sort a)");
+    assert_eq!(toks[2].span.text(input), "<(sort b)");
+}
+
+#[test]
+fn process_substitution_output() {
+    let input = "tee >(grep foo > matches.txt)";
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), ">(grep foo > matches.txt)");
+}
+
+#[test]
+fn dollar_brace_in_double_quotes() {
+    let input = r#"echo "${HOME}/bin""#;
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), r#""${HOME}/bin""#);
+}
+
+#[test]
+fn command_subst_in_double_quotes() {
+    let input = r#"echo "today is $(date)""#;
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), r#""today is $(date)""#);
+}
+
+#[test]
+fn command_subst_with_case_inside() {
+    // The ) after pattern 'a' should NOT close the $()
+    let input = "echo $(case x in a) echo a ;; esac)";
+    let toks = nodes(input);
+    assert_eq!(toks.len(), 3); // echo, $(...), Eof
+}
+
+#[test]
+fn bare_dollar_is_word() {
+    let input = "echo $var";
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), "$var");
+}
+
+#[test]
+fn nested_arith_in_command_subst() {
+    let input = "echo $(echo $((1+2)))";
+    let toks = spanned(input);
+    assert_eq!(toks[1].span.text(input), "$(echo $((1+2)))");
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
