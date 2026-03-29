@@ -1,9 +1,9 @@
 //! POSIX shell parser — recursive descent, span-annotated AST.
 //!
-//! Implements the core POSIX grammar: command lists, and-or lists, pipelines,
-//! simple commands with redirects and environment assignments. Compound
-//! commands (if/while/for/case/etc.) are recognized at dispatch but stubbed
-//! with `SyntaxError` — they will be implemented in a follow-up task.
+//! Implements the full POSIX grammar: command lists, and-or lists, pipelines,
+//! simple commands with redirects and environment assignments, and all compound
+//! commands (if/while/until/for/case/select/function/brace group/subshell/
+//! arithmetic/conditional/coproc/time).
 
 use crate::ast::*;
 use crate::lexer::Lexer;
@@ -90,7 +90,6 @@ impl<'a> Parser<'a> {
     }
 
     /// Consume a Word matching `kw`, or return a SyntaxError.
-    #[allow(dead_code)]
     fn expect_keyword(&mut self, kw: &str) -> Result<Span, ParseError> {
         match &self.peek().node {
             Token::Word(span) if span.text(self.input) == kw => {
@@ -300,75 +299,587 @@ impl<'a> Parser<'a> {
 
     /// Parse a single command (compound, function def, or simple).
     fn parse_command(&mut self) -> Result<Spanned<Command>, ParseError> {
-        #[allow(unused_variables)]
         let cmd = match &self.peek().node {
             Token::Word(span) => {
                 let w = span.text(self.input).to_owned();
                 match w.as_str() {
-                    "if" | "while" | "until" | "for" | "case" | "select" | "function"
-                    | "coproc" | "time" => {
-                        return Err(ParseError::SyntaxError {
-                            pos: self.peek().span.start,
-                            message: format!(
-                                "compound command '{w}' not yet implemented"
-                            ),
-                        });
-                    }
+                    "if" => self.parse_if()?,
+                    "while" => self.parse_while()?,
+                    "until" => self.parse_until()?,
+                    "for" => self.parse_for()?,
+                    "case" => self.parse_case()?,
+                    "select" => self.parse_select()?,
+                    "function" => self.parse_function_keyword()?,
+                    "coproc" => self.parse_coproc()?,
+                    "time" => self.parse_time()?,
                     _ => {
-                        // Check for `name()` function definition: Word LParen RParen.
-                        // We can't easily lookahead in a streaming lexer, so we
-                        // fall through to simple command (function defs will be
-                        // handled in Task 7).
+                        // Simple command or POSIX function def (name() { body }).
+                        // Function def detection happens inside parse_simple_command
+                        // after consuming the first word and seeing `(`.
                         return self.parse_simple_command();
                     }
                 }
             }
-            Token::LBrace => {
-                return Err(ParseError::SyntaxError {
-                    pos: self.peek().span.start,
-                    message: "brace group not yet implemented".to_string(),
-                });
-            }
-            Token::LParen => {
-                return Err(ParseError::SyntaxError {
-                    pos: self.peek().span.start,
-                    message: "subshell not yet implemented".to_string(),
-                });
-            }
-            Token::LParenParen => {
-                return Err(ParseError::SyntaxError {
-                    pos: self.peek().span.start,
-                    message: "arithmetic expression not yet implemented".to_string(),
-                });
-            }
-            Token::LBracketBracket => {
-                return Err(ParseError::SyntaxError {
-                    pos: self.peek().span.start,
-                    message: "conditional expression not yet implemented".to_string(),
-                });
-            }
+            Token::LBrace => self.parse_brace_group()?,
+            Token::LParen => self.parse_subshell()?,
+            Token::LParenParen => self.parse_arithmetic()?,
+            Token::LBracketBracket => self.parse_conditional()?,
             // Everything else is a simple command.
             _ => return self.parse_simple_command(),
         };
 
         // Collect trailing I/O redirections on compound commands.
-        // (Currently unreachable due to stubs, but ready for Task 7.)
-        #[allow(unreachable_code)]
-        {
-            let trailing = self.collect_trailing_redirects()?;
-            if trailing.is_empty() {
-                Ok(cmd)
-            } else {
-                let span = cmd.span.merge(trailing.last().map(|r| r.span).unwrap_or(cmd.span));
-                Ok(Spanned {
-                    node: Command::Redirected {
-                        cmd: Box::new(cmd),
-                        redirects: trailing,
-                    },
-                    span,
-                })
+        let trailing = self.collect_trailing_redirects()?;
+        if trailing.is_empty() {
+            Ok(cmd)
+        } else {
+            let span = cmd.span.merge(trailing.last().map(|r| r.span).unwrap_or(cmd.span));
+            Ok(Spanned {
+                node: Command::Redirected {
+                    cmd: Box::new(cmd),
+                    redirects: trailing,
+                },
+                span,
+            })
+        }
+    }
+
+    // -- Compound command parsers -----------------------------------------
+
+    /// Parse `if condition; then body [elif ...] [else ...] fi`
+    fn parse_if(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.expect_keyword("if")?;
+        self.skip_newlines()?;
+
+        let condition = self.parse_command_list_as_one(|t| {
+            matches!(t, Token::Word(s) if s.text(self.input) == "then")
+        })?;
+        self.expect_keyword("then")?;
+        self.skip_newlines()?;
+
+        let then_body = self.parse_body_until(&["elif", "else", "fi"])?;
+
+        let mut elif_clauses = Vec::new();
+        while self.peek_keyword("elif") {
+            self.advance()?;
+            self.skip_newlines()?;
+            let elif_cond = self.parse_command_list_as_one(|t| {
+                matches!(t, Token::Word(s) if s.text(self.input) == "then")
+            })?;
+            self.expect_keyword("then")?;
+            self.skip_newlines()?;
+            let elif_body = self.parse_body_until(&["elif", "else", "fi"])?;
+            elif_clauses.push((elif_cond, elif_body));
+        }
+
+        let else_body = if self.peek_keyword("else") {
+            self.advance()?;
+            self.skip_newlines()?;
+            Some(self.parse_body_until(&["fi"])?)
+        } else {
+            None
+        };
+
+        let end = self.expect_keyword("fi")?;
+
+        Ok(Spanned {
+            node: Command::If {
+                condition: Box::new(condition),
+                then_body,
+                elif_clauses,
+                else_body,
+            },
+            span: start.merge(end),
+        })
+    }
+
+    /// Parse `while condition; do body; done`
+    fn parse_while(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.expect_keyword("while")?;
+        self.skip_newlines()?;
+
+        let condition = self.parse_command_list_as_one(|t| {
+            matches!(t, Token::Word(s) if s.text(self.input) == "do")
+        })?;
+        self.expect_keyword("do")?;
+        self.skip_newlines()?;
+
+        let body = self.parse_body_until(&["done"])?;
+        let end = self.expect_keyword("done")?;
+
+        Ok(Spanned {
+            node: Command::While {
+                condition: Box::new(condition),
+                body,
+            },
+            span: start.merge(end),
+        })
+    }
+
+    /// Parse `until condition; do body; done`
+    fn parse_until(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.expect_keyword("until")?;
+        self.skip_newlines()?;
+
+        let condition = self.parse_command_list_as_one(|t| {
+            matches!(t, Token::Word(s) if s.text(self.input) == "do")
+        })?;
+        self.expect_keyword("do")?;
+        self.skip_newlines()?;
+
+        let body = self.parse_body_until(&["done"])?;
+        let end = self.expect_keyword("done")?;
+
+        Ok(Spanned {
+            node: Command::Until {
+                condition: Box::new(condition),
+                body,
+            },
+            span: start.merge(end),
+        })
+    }
+
+    /// Parse `for var [in words]; do body; done` or `for (( ... )); do body; done`
+    fn parse_for(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.expect_keyword("for")?;
+        self.skip_newlines()?;
+
+        // Check for C-style: `for (( init; cond; step ))`
+        if matches!(self.peek().node, Token::LParenParen) {
+            return self.parse_for_arith(start);
+        }
+
+        let var_tok = self.expect_word()?;
+        let var = Self::word_span(&var_tok.node).unwrap_or(var_tok.span);
+
+        // Optional `in words...` clause.
+        let words = if self.peek_keyword("in") {
+            self.advance()?; // consume "in"
+            let mut ws = Vec::new();
+            loop {
+                match &self.peek().node {
+                    Token::Word(span) => {
+                        let text = span.text(self.input);
+                        if text == "do" {
+                            break;
+                        }
+                        let s = *span;
+                        self.advance()?;
+                        ws.push(s);
+                    }
+                    _ => break,
+                }
+            }
+            ws
+        } else {
+            Vec::new()
+        };
+
+        self.skip_terminators()?;
+        self.expect_keyword("do")?;
+        self.skip_newlines()?;
+
+        let body = self.parse_body_until(&["done"])?;
+        let end = self.expect_keyword("done")?;
+
+        Ok(Spanned {
+            node: Command::For { var, words, body },
+            span: start.merge(end),
+        })
+    }
+
+    /// Parse the C-style arithmetic for loop: `for (( init; cond; step )); do body; done`
+    /// Called after "for" keyword has been consumed.
+    fn parse_for_arith(&mut self, start: Span) -> Result<Spanned<Command>, ParseError> {
+        self.advance()?; // consume `((`
+
+        // Collect tokens until `))`. The three clauses are separated by `;`.
+        let mut clause_spans: Vec<(u32, u32)> = Vec::new();
+        let mut clause_start = self.peek().span.start;
+
+        loop {
+            match &self.peek().node {
+                Token::RParenParen => {
+                    let end_pos = self.peek().span.start;
+                    clause_spans.push((clause_start, end_pos));
+                    self.advance()?;
+                    break;
+                }
+                Token::Eof => return Err(ParseError::UnexpectedEof),
+                Token::Semicolon => {
+                    let end_pos = self.peek().span.start;
+                    clause_spans.push((clause_start, end_pos));
+                    self.advance()?;
+                    clause_start = self.peek().span.start;
+                }
+                _ => {
+                    self.advance()?;
+                }
             }
         }
+
+        // Pad to exactly 3 clauses.
+        let fallback = self.peek().span.start;
+        while clause_spans.len() < 3 {
+            clause_spans.push((fallback, fallback));
+        }
+
+        let init = Span::new(clause_spans[0].0, clause_spans[0].1);
+        let cond = Span::new(clause_spans[1].0, clause_spans[1].1);
+        let step = Span::new(clause_spans[2].0, clause_spans[2].1);
+
+        self.skip_terminators()?;
+        self.expect_keyword("do")?;
+        self.skip_newlines()?;
+
+        let body = self.parse_body_until(&["done"])?;
+        let end = self.expect_keyword("done")?;
+
+        Ok(Spanned {
+            node: Command::ForArith {
+                init,
+                cond,
+                step,
+                body,
+            },
+            span: start.merge(end),
+        })
+    }
+
+    /// Parse `case word in (pattern|pattern) body ;; ... esac`
+    fn parse_case(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.expect_keyword("case")?;
+        self.skip_newlines()?;
+
+        let word_tok = self.expect_word()?;
+        let word = Self::word_span(&word_tok.node).unwrap_or(word_tok.span);
+        self.skip_newlines()?;
+
+        self.expect_keyword("in")?;
+        self.skip_newlines()?;
+
+        let mut items = Vec::new();
+
+        while !self.peek_keyword("esac") && !matches!(self.peek().node, Token::Eof) {
+            // Optional leading `(`
+            if matches!(self.peek().node, Token::LParen) {
+                self.advance()?;
+            }
+
+            // Parse patterns separated by `|`.
+            let mut patterns = Vec::new();
+            let pat_tok = self.expect_word()?;
+            patterns.push(Self::word_span(&pat_tok.node).unwrap_or(pat_tok.span));
+
+            while matches!(self.peek().node, Token::Pipe) {
+                self.advance()?;
+                let pat_tok = self.expect_word()?;
+                patterns.push(Self::word_span(&pat_tok.node).unwrap_or(pat_tok.span));
+            }
+
+            // Expect `)`
+            if !matches!(self.peek().node, Token::RParen) {
+                return Err(ParseError::SyntaxError {
+                    pos: self.peek().span.start,
+                    message: "expected ')' after case pattern".to_string(),
+                });
+            }
+            self.advance()?;
+            self.skip_newlines()?;
+
+            // Parse body until `;;` or `esac`.
+            let body = self.parse_command_list_until(|t| {
+                matches!(t, Token::SemiSemi)
+                    || matches!(t, Token::Word(s) if s.text(self.input) == "esac")
+            })?;
+
+            items.push(CaseItem { patterns, body });
+
+            if matches!(self.peek().node, Token::SemiSemi) {
+                self.advance()?;
+                self.skip_newlines()?;
+            }
+        }
+
+        let end = self.expect_keyword("esac")?;
+
+        Ok(Spanned {
+            node: Command::Case { word, items },
+            span: start.merge(end),
+        })
+    }
+
+    /// Parse `select var in words; do body; done`
+    fn parse_select(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.expect_keyword("select")?;
+        self.skip_newlines()?;
+
+        let var_tok = self.expect_word()?;
+        let var = Self::word_span(&var_tok.node).unwrap_or(var_tok.span);
+
+        let words = if self.peek_keyword("in") {
+            self.advance()?;
+            let mut ws = Vec::new();
+            loop {
+                match &self.peek().node {
+                    Token::Word(span) => {
+                        let text = span.text(self.input);
+                        if text == "do" {
+                            break;
+                        }
+                        let s = *span;
+                        self.advance()?;
+                        ws.push(s);
+                    }
+                    _ => break,
+                }
+            }
+            ws
+        } else {
+            Vec::new()
+        };
+
+        self.skip_terminators()?;
+        self.expect_keyword("do")?;
+        self.skip_newlines()?;
+
+        let body = self.parse_body_until(&["done"])?;
+        let end = self.expect_keyword("done")?;
+
+        Ok(Spanned {
+            node: Command::Select { var, words, body },
+            span: start.merge(end),
+        })
+    }
+
+    /// Parse `function name [()]; { body }` or `function name compound_command`
+    fn parse_function_keyword(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.expect_keyword("function")?;
+        self.skip_newlines()?;
+
+        let name_tok = self.expect_word()?;
+        let name = Self::word_span(&name_tok.node).unwrap_or(name_tok.span);
+
+        // Optional `()` after function name.
+        if matches!(self.peek().node, Token::LParen) {
+            self.advance()?;
+            if !matches!(self.peek().node, Token::RParen) {
+                return Err(ParseError::SyntaxError {
+                    pos: self.peek().span.start,
+                    message: "expected ')' after '(' in function definition".to_string(),
+                });
+            }
+            self.advance()?;
+        }
+
+        self.skip_newlines()?;
+        let body = self.parse_command()?;
+        let span = start.merge(body.span);
+
+        Ok(Spanned {
+            node: Command::FunctionDef {
+                name,
+                body: Box::new(body),
+            },
+            span,
+        })
+    }
+
+    /// Parse `coproc [NAME] command`
+    fn parse_coproc(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.expect_keyword("coproc")?;
+        self.skip_newlines()?;
+
+        // If the next token is a word that is NOT a compound-command keyword,
+        // check if it might be a named coproc. A named coproc has a name
+        // followed by a command. If the word after the name starts a command,
+        // treat it as named. Otherwise, treat the word as the start of a simple command.
+        let (name, cmd) = match &self.peek().node {
+            Token::Word(span) => {
+                let text = span.text(self.input).to_owned();
+                if !is_compound_keyword(&text) {
+                    // Could be named coproc — but we need lookahead.
+                    // Simple heuristic: if the word is not a compound keyword
+                    // and could be a name, consume it as name and parse command.
+                    // But we can't distinguish `coproc cat` (unnamed, command=cat)
+                    // from `coproc MYNAME cat` (named) without more lookahead.
+                    //
+                    // POSIX/bash rule: if next-next token starts a compound command,
+                    // treat current word as name. Otherwise, parse current word as
+                    // the start of a simple command (unnamed coproc).
+                    //
+                    // Since we lack multi-token lookahead, we parse as unnamed and
+                    // let the current word become part of the command.
+                    let c = self.parse_command()?;
+                    (None, c)
+                }
+                else {
+                    let c = self.parse_command()?;
+                    (None, c)
+                }
+            }
+            _ => {
+                let c = self.parse_command()?;
+                (None, c)
+            }
+        };
+
+        let span = start.merge(cmd.span);
+        Ok(Spanned {
+            node: Command::Coproc {
+                name,
+                cmd: Box::new(cmd),
+            },
+            span,
+        })
+    }
+
+    /// Parse `time [-p] pipeline`
+    fn parse_time(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.expect_keyword("time")?;
+        self.skip_newlines()?;
+
+        let posix_format = if self.peek_keyword("-p") {
+            self.advance()?;
+            self.skip_newlines()?;
+            true
+        } else {
+            false
+        };
+
+        let cmd = self.parse_pipeline()?;
+        let span = start.merge(cmd.span);
+
+        Ok(Spanned {
+            node: Command::Time {
+                posix_format,
+                command: Box::new(cmd),
+            },
+            span,
+        })
+    }
+
+    /// Parse a brace group: `{ command_list; }`
+    fn parse_brace_group(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.peek().span;
+        self.advance()?; // consume `{`
+        self.skip_newlines()?;
+
+        let body = self.parse_command_list_until(|t| matches!(t, Token::RBrace))?;
+
+        if !matches!(self.peek().node, Token::RBrace) {
+            return Err(ParseError::SyntaxError {
+                pos: self.peek().span.start,
+                message: "expected '}'".to_string(),
+            });
+        }
+        let end = self.advance()?.span;
+
+        Ok(Spanned {
+            node: Command::BraceGroup { body },
+            span: start.merge(end),
+        })
+    }
+
+    /// Parse a subshell: `( command_list )`
+    fn parse_subshell(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.peek().span;
+        self.advance()?; // consume `(`
+        self.skip_newlines()?;
+
+        let body = self.parse_command_list_until(|t| matches!(t, Token::RParen))?;
+
+        if !matches!(self.peek().node, Token::RParen) {
+            return Err(ParseError::SyntaxError {
+                pos: self.peek().span.start,
+                message: "expected ')'".to_string(),
+            });
+        }
+        let end = self.advance()?.span;
+
+        Ok(Spanned {
+            node: Command::Subshell { body },
+            span: start.merge(end),
+        })
+    }
+
+    /// Parse `(( expr ))` arithmetic command.
+    fn parse_arithmetic(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.peek().span;
+        self.advance()?; // consume `((`
+
+        let expr_start = self.peek().span.start;
+        let mut expr_end = expr_start;
+
+        loop {
+            match &self.peek().node {
+                Token::RParenParen => {
+                    let end = self.advance()?.span;
+                    return Ok(Spanned {
+                        node: Command::Arithmetic {
+                            expr: Span::new(expr_start, expr_end),
+                        },
+                        span: start.merge(end),
+                    });
+                }
+                Token::Eof => return Err(ParseError::UnexpectedEof),
+                _ => {
+                    let tok = self.advance()?;
+                    expr_end = tok.span.end;
+                }
+            }
+        }
+    }
+
+    /// Parse `[[ expr ]]` conditional command.
+    fn parse_conditional(&mut self) -> Result<Spanned<Command>, ParseError> {
+        let start = self.peek().span;
+        self.advance()?; // consume `[[`
+
+        let expr_start = self.peek().span.start;
+        let mut expr_end = expr_start;
+
+        loop {
+            match &self.peek().node {
+                Token::RBracketBracket => {
+                    let end = self.advance()?.span;
+                    return Ok(Spanned {
+                        node: Command::Conditional {
+                            expr: Span::new(expr_start, expr_end),
+                        },
+                        span: start.merge(end),
+                    });
+                }
+                Token::Eof => return Err(ParseError::UnexpectedEof),
+                _ => {
+                    let tok = self.advance()?;
+                    expr_end = tok.span.end;
+                }
+            }
+        }
+    }
+
+    // -- Compound command helpers ------------------------------------------
+
+    /// Parse a command list until one of the given keywords is found.
+    /// Returns the list of commands (body).
+    fn parse_body_until(
+        &mut self,
+        keywords: &[&str],
+    ) -> Result<Vec<Spanned<Command>>, ParseError> {
+        self.parse_command_list_until(|t| {
+            matches!(t, Token::Word(s) if keywords.iter().any(|kw| s.text(self.input) == *kw))
+        })
+    }
+
+    /// Parse a command list and collapse it into a single `Spanned<Command>`.
+    /// Used for conditions in if/while/until where a single command is expected.
+    fn parse_command_list_as_one(
+        &mut self,
+        is_end: impl Fn(&Token) -> bool,
+    ) -> Result<Spanned<Command>, ParseError> {
+        let cmds = self.parse_command_list_until(is_end)?;
+        Ok(list_to_command(cmds))
     }
 
     // -- Simple command ----------------------------------------------------
@@ -395,6 +906,39 @@ impl<'a> Parser<'a> {
                         let ws = *word_span;
                         let tok = self.advance()?;
                         end_span = tok.span;
+
+                        // Detect POSIX function def: first word followed by `(` `)`.
+                        if words.is_empty()
+                            && env_assigns.is_empty()
+                            && matches!(self.peek().node, Token::LParen)
+                        {
+                            // Consume `(`
+                            self.advance()?;
+                            if matches!(self.peek().node, Token::RParen) {
+                                // Consume `)` — this is a function def.
+                                self.advance()?;
+                                self.skip_newlines()?;
+                                let body = self.parse_command()?;
+                                let span = start_span.merge(body.span);
+                                return Ok(Spanned {
+                                    node: Command::FunctionDef {
+                                        name: ws,
+                                        body: Box::new(body),
+                                    },
+                                    span,
+                                });
+                            } else {
+                                // Not a function def — this was `word(` without `)`.
+                                // This shouldn't happen in well-formed shell, but
+                                // treat as error.
+                                return Err(ParseError::SyntaxError {
+                                    pos: self.peek().span.start,
+                                    message: "expected ')' after '(' in function definition"
+                                        .to_string(),
+                                });
+                            }
+                        }
+
                         words.push(ws);
                     }
                 }
@@ -635,6 +1179,33 @@ fn split_assignment(word: &str, span: Span) -> (Span, Span) {
             (key, val)
         }
         None => (span, Span::new(span.end, span.end)),
+    }
+}
+
+/// Collapse a list of commands into a single `Spanned<Command>`.
+/// 0 commands → Empty, 1 → return as-is, N → List with Sequential ops.
+fn list_to_command(mut cmds: Vec<Spanned<Command>>) -> Spanned<Command> {
+    match cmds.len() {
+        0 => Spanned {
+            node: Command::Empty,
+            span: Span::new(0, 0),
+        },
+        1 => cmds.remove(0),
+        _ => {
+            let span = cmds[0].span.merge(cmds.last().map(|c| c.span).unwrap_or(cmds[0].span));
+            let last = cmds.pop().expect("checked len > 1");
+            let pairs = cmds
+                .into_iter()
+                .map(|c| (c, ListOp::Sequential))
+                .collect();
+            Spanned {
+                node: Command::List {
+                    pairs,
+                    last: Box::new(last),
+                },
+                span,
+            }
+        }
     }
 }
 
