@@ -58,7 +58,7 @@ These are tracked here (not as vexil-lang issues) because they were discovered d
 
 ---
 
-## Gap 6: Sub-byte types >8 bits generate wrong Rust type
+## ~~Gap 6: Sub-byte types >8 bits generate wrong Rust type~~ FIXED (vexil-lang #52)
 
 **Problem:** `vexil-codegen-rust` generates `u8` for sub-byte types larger than 8 bits (e.g., `u48`). The `read_bits(48)` call returns `u64` but the generated code casts to `u8`, truncating the value.
 

@@ -8,9 +8,7 @@ fn envelope_roundtrip() {
         domain: 1,
         msg_type: 42,
         session_id: 100,
-        // NOTE: timestamp is generated as u8 due to vexil-codegen-rust bug
-        // with sub-byte types > 8 bits. Value truncated to u8 range.
-        timestamp: 200,
+        timestamp: 1_000_000,
         msg_id: Some(99),
         _unknown: Vec::new(),
     };
