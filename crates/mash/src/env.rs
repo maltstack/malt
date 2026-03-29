@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use crate::ast::{Spanned, Command};
+use crate::parser;
 
 // ── Variable storage ──
 
@@ -417,4 +418,78 @@ impl Env {
     pub fn clear_trap(&mut self, signal: &str) {
         self.traps.remove(signal);
     }
+
+    // ── Persistence ──
+
+    pub fn to_snapshot(&self) -> EnvSnapshot {
+        // Flatten scope stack — only global scope variables persist
+        let variables = self.scopes[0].clone();
+        let functions = self.functions.iter()
+            .map(|(name, def)| (name.clone(), def.source.clone()))
+            .collect();
+        let traps = self.traps.iter()
+            .map(|(sig, trap)| (sig.clone(), trap.action.clone()))
+            .collect();
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        EnvSnapshot {
+            variables,
+            options: self.options.clone(),
+            aliases: self.aliases.clone(),
+            functions,
+            dir_stack: self.dir_stack.clone(),
+            cwd,
+            traps,
+        }
+    }
+
+    pub fn apply_snapshot(&mut self, snapshot: &EnvSnapshot) {
+        // Load variables into global scope
+        for (name, var) in &snapshot.variables {
+            self.scopes[0].insert(name.clone(), var.clone());
+        }
+        self.options = snapshot.options.clone();
+        self.aliases = snapshot.aliases.clone();
+        self.dir_stack = snapshot.dir_stack.clone();
+
+        // Re-parse function source texts
+        for (name, source) in &snapshot.functions {
+            match parser::parse(source) {
+                Ok(mut cmds) if !cmds.is_empty() => {
+                    let body = cmds.remove(0);
+                    self.functions.insert(name.clone(), FunctionDef {
+                        source: source.clone(),
+                        body,
+                    });
+                }
+                _ => {
+                    // Log warning but don't fail — invalid function source is non-fatal
+                    tracing::warn!("failed to re-parse function '{}' from snapshot", name);
+                }
+            }
+        }
+
+        // Restore traps
+        for (signal, action) in &snapshot.traps {
+            self.traps.insert(signal.clone(), TrapAction {
+                action: action.clone(),
+                inherited: false,
+            });
+        }
+    }
+}
+
+// ── EnvSnapshot ──
+
+#[derive(Debug, Clone)]
+pub struct EnvSnapshot {
+    pub variables: HashMap<String, Variable>,
+    pub options: ShellOptions,
+    pub aliases: HashMap<String, String>,
+    pub functions: HashMap<String, String>, // name → source text
+    pub dir_stack: Vec<String>,
+    pub cwd: String,
+    pub traps: HashMap<String, String>, // signal → action string
 }

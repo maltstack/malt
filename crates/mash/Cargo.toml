@@ -8,3 +8,4 @@ description = "MASH — POSIX shell for MALT"
 
 [dependencies]
 thiserror = "2"
+tracing = "0.1"
