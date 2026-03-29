@@ -2,5 +2,6 @@
 
 pub mod ast;
 pub mod env;
+pub mod expander;
 pub mod lexer;
 pub mod parser;
