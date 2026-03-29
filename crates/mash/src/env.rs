@@ -121,6 +121,7 @@ pub enum EnvError {
 
 // ── Env struct ──
 
+#[derive(Clone)]
 pub struct Env {
     scopes: Vec<HashMap<String, Variable>>,
     unset_masks: Vec<HashSet<String>>,

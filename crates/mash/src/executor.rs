@@ -30,6 +30,10 @@ impl ExecResult {
         Self { exit_code: 0, stdout: Vec::new(), stderr: Vec::new() }
     }
 
+    fn with_code(code: i32) -> Self {
+        Self { exit_code: code, stdout: Vec::new(), stderr: Vec::new() }
+    }
+
     fn failure(code: i32, msg: impl Into<String>) -> Self {
         Self {
             exit_code: code,
@@ -110,16 +114,7 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
         }
 
         Command::Pipeline { commands, negated } => {
-            // Scaffold: run commands sequentially, pass last stdout as first stdin.
-            // True pipeline (pipes between processes) comes in Task 3.
-            let mut result = ExecResult::success();
-            for c in commands {
-                result = execute(c, source, env);
-            }
-            if *negated {
-                result.exit_code = if result.exit_code == 0 { 1 } else { 0 };
-            }
-            result
+            execute_pipeline(commands, *negated, source, env)
         }
 
         Command::Background(inner) => {
@@ -172,6 +167,317 @@ fn variant_name(cmd: &Command) -> &'static str {
         Command::Coproc { .. } => "Coproc",
         Command::Time { .. } => "Time",
         Command::Redirected { .. } => "Redirected",
+    }
+}
+
+// ── Pipeline ──────────────────────────────────────────────────────────
+
+/// Execute a pipeline: connect N commands with OS pipes via std::thread.
+///
+/// Each stage runs in its own thread with a cloned `Env` (pipeline stages
+/// are subshells). Inter-stage data flows through OS pipes — for external
+/// commands the pipe fds are passed directly to `SpawnConfig`, avoiding
+/// user-space buffering.
+fn execute_pipeline(
+    commands: &[Spanned<Command>],
+    negated: bool,
+    source: &str,
+    env: &mut Env,
+) -> ExecResult {
+    let n = commands.len();
+    if n == 0 {
+        return ExecResult::success();
+    }
+    // Degenerate pipeline (single command) — no pipes needed.
+    if n == 1 {
+        let mut result = execute(&commands[0], source, env);
+        if negated {
+            result.exit_code = if result.exit_code == 0 { 1 } else { 0 };
+        }
+        return result;
+    }
+
+    // 1. Create N-1 pipe pairs.
+    let mut pipes: Vec<(std::fs::File, std::fs::File)> = Vec::with_capacity(n - 1);
+    for _ in 0..n - 1 {
+        match malt_platform::io::create_pipe() {
+            Ok(pair) => pipes.push(pair),
+            Err(e) => {
+                return ExecResult::failure(1, format!("mash: pipe: {e}\n"));
+            }
+        }
+    }
+
+    // 2. Build per-stage data and spawn threads.
+    //
+    // We need to move pipe ends into the threads, so we extract them from
+    // the Vec now. Parent-side ends that must be dropped are collected
+    // separately.
+    //
+    // Stage i reads from pipe[i-1].read (except stage 0: inherited/None)
+    // Stage i writes to pipe[i].write (except last stage: capture to Vec<u8>)
+
+    // Separate the pipe ends: each pipe has (read_end, write_end).
+    // - read_end[i]  goes to stage i+1 as stdin
+    // - write_end[i] goes to stage i   as stdout
+    let mut read_ends: Vec<Option<std::fs::File>> = pipes.iter_mut().map(|_| None).collect();
+    let mut write_ends: Vec<Option<std::fs::File>> = pipes.iter_mut().map(|_| None).collect();
+    for (i, (read, write)) in pipes.into_iter().enumerate() {
+        read_ends[i] = Some(read);
+        write_ends[i] = Some(write);
+    }
+
+    let mut handles: Vec<std::thread::JoinHandle<ExecResult>> = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let mut stage_env = env.clone();
+        let stage_source = source.to_string();
+        let stage_cmd = commands[i].clone();
+
+        // stdin for this stage: stage 0 inherits, others read from pipe[i-1].
+        let stdin_file: Option<std::fs::File> = if i > 0 {
+            read_ends[i - 1].take()
+        } else {
+            None
+        };
+
+        // stdout for this stage: last stage captures (Pipe), others write to pipe[i].
+        let stdout_file: Option<std::fs::File> = if i < n - 1 {
+            write_ends[i].take()
+        } else {
+            None
+        };
+
+        handles.push(std::thread::spawn(move || {
+            execute_with_io(&stage_cmd, &stage_source, &mut stage_env, stdin_file, stdout_file)
+        }));
+    }
+
+    // 3. Drop remaining parent-side pipe ends so stages see EOF.
+    drop(read_ends);
+    drop(write_ends);
+
+    // 4. Join all threads, collect results.
+    let results: Vec<ExecResult> = handles
+        .into_iter()
+        .map(|h| h.join().unwrap_or_else(|_| ExecResult::with_code(1)))
+        .collect();
+
+    // 5. Combine output: stdout from last stage, stderr from all stages.
+    let mut all_stderr = Vec::new();
+    for r in &results {
+        all_stderr.extend_from_slice(&r.stderr);
+    }
+    let last_stdout = results.last().map(|r| r.stdout.clone()).unwrap_or_default();
+
+    // 6. Exit code: pipefail → first nonzero; otherwise → last stage.
+    let exit_code = if env.options().pipefail {
+        results
+            .iter()
+            .map(|r| r.exit_code)
+            .find(|&c| c != 0)
+            .unwrap_or(0)
+    } else {
+        results.last().map(|r| r.exit_code).unwrap_or(0)
+    };
+
+    // Propagate last exit code to the parent env.
+    env.set_exit_code(exit_code);
+
+    let mut result = ExecResult {
+        exit_code,
+        stdout: last_stdout,
+        stderr: all_stderr,
+    };
+
+    // 7. Negation.
+    if negated {
+        result.exit_code = if result.exit_code == 0 { 1 } else { 0 };
+    }
+
+    result
+}
+
+/// Execute a command with externally provided stdin/stdout file handles.
+///
+/// When `stdin_file` is `Some`, it replaces the command's stdin.
+/// When `stdout_file` is `Some`, the command's stdout is written to that
+/// file (for external commands the fd is passed directly via `Io::File`;
+/// for internal commands the captured output is written manually).
+fn execute_with_io(
+    cmd: &Spanned<Command>,
+    source: &str,
+    env: &mut Env,
+    stdin_file: Option<std::fs::File>,
+    stdout_file: Option<std::fs::File>,
+) -> ExecResult {
+    // For Simple commands, we intercept the spawn config to wire in the
+    // pipe fds directly.  For other command types, we execute normally
+    // and then redirect captured output to the pipe.
+    match &cmd.node {
+        Command::Simple { name, args, redirects, env_assigns } => {
+            execute_simple_with_io(
+                name, args, redirects, env_assigns,
+                source, env,
+                stdin_file, stdout_file,
+            )
+        }
+        _ => {
+            // For non-simple commands (brace groups, subshells, etc.),
+            // execute normally and then write captured stdout to the pipe.
+            let mut result = execute(cmd, source, env);
+
+            // If stdin was provided but we can't wire it into a non-simple
+            // command, we just drop it (data goes to /dev/null effectively).
+            drop(stdin_file);
+
+            // Write captured stdout to the pipe fd.
+            if let Some(mut pipe_out) = stdout_file {
+                let _ = pipe_out.write_all(&result.stdout);
+                result.stdout = Vec::new();
+            }
+
+            result
+        }
+    }
+}
+
+/// Like `execute_simple`, but with externally provided stdin/stdout.
+fn execute_simple_with_io(
+    name_span: &Span,
+    arg_spans: &[Span],
+    redirects: &[Spanned<Redirect>],
+    env_assigns: &[(Span, Span)],
+    source: &str,
+    env: &mut Env,
+    stdin_file: Option<std::fs::File>,
+    stdout_file: Option<std::fs::File>,
+) -> ExecResult {
+    // 1. Expand command name.
+    let name_text = name_span.text(source);
+    let expanded_name = match expander::expand_word(name_text, env) {
+        Ok(fields) => fields,
+        Err(e) => return ExecResult::failure(1, format!("mash: {e}\n")),
+    };
+    let cmd_name = match expanded_name.first() {
+        Some(n) if !n.is_empty() => n.clone(),
+        _ => return ExecResult::success(),
+    };
+
+    // 2. Expand arguments.
+    let mut argv: Vec<String> = Vec::new();
+    argv.extend(expanded_name.into_iter().skip(1));
+    for arg_span in arg_spans {
+        let arg_text = arg_span.text(source);
+        match expander::expand_word(arg_text, env) {
+            Ok(fields) => argv.extend(fields),
+            Err(e) => return ExecResult::failure(1, format!("mash: {e}\n")),
+        }
+    }
+
+    // 3. Temporary env assignments.
+    let mut child_env: Vec<(String, String)> = Vec::new();
+    for (key_span, val_span) in env_assigns {
+        let key = key_span.text(source).to_string();
+        let val_text = val_span.text(source);
+        let val = match expander::expand_word_nosplit(val_text, env) {
+            Ok(v) => v,
+            Err(e) => return ExecResult::failure(1, format!("mash: {e}\n")),
+        };
+        child_env.push((key, val));
+    }
+
+    // 4. Resolve explicit redirects (these override pipeline I/O).
+    let resolved_io = match resolve_redirects(redirects, source, env) {
+        Ok(io) => io,
+        Err(err_result) => return err_result,
+    };
+
+    // 5. Resolve executable path.
+    let program = match find_in_path(&cmd_name, env) {
+        Some(p) => p,
+        None => {
+            let msg = format!("mash: {cmd_name}: command not found\n");
+            return ExecResult::failure(127, msg);
+        }
+    };
+
+    // 6. Build SpawnConfig with pipeline I/O + redirect overrides.
+    let mut config = malt_platform::process::SpawnConfig::new(&program);
+    config.args = argv.iter().map(|a| a.into()).collect();
+
+    // stdin: explicit redirect wins, then pipeline, then inherit.
+    config.stdin = match resolved_io.stdin {
+        Some(f) => malt_platform::process::Io::File(f),
+        None => match stdin_file {
+            Some(f) => malt_platform::process::Io::File(f),
+            None => malt_platform::process::Io::Inherit,
+        },
+    };
+
+    // stdout: explicit redirect wins, then pipeline, then capture (Pipe).
+    config.stdout = match resolved_io.stdout {
+        Some(f) => malt_platform::process::Io::File(f),
+        None => match stdout_file {
+            Some(f) => malt_platform::process::Io::File(f),
+            None => malt_platform::process::Io::Pipe,
+        },
+    };
+
+    // stderr: explicit redirect wins, then capture.
+    config.stderr = match resolved_io.stderr {
+        Some(f) => malt_platform::process::Io::File(f),
+        None => malt_platform::process::Io::Pipe,
+    };
+
+    // Set exported env vars.
+    let exported = env.exported_vars();
+    for (k, v) in &exported {
+        config.env.push((k.into(), v.into()));
+    }
+    for (k, v) in &child_env {
+        config.env.push((k.into(), v.into()));
+    }
+    config.env_clear = true;
+
+    // Spawn.
+    let mut child = match malt_platform::process::spawn(config) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("mash: {cmd_name}: {e}\n");
+            let code = match &e {
+                malt_platform::process::SpawnError::NotFound { .. } => 127,
+                malt_platform::process::SpawnError::PermissionDenied { .. } => 126,
+                _ => 1,
+            };
+            return ExecResult::failure(code, msg);
+        }
+    };
+
+    // Read captured output.
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    if let Some(mut out) = child.take_stdout() {
+        let _ = out.read_to_end(&mut stdout_bytes);
+    }
+    if let Some(mut err) = child.take_stderr() {
+        let _ = err.read_to_end(&mut stderr_bytes);
+    }
+
+    // Wait.
+    let exit_code = match child.wait() {
+        Ok(status) => status.code(),
+        Err(e) => {
+            let msg = format!("mash: {cmd_name}: wait failed: {e}\n");
+            stderr_bytes.extend_from_slice(msg.as_bytes());
+            1
+        }
+    };
+
+    ExecResult {
+        exit_code,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
     }
 }
 

@@ -178,3 +178,44 @@ fn redirect_both_stdout_and_stderr() {
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(contents.contains("combined"), "got: {contents}");
 }
+
+// ── Pipeline tests ────────────────────────────────────────────────────
+
+#[test]
+fn pipeline_echo_findstr() {
+    let output = run_stdout("echo hello | findstr hello");
+    assert!(output.contains("hello"), "got: {output}");
+}
+
+#[test]
+fn pipeline_filters() {
+    // echo outputs "hello world", findstr filters for "world"
+    let output = run_stdout("echo hello world | findstr world");
+    assert!(output.contains("world"), "got: {output}");
+}
+
+#[test]
+fn negated_pipeline_false() {
+    let (result, _) = run("! nonexistent_cmd_xyz");
+    assert_eq!(result.exit_code, 0, "negated failure should be success");
+}
+
+#[test]
+fn negated_pipeline_true() {
+    let (result, _) = run("! echo hello");
+    assert_ne!(result.exit_code, 0, "negated success should be failure");
+}
+
+#[test]
+fn pipeline_exit_code_is_last_stage() {
+    // The last command determines the exit code (without pipefail).
+    let (result, _) = run("echo hello | nonexistent_cmd_xyz_99");
+    assert_ne!(result.exit_code, 0, "last stage failed, pipeline should fail");
+}
+
+#[test]
+fn pipeline_single_command_no_pipe() {
+    // A degenerate pipeline with one command should work like a normal command.
+    let output = run_stdout("echo solo");
+    assert!(output.contains("solo"), "got: {output}");
+}
