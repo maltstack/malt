@@ -1,6 +1,9 @@
 use malt_daemon::store::SessionStore;
-use malt_protocol::common::{IsolationTier, LayoutNode, PaneId, SessionId};
-use malt_protocol::persist::daemon::DaemonState;
+use malt_protocol::common::{
+    Direction, GroupId, IsolationTier, LayoutNode, OnEmpty, OnOom, PaneId, SessionId, SplitId,
+    SplitSize,
+};
+use malt_protocol::persist::daemon::{DaemonState, GroupPolicy, GroupState};
 use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
 use tempfile::tempdir;
 
@@ -121,4 +124,228 @@ fn load_nonexistent_returns_error() {
     let store = SessionStore::new(dir.path().to_path_buf());
     let result = store.load_session(&SessionId(999));
     assert!(result.is_err());
+}
+
+#[test]
+fn roundtrip_app_pane() {
+    let dir = tempdir().unwrap();
+    let store = SessionStore::new(dir.path().to_path_buf());
+
+    let config_bytes = vec![0xCA, 0xFE, 0xBA, 0xBE];
+    let session = PersistedSession {
+        schema_version: 1,
+        id: SessionId(10),
+        name: Some("app-session".to_string()),
+        layout: LayoutNode::Leaf {
+            pane_id: PaneId(1),
+        },
+        focus: PaneId(1),
+        panes: {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(
+                1,
+                PersistedPane {
+                    cwd: "/home/user".to_string(),
+                    title: Some("my-app".to_string()),
+                    pane_type: PersistedPaneType::App {
+                        app_id: "com.example.widget".to_string(),
+                        config: Some(config_bytes.clone()),
+                    },
+                    _unknown: Vec::new(),
+                },
+            );
+            m
+        },
+        theme: None,
+        group: None,
+        isolation: IsolationTier::Bare,
+        _unknown: Vec::new(),
+    };
+
+    store.save_session(&SessionId(10), &session).unwrap();
+    let loaded = store.load_session(&SessionId(10)).unwrap();
+
+    let pane = loaded.panes.get(&1).expect("pane 1 missing");
+    match &pane.pane_type {
+        PersistedPaneType::App { app_id, config } => {
+            assert_eq!(app_id, "com.example.widget");
+            assert_eq!(config.as_deref(), Some(config_bytes.as_slice()));
+        }
+        other => panic!("expected App pane, got {:?}", other),
+    }
+}
+
+#[test]
+fn roundtrip_compat_pane() {
+    let dir = tempdir().unwrap();
+    let store = SessionStore::new(dir.path().to_path_buf());
+
+    let session = PersistedSession {
+        schema_version: 1,
+        id: SessionId(11),
+        name: Some("compat-session".to_string()),
+        layout: LayoutNode::Leaf {
+            pane_id: PaneId(1),
+        },
+        focus: PaneId(1),
+        panes: {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(
+                1,
+                PersistedPane {
+                    cwd: "/tmp".to_string(),
+                    title: Some("vim".to_string()),
+                    pane_type: PersistedPaneType::Compat {
+                        program: "/usr/bin/vim".to_string(),
+                        args: vec!["--clean".to_string(), "file.txt".to_string()],
+                    },
+                    _unknown: Vec::new(),
+                },
+            );
+            m
+        },
+        theme: None,
+        group: None,
+        isolation: IsolationTier::Bare,
+        _unknown: Vec::new(),
+    };
+
+    store.save_session(&SessionId(11), &session).unwrap();
+    let loaded = store.load_session(&SessionId(11)).unwrap();
+
+    let pane = loaded.panes.get(&1).expect("pane 1 missing");
+    match &pane.pane_type {
+        PersistedPaneType::Compat { program, args } => {
+            assert_eq!(program, "/usr/bin/vim");
+            assert_eq!(args, &["--clean", "file.txt"]);
+        }
+        other => panic!("expected Compat pane, got {:?}", other),
+    }
+}
+
+#[test]
+fn roundtrip_complex_layout() {
+    let dir = tempdir().unwrap();
+    let store = SessionStore::new(dir.path().to_path_buf());
+
+    let session = PersistedSession {
+        schema_version: 1,
+        id: SessionId(12),
+        name: Some("split-session".to_string()),
+        layout: LayoutNode::Split {
+            split_id: SplitId(100),
+            direction: Direction::Vertical,
+            sizes: vec![
+                SplitSize::Ratio { value: 0.5 },
+                SplitSize::Ratio { value: 0.5 },
+            ],
+            children: vec![
+                LayoutNode::Leaf {
+                    pane_id: PaneId(1),
+                },
+                LayoutNode::Leaf {
+                    pane_id: PaneId(2),
+                },
+            ],
+        },
+        focus: PaneId(1),
+        panes: {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(
+                1,
+                PersistedPane {
+                    cwd: "/home/user".to_string(),
+                    title: Some("left".to_string()),
+                    pane_type: PersistedPaneType::Shell {
+                        shell_path: "/bin/bash".to_string(),
+                    },
+                    _unknown: Vec::new(),
+                },
+            );
+            m.insert(
+                2,
+                PersistedPane {
+                    cwd: "/home/user".to_string(),
+                    title: Some("right".to_string()),
+                    pane_type: PersistedPaneType::Shell {
+                        shell_path: "/bin/bash".to_string(),
+                    },
+                    _unknown: Vec::new(),
+                },
+            );
+            m
+        },
+        theme: None,
+        group: None,
+        isolation: IsolationTier::Bare,
+        _unknown: Vec::new(),
+    };
+
+    store.save_session(&SessionId(12), &session).unwrap();
+    let loaded = store.load_session(&SessionId(12)).unwrap();
+
+    match &loaded.layout {
+        LayoutNode::Split {
+            split_id,
+            direction,
+            sizes,
+            children,
+        } => {
+            assert_eq!(*split_id, SplitId(100));
+            assert_eq!(*direction, Direction::Vertical);
+            assert_eq!(sizes.len(), 2);
+            assert_eq!(children.len(), 2);
+        }
+        other => panic!("expected Split layout, got {:?}", other),
+    }
+}
+
+#[test]
+fn roundtrip_daemon_state_with_groups() {
+    let dir = tempdir().unwrap();
+    let store = SessionStore::new(dir.path().to_path_buf());
+
+    let state = DaemonState {
+        schema_version: 1,
+        sessions: vec![SessionId(1)],
+        active_groups: vec![GroupState {
+            id: GroupId(42),
+            name: "dev-group".to_string(),
+            policy: Some(GroupPolicy {
+                min_tier: IsolationTier::Restricted,
+                max_memory_mb: 2048,
+                max_cpu_cores: 4,
+                max_sessions: 8,
+                ttl_secs: Some(3600),
+                idle_timeout_secs: None,
+                on_empty: OnEmpty::Keep,
+                on_oom: OnOom::PauseAndNotify,
+                _unknown: Vec::new(),
+            }),
+            session_ids: vec![SessionId(1)],
+            _unknown: Vec::new(),
+        }],
+        next_session_id: 2,
+        next_pane_id: 3,
+        _unknown: Vec::new(),
+    };
+
+    store.save_daemon_state(&state).unwrap();
+    let loaded = store.load_daemon_state().unwrap();
+
+    assert_eq!(loaded.active_groups.len(), 1);
+    let group = &loaded.active_groups[0];
+    assert_eq!(group.id, GroupId(42));
+    assert_eq!(group.name, "dev-group");
+    assert_eq!(group.session_ids, vec![SessionId(1)]);
+
+    let policy = group.policy.as_ref().expect("policy missing");
+    assert_eq!(policy.min_tier, IsolationTier::Restricted);
+    assert_eq!(policy.max_memory_mb, 2048);
+    assert_eq!(policy.max_cpu_cores, 4);
+    assert_eq!(policy.max_sessions, 8);
+    assert_eq!(policy.ttl_secs, Some(3600));
+    assert_eq!(policy.idle_timeout_secs, None);
+    assert_eq!(policy.on_empty, OnEmpty::Keep);
+    assert_eq!(policy.on_oom, OnOom::PauseAndNotify);
 }
