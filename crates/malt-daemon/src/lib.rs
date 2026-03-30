@@ -4,3 +4,4 @@ pub mod error;
 pub mod executor;
 
 pub use error::DaemonError;
+pub use executor::{Coordinator, PoolConfig, SessionCommand, SessionExecutor};
