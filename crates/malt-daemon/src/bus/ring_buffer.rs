@@ -39,7 +39,7 @@ impl<T> RingBuffer<T> {
                     // Reliable never dropped — grow beyond capacity as last resort
                     self.buf.push_back(Entry { value, priority });
                 }
-                _ => return, // Drop: buffer full of Reliable entries
+                _ => {} // Drop: buffer full of Reliable entries
             }
         } else {
             self.buf.push_back(Entry { value, priority });
