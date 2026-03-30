@@ -44,3 +44,39 @@ pub enum Command {
         input: String,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parse_no_args() {
+        let cli = Cli::try_parse_from(["malt"]).unwrap();
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parse_list() {
+        let cli = Cli::try_parse_from(["malt", "list"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::List)));
+    }
+
+    #[test]
+    fn parse_new_with_name() {
+        let cli = Cli::try_parse_from(["malt", "new", "--name", "foo"]).unwrap();
+        match cli.command {
+            Some(Command::New { name }) => assert_eq!(name, Some("foo".to_string())),
+            other => panic!("expected New, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_run_command() {
+        let cli = Cli::try_parse_from(["malt", "kill", "42"]).unwrap();
+        match cli.command {
+            Some(Command::Kill { session_id }) => assert_eq!(session_id, 42),
+            other => panic!("expected Kill, got {other:?}"),
+        }
+    }
+}
