@@ -1,0 +1,15 @@
+[package]
+name = "malt-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "In-process POSIX utilities for MALT"
+
+[dependencies]
+thiserror = "2"
+glob = "0.3"
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"
