@@ -263,6 +263,7 @@ dependencies = [
 name = "malt-term"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
  "thiserror",
  "unicode-segmentation",
 ]
