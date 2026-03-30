@@ -1,0 +1,11 @@
+[package]
+name = "malt-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Session lifecycle and pane runtime for MALT"
+
+[dependencies]
+malt-protocol = { path = "../malt-protocol" }
+thiserror = "2"

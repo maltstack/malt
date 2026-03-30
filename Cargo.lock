@@ -225,6 +225,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "malt-layout"
+version = "0.1.0"
+dependencies = [
+ "malt-protocol",
+]
+
+[[package]]
 name = "malt-platform"
 version = "0.1.0"
 dependencies = [
@@ -242,6 +249,14 @@ version = "0.1.0"
 dependencies = [
  "thiserror",
  "vexil-runtime",
+]
+
+[[package]]
+name = "malt-session"
+version = "0.1.0"
+dependencies = [
+ "malt-protocol",
+ "thiserror",
 ]
 
 [[package]]
