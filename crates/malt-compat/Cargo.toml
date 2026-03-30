@@ -1,0 +1,13 @@
+[package]
+name = "malt-compat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "VT terminal emulator for MALT — the only place VT codes exist"
+
+[dependencies]
+malt-protocol = { path = "../malt-protocol" }
+vte = "0.15"
+thiserror = "2"
+tracing = "0.1"
