@@ -1,5 +1,6 @@
 use crate::bus::{Bus, BusConfig, BusMessage};
 use crate::connection::authority::AuthorityTracker;
+use crate::DaemonError;
 use malt_layout::resolve::compute_resolved_panes;
 use malt_layout::{LayoutConfig, Rect};
 use malt_protocol::common::{IsolationTier, PaneId, SessionId};
@@ -42,7 +43,7 @@ impl SessionExecutor {
         session_id: SessionId,
         first_pane: PaneId,
         isolation: IsolationTier,
-    ) -> (mpsc::Sender<SessionCommand>, JoinHandle<()>) {
+    ) -> Result<(mpsc::Sender<SessionCommand>, JoinHandle<()>), DaemonError> {
         let (tx, rx) = mpsc::channel();
         let handle = thread::Builder::new()
             .name(format!("session-{}", session_id.0))
@@ -56,8 +57,8 @@ impl SessionExecutor {
                 };
                 executor.run(rx);
             })
-            .expect("failed to spawn session thread");
-        (tx, handle)
+            .map_err(|e| DaemonError::Io(e))?;
+        Ok((tx, handle))
     }
 
     fn run(&mut self, rx: mpsc::Receiver<SessionCommand>) {

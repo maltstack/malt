@@ -9,7 +9,7 @@ fn session_executor_starts_and_stops() {
         SessionId(1),
         PaneId(1),
         IsolationTier::Bare,
-    );
+    ).unwrap();
     cmd_tx.send(SessionCommand::Shutdown).unwrap();
     handle.join().expect("session thread panicked");
 }
@@ -20,7 +20,7 @@ fn session_executor_processes_input() {
         SessionId(1),
         PaneId(1),
         IsolationTier::Bare,
-    );
+    ).unwrap();
     let msg = BusMessage {
         domain: 2,
         msg_type: 1,
@@ -29,7 +29,6 @@ fn session_executor_processes_input() {
         payload: vec![1, 2, 3],
     };
     cmd_tx.send(SessionCommand::Deliver(msg)).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(50));
     cmd_tx.send(SessionCommand::Shutdown).unwrap();
     handle.join().expect("session thread panicked");
 }
@@ -40,7 +39,7 @@ fn session_executor_attach_detach() {
         SessionId(1),
         PaneId(1),
         IsolationTier::Bare,
-    );
+    ).unwrap();
     cmd_tx.send(SessionCommand::AttachClient {
         client_id: 100,
         authority: InputAuthority::Exclusive,
@@ -56,7 +55,7 @@ fn session_executor_resize() {
         SessionId(1),
         PaneId(1),
         IsolationTier::Bare,
-    );
+    ).unwrap();
     cmd_tx.send(SessionCommand::Resize { cols: 120, rows: 40 }).unwrap();
     cmd_tx.send(SessionCommand::Shutdown).unwrap();
     handle.join().expect("session thread panicked");

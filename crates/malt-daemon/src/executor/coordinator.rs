@@ -45,14 +45,14 @@ impl Coordinator {
         name: Option<String>,
         isolation: IsolationTier,
         _group: Option<GroupId>,
-    ) -> SessionId {
+    ) -> Result<SessionId, DaemonError> {
         let session_id = SessionId(self.next_session_id);
         self.next_session_id += 1;
 
         let pane_id = PaneId(self.next_pane_id);
         self.next_pane_id += 1;
 
-        let (cmd_tx, thread) = SessionExecutor::spawn(session_id.clone(), pane_id, isolation);
+        let (cmd_tx, thread) = SessionExecutor::spawn(session_id.clone(), pane_id, isolation)?;
 
         info!(?session_id, ?name, ?isolation, "session created");
 
@@ -67,7 +67,7 @@ impl Coordinator {
             },
         );
 
-        session_id
+        Ok(session_id)
     }
 
     /// Destroy a session. Sends shutdown and joins the thread.
@@ -91,7 +91,10 @@ impl Coordinator {
             .sessions
             .get(&session_id.0)
             .ok_or(DaemonError::SessionNotFound(session_id))?;
-        let _ = handle.cmd_tx.send(SessionCommand::Deliver(msg));
+        handle
+            .cmd_tx
+            .send(SessionCommand::Deliver(msg))
+            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
         Ok(())
     }
 
@@ -105,7 +108,10 @@ impl Coordinator {
             .sessions
             .get(&session_id.0)
             .ok_or(DaemonError::SessionNotFound(session_id))?;
-        let _ = handle.cmd_tx.send(cmd);
+        handle
+            .cmd_tx
+            .send(cmd)
+            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
         Ok(())
     }
 

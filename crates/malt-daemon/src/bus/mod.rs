@@ -94,13 +94,20 @@ impl Bus {
                     sub.critical.push(msg.clone());
                 }
                 Priority::Reliable => {
+                    // Reliable messages are never dropped. Flow control tracks them
+                    // for accounting but always accepts. The ring buffer grows beyond
+                    // capacity rather than evict Reliable entries.
                     sub.flow.try_publish_reliable(msg.producer_id);
                     sub.ring.push(msg.clone(), Priority::Reliable);
                 }
                 _ => {
-                    sub.ring.push(msg.clone(), msg.priority);
-                    // Track in flow controller — ring buffer handles eviction
-                    sub.flow.try_publish(msg.producer_id);
+                    // Non-Reliable messages are gated by flow control to prevent
+                    // one producer from monopolizing the buffer. If rejected, the
+                    // message is silently dropped. If accepted, priority eviction
+                    // in the ring buffer handles overflow (Low→Normal→High).
+                    if sub.flow.try_publish(msg.producer_id) {
+                        sub.ring.push(msg.clone(), msg.priority);
+                    }
                 }
             }
         }

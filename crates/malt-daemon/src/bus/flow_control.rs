@@ -27,8 +27,8 @@ impl FlowController {
     /// Try to publish a message from the given producer.
     /// Returns `true` if allowed, `false` if flow control rejects it.
     pub fn try_publish(&mut self, producer_id: u64) -> bool {
-        let per_producer_cap = self.capacity / 4; // 25%
-        let global_cap = self.capacity * 3 / 5; // 60%
+        let per_producer_cap = (self.capacity / 4).max(1); // 25%, min 1
+        let global_cap = (self.capacity * 3 / 5).max(1); // 60%, min 1
 
         // Check global saturation
         if self.total >= global_cap {

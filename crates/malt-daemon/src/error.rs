@@ -6,6 +6,9 @@ pub enum DaemonError {
     #[error("session not found: {0:?}")]
     SessionNotFound(malt_protocol::common::SessionId),
 
+    #[error("session unreachable (thread may have panicked): {0:?}")]
+    SessionUnreachable(malt_protocol::common::SessionId),
+
     #[error("session error: {0}")]
     Session(#[from] SessionError),
 
