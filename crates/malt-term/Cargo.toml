@@ -1,0 +1,11 @@
+[package]
+name = "malt-term"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Line editor for MALT — vi/emacs modes, completion, history"
+
+[dependencies]
+unicode-segmentation = "1"
+thiserror = "2"
