@@ -1,0 +1,17 @@
+[package]
+name = "malt-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "TUI terminal client for MALT — ratatui + crossterm"
+
+[[bin]]
+name = "malt-tui"
+path = "src/main.rs"
+
+[dependencies]
+malt-protocol = { path = "../malt-protocol" }
+ratatui = "0.30"
+crossterm = "0.29"
+anyhow = "1"
