@@ -1,0 +1,24 @@
+[package]
+name = "malt-elevate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Elevated helper binary for MALT — privileged operations with nonce auth"
+
+[dependencies]
+malt-protocol = { path = "../malt-protocol" }
+malt-platform = { path = "../malt-platform" }
+thiserror = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "malt_elevate"
+path = "src/lib.rs"
+
+[[bin]]
+name = "malt-elevate"
+path = "src/main.rs"
