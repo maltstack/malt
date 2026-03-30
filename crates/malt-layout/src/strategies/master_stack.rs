@@ -5,6 +5,7 @@
 //! `master_ratio` controls how much horizontal space the master area receives.
 
 use crate::ops::collect_pane_ids;
+use crate::strategies::make_equal_split;
 use crate::strategy::LayoutStrategy;
 use crate::Rect;
 use malt_protocol::common::{Direction, LayoutNode, PaneId, SplitId, SplitSize};
@@ -26,29 +27,6 @@ impl Default for MasterStackStrategy {
             master_ratio: 0.55,
             stack_direction: Direction::Horizontal,
         }
-    }
-}
-
-/// Create an N-ary split with equal-ratio children.
-fn make_equal_split(panes: &[PaneId], direction: Direction, base_split_id: u32) -> LayoutNode {
-    debug_assert!(!panes.is_empty());
-    if panes.len() == 1 {
-        return LayoutNode::Leaf {
-            pane_id: panes[0].clone(),
-        };
-    }
-    let n = panes.len();
-    let ratio = 1.0 / n as f32;
-    LayoutNode::Split {
-        split_id: SplitId(base_split_id),
-        direction,
-        sizes: (0..n).map(|_| SplitSize::Ratio { value: ratio }).collect(),
-        children: panes
-            .iter()
-            .map(|id| LayoutNode::Leaf {
-                pane_id: id.clone(),
-            })
-            .collect(),
     }
 }
 

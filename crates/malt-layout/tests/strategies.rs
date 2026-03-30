@@ -1,7 +1,10 @@
 use malt_layout::ops::collect_pane_ids;
 use malt_layout::resolve::compute_resolved_panes;
+use malt_layout::strategies::columns::ColumnsStrategy;
 use malt_layout::strategies::dwindle::DwindleStrategy;
+use malt_layout::strategies::grid::GridStrategy;
 use malt_layout::strategies::master_stack::MasterStackStrategy;
+use malt_layout::strategies::monocle::MonocleStrategy;
 use malt_layout::strategy::LayoutStrategy;
 use malt_layout::{LayoutConfig, Rect};
 use malt_protocol::common::{Direction, LayoutNode, PaneId, SplitId};
@@ -217,4 +220,129 @@ fn master_stack_remove_last_returns_none() {
         pane_id: PaneId(1),
     };
     assert!(s.remove_pane(&tree, PaneId(1)).is_none());
+}
+
+// ── Columns ──
+
+#[test]
+fn columns_single_pane() {
+    let s = ColumnsStrategy { max_columns: None };
+    let tree = s.rebuild(&[PaneId(1)], Rect::new(0, 0, 80, 24));
+    assert!(matches!(tree, LayoutNode::Leaf { .. }));
+}
+
+#[test]
+fn columns_three_equal() {
+    let s = ColumnsStrategy { max_columns: None };
+    let tree = s.rebuild(&[PaneId(1), PaneId(2), PaneId(3)], Rect::new(0, 0, 90, 24));
+    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 90, 24), PaneId(1), &LayoutConfig::default());
+    assert_eq!(panes.len(), 3);
+    for p in &panes {
+        assert!(p.width >= 28 && p.width <= 32, "width={}", p.width);
+    }
+}
+
+#[test]
+fn columns_max_stacks_overflow() {
+    let s = ColumnsStrategy { max_columns: Some(2) };
+    let tree = s.rebuild(&[PaneId(1), PaneId(2), PaneId(3)], Rect::new(0, 0, 80, 24));
+    let ids = collect_pane_ids(&tree);
+    assert_eq!(ids.len(), 3);
+}
+
+#[test]
+fn columns_add_pane() {
+    let s = ColumnsStrategy { max_columns: None };
+    let tree = LayoutNode::Leaf { pane_id: PaneId(1) };
+    let tree2 = s.add_pane(&tree, Rect::new(0, 0, 80, 24), PaneId(2), SplitId(1));
+    assert_eq!(collect_pane_ids(&tree2).len(), 2);
+}
+
+// ── Monocle ──
+
+#[test]
+fn monocle_single() {
+    let s = MonocleStrategy;
+    let tree = s.rebuild(&[PaneId(1)], Rect::new(0, 0, 80, 24));
+    assert!(matches!(tree, LayoutNode::Leaf { .. }));
+}
+
+#[test]
+fn monocle_three_panes_tabbed() {
+    let s = MonocleStrategy;
+    let tree = s.rebuild(&[PaneId(1), PaneId(2), PaneId(3)], Rect::new(0, 0, 80, 24));
+    match &tree {
+        LayoutNode::Tabbed { children, active, .. } => {
+            assert_eq!(children.len(), 3);
+            assert_eq!(*active, 0);
+        }
+        _ => panic!("expected Tabbed"),
+    }
+}
+
+#[test]
+fn monocle_only_active_visible() {
+    let s = MonocleStrategy;
+    let tree = s.rebuild(&[PaneId(1), PaneId(2), PaneId(3)], Rect::new(0, 0, 80, 24));
+    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &LayoutConfig::default());
+    let visible: Vec<_> = panes.iter().filter(|p| p.visible).collect();
+    assert_eq!(visible.len(), 1);
+}
+
+#[test]
+fn monocle_fullscreen() {
+    let s = MonocleStrategy;
+    let tree = s.rebuild(&[PaneId(1), PaneId(2)], Rect::new(0, 0, 80, 24));
+    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &LayoutConfig::default());
+    let active = panes.iter().find(|p| p.visible).unwrap();
+    assert_eq!(active.width, 80);
+    assert_eq!(active.height, 24);
+}
+
+// ── Grid ──
+
+#[test]
+fn grid_single() {
+    let s = GridStrategy;
+    let tree = s.rebuild(&[PaneId(1)], Rect::new(0, 0, 80, 24));
+    assert!(matches!(tree, LayoutNode::Leaf { .. }));
+}
+
+#[test]
+fn grid_four_panes_2x2() {
+    let s = GridStrategy;
+    let tree = s.rebuild(&[PaneId(1), PaneId(2), PaneId(3), PaneId(4)], Rect::new(0, 0, 80, 24));
+    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &LayoutConfig::default());
+    assert_eq!(panes.len(), 4);
+    for p in &panes {
+        assert!(p.width >= 35 && p.width <= 45, "width={}", p.width);
+        assert!(p.height >= 10 && p.height <= 14, "height={}", p.height);
+    }
+}
+
+#[test]
+fn grid_nine_panes_3x3() {
+    let s = GridStrategy;
+    let tree = s.rebuild(
+        &[PaneId(1), PaneId(2), PaneId(3), PaneId(4), PaneId(5), PaneId(6), PaneId(7), PaneId(8), PaneId(9)],
+        Rect::new(0, 0, 90, 24),
+    );
+    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 90, 24), PaneId(1), &LayoutConfig::default());
+    assert_eq!(panes.len(), 9);
+}
+
+#[test]
+fn grid_five_panes_handles_uneven() {
+    let s = GridStrategy;
+    let tree = s.rebuild(&[PaneId(1), PaneId(2), PaneId(3), PaneId(4), PaneId(5)], Rect::new(0, 0, 90, 24));
+    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 90, 24), PaneId(1), &LayoutConfig::default());
+    assert_eq!(panes.len(), 5);
+}
+
+#[test]
+fn grid_add_pane() {
+    let s = GridStrategy;
+    let tree = LayoutNode::Leaf { pane_id: PaneId(1) };
+    let tree2 = s.add_pane(&tree, Rect::new(0, 0, 80, 24), PaneId(2), SplitId(1));
+    assert_eq!(collect_pane_ids(&tree2).len(), 2);
 }
