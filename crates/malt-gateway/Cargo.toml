@@ -1,0 +1,17 @@
+[package]
+name = "malt-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "HTTP REST API gateway for MALT"
+
+[dependencies]
+malt-protocol = { path = "../malt-protocol" }
+axum = "0.8"
+tokio = { version = "1", features = ["rt", "net", "sync", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower = "0.5"
+thiserror = "2"
+tracing = "0.1"
