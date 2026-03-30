@@ -34,13 +34,11 @@ impl<T> RingBuffer<T> {
         // If eviction failed (all Reliable), drop the incoming message
         // unless it's Reliable itself — Reliable never dropped.
         if self.buf.len() >= self.capacity {
-            match priority {
-                Priority::Reliable => {
-                    // Reliable never dropped — grow beyond capacity as last resort
-                    self.buf.push_back(Entry { value, priority });
-                }
-                _ => {} // Drop: buffer full of Reliable entries
+            if matches!(priority, Priority::Reliable) {
+                // Reliable never dropped — grow beyond capacity as last resort
+                self.buf.push_back(Entry { value, priority });
             }
+            // Non-Reliable dropped: buffer full of Reliable entries
         } else {
             self.buf.push_back(Entry { value, priority });
         }

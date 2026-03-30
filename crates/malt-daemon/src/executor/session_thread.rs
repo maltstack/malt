@@ -57,7 +57,7 @@ impl SessionExecutor {
                 };
                 executor.run(rx);
             })
-            .map_err(|e| DaemonError::Io(e))?;
+            .map_err(DaemonError::Io)?;
         Ok((tx, handle))
     }
 
