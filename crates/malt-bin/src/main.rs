@@ -31,9 +31,7 @@ fn main() -> Result<()> {
 fn handle_status(client: &MaltClient) -> Result<()> {
     match client.health() {
         Ok(h) => {
-            println!("daemon: {} (v{})", h.status, h.version);
-            println!("uptime: {}s", h.uptime_secs);
-            println!("sessions: {}", h.session_count);
+            println!("daemon: {}", h.status);
         }
         Err(_) => {
             println!("daemon: not reachable");
@@ -88,15 +86,13 @@ fn handle_kill(client: &MaltClient, session_id: u32) -> Result<()> {
 
 fn handle_exec(client: &MaltClient, session_id: u32, command: &str) -> Result<()> {
     let result = client.exec_command(session_id, command)?;
-    if !result.stdout.is_empty() {
-        print!("{}", result.stdout);
+    if !result.output.is_empty() {
+        print!("{}", result.output);
     }
-    if !result.stderr.is_empty() {
-        eprint!("{}", result.stderr);
-    }
-    if result.exit_code != 0 {
-        // Signal non-zero exit to the caller
-        std::process::exit(result.exit_code);
+    if let Some(code) = result.exit_code {
+        if code != 0 {
+            std::process::exit(code);
+        }
     }
     Ok(())
 }

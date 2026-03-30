@@ -5,10 +5,11 @@ pub fn print_sessions(sessions: &[SessionData]) {
         println!("  no sessions");
         return;
     }
-    println!(
+    let header = format!(
         "  {:>4}  {:>5}  {:>10}  {:>8}  {}",
         "ID", "PANES", "ISOLATION", "STATE", "NAME"
     );
+    println!("{header}");
     for s in sessions {
         println!(
             "  {:>4}  {:>5}  {:>10}  {:>8}  {}",

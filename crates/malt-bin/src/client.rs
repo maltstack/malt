@@ -19,19 +19,16 @@ pub struct SessionData {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct ExecResultData {
-    pub session_id: u32,
-    pub exit_code: i32,
-    pub stdout: String,
-    pub stderr: String,
+    pub command_id: u32,
+    pub output: String,
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct HealthData {
     pub status: String,
-    pub version: String,
-    pub uptime_secs: u64,
-    pub session_count: u32,
 }
 
 pub struct MaltClient {
@@ -194,21 +191,13 @@ mod tests {
     fn parse_health_response() {
         let json = r#"{
             "ok": true,
-            "data": {
-                "status": "healthy",
-                "version": "0.1.0",
-                "uptime_secs": 3600,
-                "session_count": 3
-            },
+            "data": { "status": "ok" },
             "error": null
         }"#;
         let envelope: ApiEnvelope<HealthData> = serde_json::from_str(json).unwrap();
         assert!(envelope.ok);
         let health = envelope.data.unwrap();
-        assert_eq!(health.status, "healthy");
-        assert_eq!(health.version, "0.1.0");
-        assert_eq!(health.uptime_secs, 3600);
-        assert_eq!(health.session_count, 3);
+        assert_eq!(health.status, "ok");
     }
 
     #[test]
@@ -216,19 +205,17 @@ mod tests {
         let json = r#"{
             "ok": true,
             "data": {
-                "session_id": 1,
-                "exit_code": 0,
-                "stdout": "hello\n",
-                "stderr": ""
+                "command_id": 1,
+                "output": "hello\n",
+                "exit_code": 0
             },
             "error": null
         }"#;
         let envelope: ApiEnvelope<ExecResultData> = serde_json::from_str(json).unwrap();
         assert!(envelope.ok);
         let result = envelope.data.unwrap();
-        assert_eq!(result.session_id, 1);
-        assert_eq!(result.exit_code, 0);
-        assert_eq!(result.stdout, "hello\n");
-        assert_eq!(result.stderr, "");
+        assert_eq!(result.command_id, 1);
+        assert_eq!(result.output, "hello\n");
+        assert_eq!(result.exit_code, Some(0));
     }
 }
