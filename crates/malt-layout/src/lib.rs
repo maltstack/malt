@@ -4,6 +4,7 @@ pub mod resolve;
 pub mod ops;
 pub mod focus;
 pub mod strategy;
+pub mod strategies;
 
 #[derive(Debug, Clone)]
 pub struct LayoutConfig {
