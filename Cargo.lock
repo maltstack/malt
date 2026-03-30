@@ -456,6 +456,7 @@ name = "malt-gateway"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "http-body-util",
  "malt-protocol",
  "serde",
  "serde_json",
