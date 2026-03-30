@@ -1,0 +1,10 @@
+[package]
+name = "malt-layout"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Tiling layout engine for MALT — N-ary splits, tabbed, float, gaps"
+
+[dependencies]
+malt-protocol = { path = "../malt-protocol" }
