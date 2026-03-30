@@ -1,0 +1,12 @@
+[package]
+name = "malt-renderer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Renderer Host for MALT — FrameElement to RenderCommand pipeline"
+
+[dependencies]
+malt-protocol = { path = "../malt-protocol" }
+thiserror = "2"
+tracing = "0.1"

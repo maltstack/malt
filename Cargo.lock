@@ -287,6 +287,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "malt-renderer"
+version = "0.1.0"
+dependencies = [
+ "malt-protocol",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "malt-session"
 version = "0.1.0"
 dependencies = [
