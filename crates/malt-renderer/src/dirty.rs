@@ -41,10 +41,9 @@ impl DirtyTracker {
         }
 
         // Compare overlapping positions
-        let shared = self.previous.len().min(current.len());
-        for i in 0..shared {
-            if current[i] != self.previous[i] {
-                delta.push(current[i].clone());
+        for (cur, prev) in current.iter().zip(self.previous.iter()) {
+            if cur != prev {
+                delta.push(cur.clone());
             }
         }
 
