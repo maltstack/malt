@@ -80,7 +80,7 @@ impl vte::Perform for GridPerformer<'_> {
                 self.grid
                     .move_cursor_to(self.grid.cursor_row(), target);
             }
-            0x0A | 0x0B | 0x0C => {
+            0x0A..=0x0C => {
                 // LF, VT, FF — linefeed
                 self.grid.linefeed();
             }
