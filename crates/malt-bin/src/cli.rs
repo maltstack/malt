@@ -12,6 +12,12 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Run the daemon (foreground)
+    Daemon {
+        /// Port to listen on
+        #[arg(long, default_value = "7700")]
+        port: u16,
+    },
     /// Start the MALT daemon
     Start,
     /// Stop the MALT daemon

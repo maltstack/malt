@@ -12,6 +12,8 @@ malt-platform = { path = "../malt-platform", features = ["tokio"] }
 malt-session = { path = "../malt-session" }
 malt-layout = { path = "../malt-layout" }
 malt-config = { path = "../malt-config" }
+malt-gateway = { path = "../malt-gateway" }
+serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tokio = { version = "1", features = ["rt", "net", "sync", "macros", "time", "io-util"] }

@@ -1,5 +1,6 @@
 mod cli;
 mod client;
+mod daemon;
 mod output;
 
 use anyhow::Result;
@@ -14,6 +15,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         None | Some(Command::Status) => handle_status(&client),
+        Some(Command::Daemon { port }) => daemon::run_daemon(port),
         Some(Command::Start) => handle_start(),
         Some(Command::Stop) => handle_stop(),
         Some(Command::List) => handle_list(&client),
@@ -45,7 +47,13 @@ fn handle_status(client: &MaltClient) -> Result<()> {
 }
 
 fn handle_start() -> Result<()> {
-    println!("start: not yet implemented");
+    let exe = std::env::current_exe()?;
+    let child = std::process::Command::new(exe)
+        .args(["daemon"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    println!("daemon started (pid: {})", child.id());
     Ok(())
 }
 

@@ -1327,10 +1327,14 @@ name = "malt-bin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
+ "malt-daemon",
+ "malt-gateway",
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1357,10 +1361,12 @@ name = "malt-daemon"
 version = "0.1.0"
 dependencies = [
  "malt-config",
+ "malt-gateway",
  "malt-layout",
  "malt-platform",
  "malt-protocol",
  "malt-session",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
