@@ -14,6 +14,7 @@ malt-layout = { path = "../malt-layout" }
 malt-config = { path = "../malt-config" }
 malt-gateway = { path = "../malt-gateway" }
 malt-compat = { path = "../malt-compat" }
+malt-term = { path = "../malt-term" }
 mash = { path = "../mash" }
 serde_json = "1"
 thiserror = "2"

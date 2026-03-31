@@ -3,6 +3,7 @@ pub mod connection;
 pub mod error;
 pub mod executor;
 pub mod gateway_backend;
+pub mod input_bridge;
 pub mod store;
 pub mod supervisor;
 pub mod vnp_listener;
