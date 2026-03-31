@@ -203,6 +203,7 @@ fn reset_clears_line_and_accepts_new_input() {
 
     ed.reset();
     assert_eq!(ed.line(), "");
+    assert_eq!(ed.cursor(), 0, "cursor must be at 0 after reset");
 
     ed.feed(InputEvent::Char('o'));
     ed.feed(InputEvent::Char('k'));
@@ -214,9 +215,59 @@ fn reset_clears_line_and_accepts_new_input() {
 fn reset_after_accept_is_safe() {
     let mut ed = Editor::new(EditMode::Emacs);
     ed.feed(InputEvent::Char('a'));
-    let _ = ed.feed(InputEvent::Key(SpecialKey::Enter));
+    let result = ed.feed(InputEvent::Key(SpecialKey::Enter));
+    assert!(matches!(result, EditResult::Accept(s) if s == "a"), "expected Accept(\"a\")");
     // After Accept, the line text is consumed by the caller.
     // reset() must still work without panicking.
     ed.reset();
     assert_eq!(ed.line(), "");
+}
+
+#[test]
+fn reset_vi_normal_returns_to_insert() {
+    let mut ed = Editor::new(EditMode::Vi);
+    // Drive editor into Normal mode.
+    ed.feed(InputEvent::Char('h'));
+    ed.feed(InputEvent::Char('i'));
+    ed.feed(InputEvent::Key(SpecialKey::Escape));
+    assert_eq!(ed.vi_mode_indicator(), "NOR", "should be in Normal mode before reset");
+
+    ed.reset();
+
+    assert_eq!(ed.line(), "", "line must be empty after reset");
+    assert_eq!(ed.cursor(), 0, "cursor must be at 0 after reset");
+    assert_eq!(ed.vi_mode_indicator(), "INS", "reset must return Vi editor to Insert mode");
+}
+
+#[test]
+fn reset_undo_isolation() {
+    let mut ed = Editor::new(EditMode::Vi);
+    // Type some chars and record state in undo stack.
+    ed.feed(InputEvent::Char('a'));
+    ed.feed(InputEvent::Char('b'));
+    ed.feed(InputEvent::Char('c'));
+    // Undo one step in Normal mode (u command).
+    ed.feed(InputEvent::Key(SpecialKey::Escape));
+    ed.feed(InputEvent::Char('u'));
+
+    // Now reset — this must clear the undo history.
+    ed.reset();
+    assert_eq!(ed.line(), "", "line must be empty after reset");
+
+    // Type new content.
+    ed.feed(InputEvent::Char('x'));
+    ed.feed(InputEvent::Char('y'));
+
+    // Undo in Normal mode — must only undo the new content, never travel
+    // back to the pre-reset "abc" / "ab" content.
+    ed.feed(InputEvent::Key(SpecialKey::Escape));
+    ed.feed(InputEvent::Char('u'));
+    // After undoing one step, we may be back at "x" or "" depending on
+    // granularity, but we must never see "abc" or "ab".
+    let line_after_undo = ed.line().to_string();
+    assert!(
+        line_after_undo != "abc" && line_after_undo != "ab" && line_after_undo != "a",
+        "undo after reset must not travel back to pre-reset content, got: {:?}",
+        line_after_undo
+    );
 }
