@@ -14,7 +14,8 @@ fn main() -> Result<()> {
     let client = MaltClient::new(&cli.api_addr);
 
     match cli.command {
-        None | Some(Command::Status) => handle_status(&client),
+        None => handle_default(&cli.api_addr, &client),
+        Some(Command::Status) => handle_status(&client),
         Some(Command::Daemon { port }) => daemon::run_daemon(port),
         Some(Command::Start) => handle_start(),
         Some(Command::Stop) => handle_stop(),
@@ -28,6 +29,45 @@ fn main() -> Result<()> {
         }) => handle_exec(&client, session_id, &command),
         Some(Command::Send { session_id, input }) => handle_send(&client, session_id, &input),
     }
+}
+
+fn handle_default(api_addr: &str, client: &MaltClient) -> Result<()> {
+    // 1. Check if daemon is running
+    if client.health().is_err() {
+        // Start daemon in background
+        eprintln!("starting daemon...");
+        handle_start()?;
+
+        // Wait for daemon to be ready (up to 5 seconds)
+        let mut ready = false;
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if client.health().is_ok() {
+                ready = true;
+                break;
+            }
+        }
+        if !ready {
+            anyhow::bail!("daemon failed to start within 5 seconds");
+        }
+    }
+
+    // 2. Check for existing sessions
+    let sessions = client.list_sessions()?;
+    let session_id = if sessions.is_empty() {
+        // Create a new session
+        eprintln!("creating session...");
+        let session = client.create_session(None)?;
+        // Give shell a moment to start
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        session.id
+    } else {
+        // Use the first (most recent) session
+        sessions[0].id
+    };
+
+    // 3. Attach to the session
+    handle_attach(api_addr, Some(session_id))
 }
 
 fn handle_status(client: &MaltClient) -> Result<()> {
