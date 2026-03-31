@@ -4,8 +4,11 @@
 mod unix;
 #[cfg(windows)]
 mod windows;
+pub mod spawn;
 
 use std::sync::Arc;
+
+pub use spawn::{spawn_with_pty, PtyProcess, PtySpawnError};
 
 /// PTY window size in columns and rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

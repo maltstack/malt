@@ -3,8 +3,7 @@ pub mod process;
 
 use std::collections::HashMap;
 
-use malt_platform::process::{Io, SpawnConfig};
-use malt_platform::pty::{self, WinSize};
+use malt_platform::pty::{self, spawn_with_pty, WinSize};
 use malt_protocol::common::PaneId;
 
 pub use error::SupervisorError;
@@ -26,55 +25,45 @@ impl ProcessSupervisor {
         }
     }
 
-    /// Spawn a new child process for the given pane.
-    ///
-    /// Opens a PTY, spawns the child with inherited stdio (PTY slave
-    /// attachment will be wired in a later phase), and stores the
-    /// managed process keyed by pane ID.
+    /// Spawn a new child process attached to a PTY.
     pub fn spawn(&mut self, req: SpawnRequest) -> Result<(), SupervisorError> {
         let size = WinSize {
             cols: req.cols,
             rows: req.rows,
         };
-        let (pty_handle, reader, writer) = pty::open_pty(size)?;
 
-        let mut config = SpawnConfig::new(&req.program);
-        for arg in &req.args {
-            config = config.arg(arg);
-        }
-        config = config
-            .cwd(&req.cwd)
-            .stdin(Io::Pipe)
-            .stdout(Io::Pipe)
-            .stderr(Io::Pipe);
+        let mut pty_proc = spawn_with_pty(&req.program, &req.args, &req.cwd, size)
+            .map_err(|e| match e {
+                malt_platform::pty::PtySpawnError::Pty(e) => SupervisorError::PtyError(e),
+                malt_platform::pty::PtySpawnError::Spawn(e) => SupervisorError::SpawnFailed(e),
+                malt_platform::pty::PtySpawnError::Io(e) => SupervisorError::Io(e),
+            })?;
 
-        let mut child = malt_platform::process::spawn(config)?;
-        let pid = child.pid();
+        let pid = pty_proc.child.pid();
 
-        // Use the child's piped stdin/stdout for I/O instead of PTY master handles.
-        // Child stdout = what we read from (process output)
-        // Child stdin = what we write to (process input)
-        let child_stdout: Option<std::fs::File> = child.take_stdout().map(child_stdout_to_file);
-        let child_stdin: Option<std::fs::File> = child.take_stdin().map(child_stdin_to_file);
+        // On Windows, child has piped stdio — take those handles for I/O.
+        // On Unix, I/O goes through the PTY master (reader/writer).
+        #[cfg(windows)]
+        let (reader, writer) = {
+            let stdout = pty_proc.child.take_stdout().map(child_io_to_file);
+            let stdin = pty_proc.child.take_stdin().map(child_io_to_file);
+            (
+                stdout.unwrap_or(pty_proc.reader),
+                stdin.unwrap_or(pty_proc.writer),
+            )
+        };
+        #[cfg(unix)]
+        let (reader, writer) = (pty_proc.reader, pty_proc.writer);
 
         let key = req.pane_id.0;
-        let managed = ManagedProcess::new(
-            req.pane_id,
-            pid,
-            child,
-            pty_handle,
-            child_stdout.unwrap_or(reader),   // prefer child stdout pipe
-            child_stdin.unwrap_or(writer),     // prefer child stdin pipe
-        );
+        let managed =
+            ManagedProcess::new(req.pane_id, pid, pty_proc.child, pty_proc.pty, reader, writer);
         self.processes.insert(key, managed);
 
         Ok(())
     }
 
     /// Kill and remove the process associated with the given pane.
-    ///
-    /// Dropping the `ManagedProcess` (and its `Child`) will clean up
-    /// OS resources.
     pub fn kill(&mut self, pane_id: &PaneId) -> Result<(), SupervisorError> {
         self.processes
             .remove(&pane_id.0)
@@ -94,13 +83,9 @@ impl ProcessSupervisor {
         Ok(())
     }
 
-    /// Poll all managed processes for exit, returning those that have exited.
-    ///
-    /// Exited processes are removed from the supervisor.
+    /// Poll all managed processes for exit.
     pub fn check_exited(&mut self) -> Vec<(PaneId, ProcessState)> {
         let mut exited = Vec::new();
-
-        // Collect pane IDs of exited processes first, then remove.
         let mut to_remove = Vec::new();
         for (&key, proc) in self.processes.iter_mut() {
             if let Some(child) = proc.child_mut() {
@@ -111,9 +96,7 @@ impl ProcessSupervisor {
                         exited.push((proc.pane_id().clone(), state));
                         to_remove.push(key);
                     }
-                    Ok(None) => {
-                        // Still running.
-                    }
+                    Ok(None) => {}
                     Err(e) => {
                         let state = ProcessState::Failed(e.to_string());
                         proc.set_state(state.clone());
@@ -123,11 +106,9 @@ impl ProcessSupervisor {
                 }
             }
         }
-
         for key in to_remove {
             self.processes.remove(&key);
         }
-
         exited
     }
 
@@ -136,14 +117,11 @@ impl ProcessSupervisor {
         self.processes.get(&pane_id.0)
     }
 
-    /// Take the I/O handles (PTY reader/writer) from the managed process.
-    ///
-    /// Returns `None` if the pane is not found or I/O was already taken.
+    /// Take the I/O handles from the managed process.
     pub fn take_io(&mut self, pane_id: &PaneId) -> Option<(std::fs::File, std::fs::File)> {
         self.processes.get_mut(&pane_id.0)?.take_io()
     }
 
-    /// Returns the number of currently managed processes.
     pub fn process_count(&self) -> usize {
         self.processes.len()
     }
@@ -155,34 +133,10 @@ impl Default for ProcessSupervisor {
     }
 }
 
-/// Convert a child's stdout pipe to a File.
-#[cfg(unix)]
-fn child_stdout_to_file(stdout: std::process::ChildStdout) -> std::fs::File {
-    use std::os::unix::io::IntoRawFd;
-    use std::os::unix::io::FromRawFd;
-    // SAFETY: we own the fd from ChildStdout and transfer ownership to File
-    unsafe { std::fs::File::from_raw_fd(stdout.into_raw_fd()) }
-}
-
+/// Convert a child's stdout/stdin pipe to a File handle.
 #[cfg(windows)]
-fn child_stdout_to_file(stdout: std::process::ChildStdout) -> std::fs::File {
-    use std::os::windows::io::{IntoRawHandle, FromRawHandle};
-    // SAFETY: we own the handle from ChildStdout and transfer ownership to File
-    unsafe { std::fs::File::from_raw_handle(stdout.into_raw_handle()) }
-}
-
-/// Convert a child's stdin pipe to a File.
-#[cfg(unix)]
-fn child_stdin_to_file(stdin: std::process::ChildStdin) -> std::fs::File {
-    use std::os::unix::io::IntoRawFd;
-    use std::os::unix::io::FromRawFd;
-    // SAFETY: we own the fd from ChildStdin and transfer ownership to File
-    unsafe { std::fs::File::from_raw_fd(stdin.into_raw_fd()) }
-}
-
-#[cfg(windows)]
-fn child_stdin_to_file(stdin: std::process::ChildStdin) -> std::fs::File {
-    use std::os::windows::io::{IntoRawHandle, FromRawHandle};
-    // SAFETY: we own the handle from ChildStdin and transfer ownership to File
-    unsafe { std::fs::File::from_raw_handle(stdin.into_raw_handle()) }
+fn child_io_to_file<T: std::os::windows::io::IntoRawHandle>(io: T) -> std::fs::File {
+    use std::os::windows::io::FromRawHandle;
+    // SAFETY: we own the handle and transfer ownership to File
+    unsafe { std::fs::File::from_raw_handle(io.into_raw_handle()) }
 }
