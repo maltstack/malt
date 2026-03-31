@@ -78,6 +78,21 @@ impl DebouncedStore {
             let _ = reply_rx.recv_timeout(Duration::from_secs(10));
         }
     }
+
+    /// List all persisted session IDs synchronously.
+    pub fn list_sessions(&self) -> Result<Vec<SessionId>, StoreError> {
+        self.inner.store.list_sessions()
+    }
+
+    /// Load a single persisted session synchronously.
+    pub fn load_session(&self, id: &SessionId) -> Result<PersistedSession, StoreError> {
+        self.inner.store.load_session(id)
+    }
+
+    /// Delete a persisted session synchronously.
+    pub fn delete_session(&self, id: &SessionId) -> Result<(), StoreError> {
+        self.inner.store.delete_session(id)
+    }
 }
 
 fn background_thread(rx: mpsc::Receiver<DirtyMsg>, store: Arc<SessionStore>) {
@@ -227,5 +242,46 @@ mod tests {
 
         let loaded = store.load_daemon_state().unwrap();
         assert_eq!(loaded.next_session_id, 55);
+    }
+
+    #[test]
+    fn passthrough_list_load_delete() {
+        use malt_protocol::common::{LayoutNode, PaneId};
+        use std::collections::BTreeMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        let inner = SessionStore::new(dir.path().to_path_buf());
+        let store = DebouncedStore::new(inner);
+
+        // Nothing persisted yet.
+        assert!(store.list_sessions().unwrap().is_empty());
+
+        // Save a session via mark_dirty + flush_all, then load it back.
+        let sid = SessionId(7);
+        let persisted = PersistedSession {
+            schema_version: 1,
+            id: sid.clone(),
+            name: Some("test".to_string()),
+            layout: LayoutNode::Leaf {
+                pane_id: PaneId(1),
+            },
+            focus: PaneId(1),
+            panes: BTreeMap::new(),
+            theme: None,
+            group: None,
+            isolation: malt_protocol::common::IsolationTier::Bare,
+            _unknown: vec![],
+        };
+        store.mark_dirty(sid.clone(), persisted.clone());
+        store.flush_all();
+
+        let ids = store.list_sessions().unwrap();
+        assert_eq!(ids, vec![sid.clone()]);
+
+        let loaded = store.load_session(&sid).unwrap();
+        assert_eq!(loaded.name, persisted.name);
+
+        store.delete_session(&sid).unwrap();
+        assert!(store.list_sessions().unwrap().is_empty());
     }
 }
