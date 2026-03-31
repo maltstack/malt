@@ -41,7 +41,7 @@ ignore = [
     # wasmtime 29.0.1 — segfault with f64.copysign on x86-64 (RUSTSEC-2026-0006).
     # Affects the Cranelift x86-64 backend. Known issue in wasmtime 29; fix landed
     # in a later patch. Upgrade wasmtime when next stable release is available.
-    { id = "RUSTSEC-2026-0006", reason = "Known wasmtime 29 Cranelift bug; upgrade wasmtime to resolve. Low risk: only affects f64.copysign in guest code." },
+    { id = "RUSTSEC-2026-0006", reason = "No mitigation available at wasmtime 29; affects all guest modules using f64.copysign on x86-64. Upgrade wasmtime to resolve." },
 
     # wasmtime 29.0.1 — WASI resource exhaustion (RUSTSEC-2026-0020).
     # Only reachable via wasi:io/poll. malt-plugin-sdk does not expose WASI I/O
@@ -66,7 +66,6 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "CC0-1.0",
     "Zlib",
     # CDLA-Permissive-2.0: Community Data License Agreement — Permissive 2.0.
@@ -86,10 +85,6 @@ highlight = "all"
 # Invariant 1: vte must only be a direct dependency of malt-compat.
 [[bans.deny]]
 name = "vte"
-wrappers = ["malt-compat"]
-
-[[bans.deny]]
-name = "vte_generate_state_changes"
 wrappers = ["malt-compat"]
 
 # ---------------------------------------------------------------------------
