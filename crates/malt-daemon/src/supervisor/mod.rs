@@ -3,7 +3,7 @@ pub mod process;
 
 use std::collections::HashMap;
 
-use malt_platform::process::SpawnConfig;
+use malt_platform::process::{Io, SpawnConfig};
 use malt_platform::pty::{self, WinSize};
 use malt_protocol::common::PaneId;
 
@@ -42,15 +42,30 @@ impl ProcessSupervisor {
         for arg in &req.args {
             config = config.arg(arg);
         }
-        config = config.cwd(&req.cwd);
-        // Leave stdin/stdout/stderr as Inherit for now.
-        // Full PTY slave attachment will be wired in Phase 4.
+        config = config
+            .cwd(&req.cwd)
+            .stdin(Io::Pipe)
+            .stdout(Io::Pipe)
+            .stderr(Io::Pipe);
 
-        let child = malt_platform::process::spawn(config)?;
+        let mut child = malt_platform::process::spawn(config)?;
         let pid = child.pid();
 
+        // Use the child's piped stdin/stdout for I/O instead of PTY master handles.
+        // Child stdout = what we read from (process output)
+        // Child stdin = what we write to (process input)
+        let child_stdout: Option<std::fs::File> = child.take_stdout().map(child_stdout_to_file);
+        let child_stdin: Option<std::fs::File> = child.take_stdin().map(child_stdin_to_file);
+
         let key = req.pane_id.0;
-        let managed = ManagedProcess::new(req.pane_id, pid, child, pty_handle, reader, writer);
+        let managed = ManagedProcess::new(
+            req.pane_id,
+            pid,
+            child,
+            pty_handle,
+            child_stdout.unwrap_or(reader),   // prefer child stdout pipe
+            child_stdin.unwrap_or(writer),     // prefer child stdin pipe
+        );
         self.processes.insert(key, managed);
 
         Ok(())
@@ -138,4 +153,36 @@ impl Default for ProcessSupervisor {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Convert a child's stdout pipe to a File.
+#[cfg(unix)]
+fn child_stdout_to_file(stdout: std::process::ChildStdout) -> std::fs::File {
+    use std::os::unix::io::IntoRawFd;
+    use std::os::unix::io::FromRawFd;
+    // SAFETY: we own the fd from ChildStdout and transfer ownership to File
+    unsafe { std::fs::File::from_raw_fd(stdout.into_raw_fd()) }
+}
+
+#[cfg(windows)]
+fn child_stdout_to_file(stdout: std::process::ChildStdout) -> std::fs::File {
+    use std::os::windows::io::{IntoRawHandle, FromRawHandle};
+    // SAFETY: we own the handle from ChildStdout and transfer ownership to File
+    unsafe { std::fs::File::from_raw_handle(stdout.into_raw_handle()) }
+}
+
+/// Convert a child's stdin pipe to a File.
+#[cfg(unix)]
+fn child_stdin_to_file(stdin: std::process::ChildStdin) -> std::fs::File {
+    use std::os::unix::io::IntoRawFd;
+    use std::os::unix::io::FromRawFd;
+    // SAFETY: we own the fd from ChildStdin and transfer ownership to File
+    unsafe { std::fs::File::from_raw_fd(stdin.into_raw_fd()) }
+}
+
+#[cfg(windows)]
+fn child_stdin_to_file(stdin: std::process::ChildStdin) -> std::fs::File {
+    use std::os::windows::io::{IntoRawHandle, FromRawHandle};
+    // SAFETY: we own the handle from ChildStdin and transfer ownership to File
+    unsafe { std::fs::File::from_raw_handle(stdin.into_raw_handle()) }
 }
