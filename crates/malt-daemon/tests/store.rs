@@ -1,9 +1,10 @@
-use malt_daemon::store::SessionStore;
+use malt_daemon::store::{SessionStore, StoreError};
 use malt_protocol::common::{
     Direction, GroupId, IsolationTier, LayoutNode, OnEmpty, OnOom, PaneId, SessionId, SplitId,
     SplitSize,
 };
 use malt_protocol::persist::daemon::{DaemonState, GroupPolicy, GroupState};
+use vexil_runtime::{BitReader, Unpack};
 use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
 use tempfile::tempdir;
 
@@ -348,4 +349,87 @@ fn roundtrip_daemon_state_with_groups() {
     assert_eq!(policy.idle_timeout_secs, None);
     assert_eq!(policy.on_empty, OnEmpty::Keep);
     assert_eq!(policy.on_oom, OnOom::PauseAndNotify);
+}
+
+fn make_daemon_state_with_id(next_id: u32) -> DaemonState {
+    DaemonState {
+        schema_version: 1,
+        sessions: vec![],
+        active_groups: vec![],
+        next_session_id: next_id,
+        next_pane_id: 1,
+        _unknown: vec![],
+    }
+}
+
+#[test]
+fn atomic_write_creates_bak() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path().to_path_buf());
+
+    // First save — no .bak yet
+    store.save_daemon_state(&make_daemon_state_with_id(10)).unwrap();
+    let bak = dir.path().join("daemon.vxb.bak");
+    assert!(!bak.exists(), ".bak must not exist after first save");
+
+    // Second save — .bak must hold first-save content
+    store.save_daemon_state(&make_daemon_state_with_id(20)).unwrap();
+    assert!(bak.exists(), ".bak must exist after second save");
+
+    // .bak must decode as DaemonState with next_session_id=10
+    let bak_bytes = std::fs::read(&bak).unwrap();
+    let mut r = BitReader::new(&bak_bytes);
+    let recovered = DaemonState::unpack(&mut r).unwrap();
+    assert_eq!(recovered.next_session_id, 10, ".bak should contain first-save state");
+
+    // Main file must contain the second-save content
+    let current = store.load_daemon_state().unwrap();
+    assert_eq!(current.next_session_id, 20);
+}
+
+#[test]
+fn corrupt_file_quarantined() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path().to_path_buf());
+
+    // Write garbage daemon state bytes directly
+    std::fs::create_dir_all(dir.path()).unwrap();
+    std::fs::write(dir.path().join("daemon.vxb"), b"this is not valid bitpack data!!!").unwrap();
+
+    let err = store.load_daemon_state().unwrap_err();
+    match &err {
+        StoreError::CorruptFile { path, reason: _, moved_to } => {
+            assert!(path.ends_with("daemon.vxb"), "path should be daemon.vxb, got {path:?}");
+            assert!(moved_to.exists(), "corrupt file should have been moved to quarantine path");
+            let name = moved_to.file_name().unwrap().to_string_lossy();
+            assert!(
+                name.contains(".corrupt.") && name.ends_with(".vxb"),
+                "quarantine filename must contain '.corrupt.' and end with '.vxb': {name}"
+            );
+        }
+        other => panic!("expected CorruptFile, got {other:?}"),
+    }
+
+    // Original file must no longer exist
+    assert!(
+        !dir.path().join("daemon.vxb").exists(),
+        "original file must be gone after quarantine"
+    );
+}
+
+#[test]
+fn corrupt_file_daemon_continues_with_defaults() {
+    // Verifies that CorruptFile does NOT panic and callers can recover gracefully.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path().to_path_buf());
+
+    std::fs::create_dir_all(dir.path()).unwrap();
+    std::fs::write(dir.path().join("daemon.vxb"), b"garbage").unwrap();
+
+    let result = store.load_daemon_state();
+    assert!(
+        matches!(result, Err(StoreError::CorruptFile { .. })),
+        "expected CorruptFile, got {result:?}"
+    );
+    // No panic here — the coordinator would log a warning and use defaults.
 }

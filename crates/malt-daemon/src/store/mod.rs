@@ -111,12 +111,46 @@ fn pack_to_bytes<T: Pack>(value: &T) -> Result<Vec<u8>, StoreError> {
 
 fn unpack_from_bytes<T: Unpack>(bytes: &[u8], path: &Path) -> Result<T, StoreError> {
     let mut r = BitReader::new(bytes);
-    T::unpack(&mut r).map_err(|e| StoreError::Decode(format!("{}: {e}", path.display())))
+    match T::unpack(&mut r) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let reason = format!("{e}");
+            let unix_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let corrupt_name = format!(
+                "{}.corrupt.{}.vxb",
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("file"),
+                unix_secs
+            );
+            let corrupt_path = path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(&corrupt_name);
+            // Best-effort rename — if it fails, we still return CorruptFile.
+            let moved_to = match fs::rename(path, &corrupt_path) {
+                Ok(()) => corrupt_path,
+                Err(_) => corrupt_path,
+            };
+            Err(StoreError::CorruptFile {
+                path: path.to_path_buf(),
+                reason,
+                moved_to,
+            })
+        }
+    }
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), StoreError> {
     let tmp_path = path.with_extension("vxb.tmp");
     fs::write(&tmp_path, data)?;
+    if path.exists() {
+        let bak_path = path.with_extension("vxb.bak");
+        fs::copy(path, &bak_path)?;
+    }
     fs::rename(&tmp_path, path)?;
     Ok(())
 }

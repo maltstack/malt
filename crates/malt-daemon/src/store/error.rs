@@ -10,9 +10,10 @@ pub enum StoreError {
     #[error("encode error: {0}")]
     Encode(String),
 
-    #[error("decode error: {0}")]
-    Decode(String),
-
-    #[error("corrupt file: {path}")]
-    CorruptFile { path: String },
+    #[error("corrupt file at {}: {reason} (moved to {})", path.display(), moved_to.display())]
+    CorruptFile {
+        path: std::path::PathBuf,
+        reason: String,
+        moved_to: std::path::PathBuf,
+    },
 }
