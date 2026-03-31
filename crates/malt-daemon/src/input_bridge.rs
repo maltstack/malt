@@ -16,9 +16,12 @@ pub fn vnp_key_to_input_event(key: &KeyEvent) -> Option<InputEvent> {
     match &key.key {
         KeyValue::Char { codepoint } => {
             let ch = char::from_u32(*codepoint)?;
+            // When both ALT and CTRL are set, ALT takes precedence.
+            // malt-term has no combined modifier variant.
             if key.modifiers.contains(KeyModifiers::ALT) {
                 Some(InputEvent::Alt(ch))
             } else if key.modifiers.contains(KeyModifiers::CTRL) {
+                // SAFETY: char::to_lowercase() always yields at least one char.
                 Some(InputEvent::Ctrl(ch.to_lowercase().next().unwrap_or(ch)))
             } else {
                 Some(InputEvent::Char(ch))
@@ -28,7 +31,13 @@ pub fn vnp_key_to_input_event(key: &KeyEvent) -> Option<InputEvent> {
             let special = match named {
                 NamedKey::Enter     => SpecialKey::Enter,
                 NamedKey::Escape    => SpecialKey::Escape,
-                NamedKey::Tab       => SpecialKey::Tab,
+                NamedKey::Tab       => {
+                    // BackTab is Shift+Tab; must be decided before returning Key(Tab).
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        return Some(InputEvent::Key(SpecialKey::BackTab));
+                    }
+                    SpecialKey::Tab
+                }
                 NamedKey::Backspace => SpecialKey::Backspace,
                 NamedKey::Delete    => SpecialKey::Delete,
                 NamedKey::Home      => SpecialKey::Home,
@@ -42,10 +51,6 @@ pub fn vnp_key_to_input_event(key: &KeyEvent) -> Option<InputEvent> {
                 NamedKey::Unknown(_) => return None,
                 _ => return None, // future NamedKey variants
             };
-            // BackTab is Shift+Tab
-            if matches!(named, NamedKey::Tab) && key.modifiers.contains(KeyModifiers::SHIFT) {
-                return Some(InputEvent::Key(SpecialKey::BackTab));
-            }
             Some(InputEvent::Key(special))
         }
         KeyValue::Function { .. } => None,

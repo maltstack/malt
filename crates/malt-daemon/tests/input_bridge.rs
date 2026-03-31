@@ -7,8 +7,12 @@ fn key(value: KeyValue) -> KeyEvent {
     KeyEvent { key: value, modifiers: KeyModifiers::empty(), _unknown: Vec::new() }
 }
 
+fn key_with_mod(value: KeyValue, modifiers: KeyModifiers) -> KeyEvent {
+    KeyEvent { key: value, modifiers, _unknown: Vec::new() }
+}
+
 fn key_with_ctrl(value: KeyValue) -> KeyEvent {
-    KeyEvent { key: value, modifiers: KeyModifiers::CTRL, _unknown: Vec::new() }
+    key_with_mod(value, KeyModifiers::CTRL)
 }
 
 #[test]
@@ -65,4 +69,33 @@ fn arrow_keys_map_to_special_keys() {
 fn function_key_returns_none() {
     let event = key(KeyValue::Function { number: 1 });
     assert_eq!(vnp_key_to_input_event(&event), None);
+}
+
+#[test]
+fn tab_without_shift_maps_to_special_tab() {
+    let event = key(KeyValue::Named { key: NamedKey::Tab });
+    assert_eq!(
+        vnp_key_to_input_event(&event),
+        Some(InputEvent::Key(SpecialKey::Tab))
+    );
+}
+
+#[test]
+fn delete_maps_to_special_delete() {
+    let event = key(KeyValue::Named { key: NamedKey::Delete });
+    assert_eq!(
+        vnp_key_to_input_event(&event),
+        Some(InputEvent::Key(SpecialKey::Delete))
+    );
+}
+
+#[test]
+fn ctrl_alt_prefers_alt() {
+    // When both CTRL and ALT are set, ALT takes precedence because malt-term
+    // has no combined modifier variant.
+    let event = key_with_mod(
+        KeyValue::Char { codepoint: 'x' as u32 },
+        KeyModifiers::CTRL | KeyModifiers::ALT,
+    );
+    assert_eq!(vnp_key_to_input_event(&event), Some(InputEvent::Alt('x')));
 }
