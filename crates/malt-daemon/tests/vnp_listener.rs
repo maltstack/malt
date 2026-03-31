@@ -68,40 +68,6 @@ fn make_hello() -> Hello {
     }
 }
 
-/// Encode and send a typed VNP message as a frame.
-fn send_vnp<T: Pack>(writer: &mut FrameWriter<TcpStream>, domain: u8, msg_type: u8, session_id: u32, msg: &T) {
-    let env = make_envelope(domain, msg_type, session_id);
-    let mut w = BitWriter::new();
-    msg.pack(&mut w).unwrap();
-    let payload = w.finish();
-    let combined = encode_message(&env, &payload).unwrap();
-    let frame = Frame {
-        flags: FrameFlags::new(),
-        payload: combined,
-    };
-    writer.write_frame(&frame).unwrap();
-}
-
-/// Read the next frame and decode the VNP envelope, returning (domain, msg_type, msg_bytes).
-fn read_vnp_frame(reader: &mut FrameReader<BufReader<TcpStream>>) -> (u8, u8, Vec<u8>) {
-    let frame = reader.read_frame().unwrap();
-    let (env, msg_bytes) = decode_envelope(&frame.payload).unwrap();
-    (env.domain, env.msg_type, msg_bytes.to_vec())
-}
-
-/// Perform the VNP handshake: send Hello and read HelloAck. Returns the ack.
-fn perform_handshake(
-    writer: &mut FrameWriter<TcpStream>,
-    reader: &mut FrameReader<BufReader<TcpStream>>,
-) -> HelloAck {
-    send_vnp(writer, DOMAIN_RENDER & 0xF0 & !0xF0 | 0, MSG_HELLO, 0, &make_hello());
-    let (domain, msg_type, msg_bytes) = read_vnp_frame(reader);
-    assert_eq!(domain, 0, "expected DOMAIN_HANDSHAKE (0) for HelloAck");
-    assert_eq!(msg_type, MSG_HELLO_ACK, "expected HelloAck msg_type");
-    let mut r = BitReader::new(&msg_bytes);
-    HelloAck::unpack(&mut r).unwrap()
-}
-
 /// Perform the VNP handshake using the correct DOMAIN_HANDSHAKE (0) constant.
 fn do_handshake(
     writer: &mut FrameWriter<TcpStream>,
