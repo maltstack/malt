@@ -180,8 +180,6 @@ fn vnp_handshake_succeeds() {
     let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default())));
     let addr = start_test_listener(coordinator);
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
     let stream = TcpStream::connect(&addr).unwrap();
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -204,8 +202,6 @@ fn vnp_handshake_succeeds() {
 fn vnp_attach_receives_initial_state() {
     let (coordinator, session_id) = make_coordinator_with_session();
     let addr = start_test_listener(coordinator);
-
-    std::thread::sleep(std::time::Duration::from_millis(50));
 
     let stream = TcpStream::connect(&addr).unwrap();
     stream
@@ -237,8 +233,6 @@ fn vnp_key_input_followed_by_enter_produces_render_batch() {
     let (coordinator, session_id) = make_coordinator_with_session();
     let addr = start_test_listener(coordinator);
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
     let stream = TcpStream::connect(&addr).unwrap();
     // Short per-read timeout so the loop can check the deadline frequently.
     stream
@@ -262,9 +256,6 @@ fn vnp_key_input_followed_by_enter_produces_render_batch() {
     }
     // Send Enter to execute the command.
     send_enter_key(&mut writer, session_id);
-
-    // Give the session thread a moment to process the Enter key and produce output.
-    std::thread::sleep(std::time::Duration::from_millis(200));
 
     // The server's main loop drains render_rx only after reading a client frame.
     // Send FrameAck(0) frames periodically to keep the server loop ticking so it
