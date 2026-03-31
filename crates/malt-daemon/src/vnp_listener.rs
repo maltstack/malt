@@ -7,15 +7,16 @@ use crate::connection::handshake::perform_server_handshake;
 use crate::executor::coordinator::Coordinator;
 use crate::executor::session_thread::SessionCommand;
 use malt_protocol::codec::{
-    make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, MSG_ATTACH_SESSION, MSG_FRAME_ACK,
-    MSG_INITIAL_STATE, MSG_KEY_EVENT, MSG_RENDER_BATCH, MSG_RESIZE,
+    make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, MSG_ATTACH_SESSION,
+    MSG_DETACH_SESSION, MSG_FRAME_ACK, MSG_INITIAL_STATE, MSG_KEY_EVENT, MSG_RENDER_BATCH,
+    MSG_RESIZE,
 };
 use malt_protocol::common::SessionId;
 use malt_protocol::envelope::{decode_envelope, encode_message};
 use malt_protocol::framing::{Frame, FrameError, FrameFlags, FrameReader, FrameWriter};
 use malt_protocol::input::{KeyEvent, Resize};
 use malt_protocol::render::{FrameAck, RenderBatch};
-use malt_protocol::session::AttachSession;
+use malt_protocol::session::{AttachSession, DetachSession};
 use std::io::BufReader;
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -233,17 +234,17 @@ fn handle_client(stream: TcpStream, coordinator: Arc<Mutex<Coordinator>>, client
         // Read one TCP frame.
         match frame_reader.read_frame() {
             Ok(frame) => {
-                if dispatch_frame(
-                    frame,
-                    &coordinator,
-                    client_id,
-                    session_id_raw,
-                    &peer,
-                )
-                .is_err()
-                {
-                    cleanup(&coordinator, session_id.clone(), client_id, &peer);
-                    return;
+                match dispatch_frame(frame, &coordinator, client_id, session_id_raw, &peer) {
+                    DispatchResult::Continue => {}
+                    DispatchResult::Disconnect => {
+                        cleanup(&coordinator, session_id.clone(), client_id, &peer);
+                        return;
+                    }
+                    DispatchResult::DetachedClean => {
+                        // Client voluntarily detached; unregister already called inside
+                        // dispatch_frame — return without calling cleanup again.
+                        return;
+                    }
                 }
             }
             Err(FrameError::UnexpectedEof) => {
@@ -333,23 +334,36 @@ fn wait_for_attach(
     }
 }
 
+/// Result of dispatching a single inbound VNP frame.
+#[derive(Debug, PartialEq)]
+enum DispatchResult {
+    /// The message was handled; the main loop should continue.
+    Continue,
+    /// A fatal error occurred; the caller must call cleanup and return.
+    Disconnect,
+    /// The client sent `DetachSession` and has been cleanly unregistered;
+    /// the caller must return without calling cleanup again.
+    DetachedClean,
+}
+
 /// Dispatch a single inbound VNP frame from the client.
 ///
-/// Returns `Ok(())` on success or if the message type is unrecognised (warning
-/// logged). Returns `Err(())` only on fatal errors such as a poisoned coordinator
-/// lock that would prevent further processing.
+/// Returns [`DispatchResult::Continue`] on success or when the message type is
+/// unrecognised (warning logged). Returns [`DispatchResult::Disconnect`] only on
+/// fatal errors such as a poisoned coordinator lock. Returns
+/// [`DispatchResult::DetachedClean`] when the client voluntarily detaches.
 fn dispatch_frame(
     frame: Frame,
     coordinator: &Arc<Mutex<Coordinator>>,
     client_id: u64,
     session_id: u32,
     peer: &str,
-) -> Result<(), ()> {
+) -> DispatchResult {
     let (envelope, msg_bytes) = match decode_envelope(&frame.payload) {
         Ok(pair) => pair,
         Err(e) => {
             warn!(peer, error = %e, "VNP: envelope decode failed; skipping frame");
-            return Ok(());
+            return DispatchResult::Continue;
         }
     };
 
@@ -368,7 +382,7 @@ fn dispatch_frame(
                         }
                         Err(e) => {
                             warn!(peer, error = %e, "VNP: coordinator lock poisoned");
-                            return Err(());
+                            return DispatchResult::Disconnect;
                         }
                     }
                 }
@@ -395,7 +409,7 @@ fn dispatch_frame(
                         }
                         Err(e) => {
                             warn!(peer, error = %e, "VNP: coordinator lock poisoned");
-                            return Err(());
+                            return DispatchResult::Disconnect;
                         }
                     }
                 }
@@ -418,12 +432,39 @@ fn dispatch_frame(
                         }
                         Err(e) => {
                             warn!(peer, error = %e, "VNP: coordinator lock poisoned");
-                            return Err(());
+                            return DispatchResult::Disconnect;
                         }
                     }
                 }
                 Err(e) => {
                     warn!(peer, error = %e, "VNP: FrameAck decode failed");
+                }
+            }
+        }
+        (DOMAIN_SESSION, MSG_DETACH_SESSION) => {
+            let mut bit_reader = BitReader::new(msg_bytes);
+            match DetachSession::unpack(&mut bit_reader) {
+                Ok(detach) => {
+                    if detach.session_id.0 == session_id {
+                        info!(peer, client_id, session_id, "VNP: client sent DetachSession");
+                        match coordinator.lock() {
+                            Ok(mut coord) => {
+                                if let Err(e) =
+                                    coord.unregister_vnp_client(SessionId(session_id), client_id)
+                                {
+                                    warn!(peer, error = %e, "VNP: unregister after DetachSession failed");
+                                }
+                            }
+                            Err(e) => {
+                                warn!(peer, error = %e, "VNP: coordinator lock poisoned during DetachSession");
+                                return DispatchResult::Disconnect;
+                            }
+                        }
+                        return DispatchResult::DetachedClean;
+                    }
+                }
+                Err(e) => {
+                    warn!(peer, error = %e, "VNP: DetachSession decode failed");
                 }
             }
         }
@@ -437,7 +478,7 @@ fn dispatch_frame(
         }
     }
 
-    Ok(())
+    DispatchResult::Continue
 }
 
 /// Errors that can occur when encoding and sending a VNP message.
