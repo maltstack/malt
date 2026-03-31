@@ -18,7 +18,7 @@ fn main() -> Result<()> {
         Some(Command::Status) => handle_status(&client),
         Some(Command::Daemon { port }) => daemon::run_daemon(port),
         Some(Command::Start) => handle_start(),
-        Some(Command::Stop) => handle_stop(),
+        Some(Command::Stop) => handle_stop(&client),
         Some(Command::List) => handle_list(&client),
         Some(Command::New { name }) => handle_new(&client, name.as_deref()),
         Some(Command::Attach { session_id }) => handle_attach(&cli.api_addr, session_id),
@@ -97,8 +97,11 @@ fn handle_start() -> Result<()> {
     Ok(())
 }
 
-fn handle_stop() -> Result<()> {
-    println!("stop: not yet implemented");
+fn handle_stop(client: &MaltClient) -> Result<()> {
+    match client.shutdown() {
+        Ok(_) => println!("daemon stopped"),
+        Err(_) => println!("daemon not running"),
+    }
     Ok(())
 }
 

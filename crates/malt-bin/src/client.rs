@@ -61,6 +61,14 @@ impl MaltClient {
             .ok_or_else(|| anyhow::anyhow!("no data in health response"))
     }
 
+    pub fn shutdown(&self) -> Result<()> {
+        self.http
+            .post(self.url("/shutdown"))
+            .send()
+            .context("failed to reach daemon")?;
+        Ok(())
+    }
+
     pub fn list_sessions(&self) -> Result<Vec<SessionData>> {
         let resp = self
             .http
