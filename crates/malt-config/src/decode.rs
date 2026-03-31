@@ -110,14 +110,15 @@ fn extract_optional_string(
 }
 
 /// Extract an `array<string>` field.
-/// Returns `Ok(vec![])` if the field is absent.
+/// Returns `Ok(None)` if the field is absent (caller uses its own default).
+/// Returns `Ok(Some(v))` if present (empty or not).
 fn extract_string_array(
     fields: &BTreeMap<String, Value>,
     name: &str,
     path: &Path,
-) -> Result<Vec<String>, crate::ConfigError> {
+) -> Result<Option<Vec<String>>, crate::ConfigError> {
     match fields.get(name) {
-        None => Ok(Vec::new()),
+        None => Ok(None),
         Some(Value::Array(items)) => {
             let mut result = Vec::with_capacity(items.len());
             for (i, item) in items.iter().enumerate() {
@@ -134,7 +135,7 @@ fn extract_string_array(
                     }
                 }
             }
-            Ok(result)
+            Ok(Some(result))
         }
         Some(other) => Err(crate::ConfigError::Invalid {
             path: path.to_path_buf(),
@@ -196,14 +197,8 @@ impl VxDecoder for crate::UserConfig {
                 .or(defaults.theme),
             shell: extract_optional_string(fields, "shell", path)?
                 .or(defaults.shell),
-            startup_commands: {
-                let v = extract_string_array(fields, "startup_commands", path)?;
-                if v.is_empty() && fields.get("startup_commands").is_none() {
-                    defaults.startup_commands
-                } else {
-                    v
-                }
-            },
+            startup_commands: extract_string_array(fields, "startup_commands", path)?
+                .unwrap_or(defaults.startup_commands),
         })
     }
 }
