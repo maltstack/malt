@@ -143,9 +143,24 @@ fn handle_attach(api_addr: &str, session_id: Option<u32>) -> Result<()> {
         );
     }
 
+    // Derive VNP port from API address (HTTP port + 1)
+    let vnp_addr = {
+        // Parse port from api_addr (e.g. "http://127.0.0.1:7700" -> 7701)
+        let port = api_addr
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.trim_end_matches('/').parse::<u16>().ok())
+            .unwrap_or(7700);
+        format!("127.0.0.1:{}", port + 1)
+    };
+
     // Launch malt-tui as a child process (replaces our terminal)
     let status = std::process::Command::new(&tui_exe)
-        .args(["--session", &id.to_string(), "--api-addr", api_addr])
+        .args([
+            "--session", &id.to_string(),
+            "--api-addr", api_addr,
+            "--vnp", &vnp_addr,
+        ])
         .status()?;
 
     if !status.success() {

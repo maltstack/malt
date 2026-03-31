@@ -10,6 +10,15 @@ pub fn run_daemon(port: u16) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default())));
+
+        // Start VNP socket listener on port+1 (e.g. 7701 when HTTP is 7700)
+        let vnp_coord = coordinator.clone();
+        let vnp_port = port + 1;
+        std::thread::spawn(move || {
+            let vnp_addr = format!("127.0.0.1:{vnp_port}");
+            malt_daemon::vnp_listener::start_vnp_listener(&vnp_addr, vnp_coord);
+        });
+
         let backend = Arc::new(DaemonBackend::new(coordinator));
 
         // Shutdown channel: POST /shutdown sends signal

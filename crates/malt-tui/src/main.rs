@@ -5,7 +5,7 @@ mod render;
 mod style;
 
 use app::App;
-use connection::{DaemonConnection, HttpConnection, MockConnection};
+use connection::{DaemonConnection, HttpConnection, MockConnection, VnpConnection};
 use malt_protocol::common::ResolvedStyle;
 use malt_protocol::render::RenderCommand;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -13,9 +13,10 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyModifiers};
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
-    // Parse simple args: malt-tui [--session ID] [--api-addr ADDR]
+    // Parse simple args: malt-tui [--session ID] [--api-addr ADDR] [--vnp ADDR]
     let mut session_id: Option<u32> = None;
     let mut api_addr = "http://127.0.0.1:7700".to_string();
+    let mut vnp_addr: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -27,6 +28,10 @@ fn main() -> anyhow::Result<()> {
                 api_addr = args[i + 1].clone();
                 i += 2;
             }
+            "--vnp" if i + 1 < args.len() => {
+                vnp_addr = Some(args[i + 1].clone());
+                i += 2;
+            }
             _ => {
                 i += 1;
             }
@@ -36,8 +41,13 @@ fn main() -> anyhow::Result<()> {
     // Setup terminal
     let mut terminal = ratatui::try_init()?;
 
-    let result = if let Some(sid) = session_id {
-        // Live connection to daemon
+    let result = if let Some(vnp) = vnp_addr {
+        // VNP socket connection
+        let sid = session_id.unwrap_or(1);
+        let conn = VnpConnection::connect(&vnp, sid)?;
+        run_loop(&mut terminal, conn)
+    } else if let Some(sid) = session_id {
+        // HTTP connection to daemon
         let conn = HttpConnection::new(&api_addr, sid);
         run_loop(&mut terminal, conn)
     } else {

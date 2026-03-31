@@ -90,8 +90,14 @@ pub struct FrameWriter<W> {
     inner: W,
 }
 
-impl<W: Write> FrameWriter<W> {
+impl<W> FrameWriter<W> {
     pub fn new(writer: W) -> Self { Self { inner: writer } }
+
+    /// Get a reference to the underlying writer.
+    pub fn inner_ref(&self) -> &W { &self.inner }
+}
+
+impl<W: Write> FrameWriter<W> {
 
     pub fn write_frame(&mut self, frame: &Frame) -> Result<(), FrameError> {
         let len = frame.payload.len() as u32;
