@@ -2,6 +2,7 @@ use anyhow::Result;
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
 use malt_daemon::gateway_backend::DaemonBackend;
+use malt_gateway::auth::TokenStore;
 use malt_gateway::server::build_router;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
@@ -18,6 +19,10 @@ pub fn run_daemon(port: u16) -> Result<()> {
             let vnp_addr = format!("127.0.0.1:{vnp_port}");
             malt_daemon::vnp_listener::start_vnp_listener(&vnp_addr, vnp_coord);
         });
+
+        let token_store = Arc::new(TokenStore::new());
+        let default_token = token_store.load_or_generate_default();
+        println!("API token: {default_token}");
 
         let backend = Arc::new(DaemonBackend::new(coordinator));
 
