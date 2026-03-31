@@ -2177,12 +2177,14 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "malt-config",
  "malt-daemon",
  "malt-gateway",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2199,7 +2201,10 @@ dependencies = [
 name = "malt-config"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
  "thiserror 2.0.18",
+ "tracing",
+ "vexil-lang",
  "vexil-runtime",
  "vexil-store",
 ]
@@ -2214,7 +2219,9 @@ dependencies = [
  "malt-layout",
  "malt-platform",
  "malt-protocol",
+ "malt-renderer",
  "malt-session",
+ "malt-term",
  "mash",
  "serde_json",
  "tempfile",
@@ -2330,6 +2337,7 @@ name = "malt-tools"
 version = "0.1.0"
 dependencies = [
  "glob",
+ "malt-platform",
  "regex",
  "tempfile",
  "thiserror 2.0.18",
@@ -2346,6 +2354,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tracing",
  "vexil-runtime",
 ]
 

@@ -59,7 +59,7 @@ pub fn run_daemon(port: u16) -> Result<()> {
             coord.shutdown_graceful();
         }
 
-        println!("daemon stopped");
+        tracing::info!("daemon stopped");
         Ok(())
     })
 }

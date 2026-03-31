@@ -474,8 +474,8 @@ impl Coordinator {
             }
         }
 
-        self.store.flush_all();
         self.persist_daemon_state();
+        self.store.flush_all();
     }
 
     /// Shutdown all sessions gracefully.
