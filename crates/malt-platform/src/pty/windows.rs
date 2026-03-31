@@ -117,10 +117,11 @@ pub(super) fn open_pty(
         return Err(PtyError::ConPty { code: hr as u32 });
     }
 
-    // SAFETY: output_read and input_write are valid HANDLEs from CreatePipe
-    // that have not been closed. File takes ownership and will close them
-    // on drop.
+    // SAFETY: output_read is a valid HANDLE from CreatePipe that has not been
+    // closed. File takes ownership and will close it on drop.
     let reader = unsafe { std::fs::File::from_raw_handle(output_read as *mut std::ffi::c_void) };
+    // SAFETY: input_write is a valid HANDLE from CreatePipe that has not been
+    // closed. File takes ownership and will close it on drop.
     let writer = unsafe { std::fs::File::from_raw_handle(input_write as *mut std::ffi::c_void) };
 
     let pty_handle = Arc::new(ConPty { hpc });
