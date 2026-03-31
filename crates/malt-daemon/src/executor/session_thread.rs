@@ -4,13 +4,18 @@ use crate::DaemonError;
 use malt_compat::CompatTranslator;
 use malt_layout::resolve::compute_resolved_panes;
 use malt_layout::{LayoutConfig, Rect};
-use malt_protocol::common::{IsolationTier, PaneId, SessionId};
+use malt_protocol::common::{ClientCapabilities, IsolationTier, PaneId, ResolvedPane, SessionId};
+use malt_protocol::input::KeyEvent;
 use malt_protocol::priority::Priority;
+use malt_protocol::render::{InitialState, RenderBatch};
+use malt_renderer::host::{PaneFrame, RendererHost};
 use malt_session::session::SessionRuntime;
 use mash::env::Env;
 use mash::executor::execute_list;
 use mash::parser;
-use std::sync::mpsc;
+use malt_term::{EditMode, EditResult, Editor};
+use std::collections::HashMap;
+use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 use tracing::{info, warn};
 
@@ -40,6 +45,19 @@ pub enum SessionCommand {
     GetOutput {
         reply: mpsc::Sender<String>,
     },
+    /// Register a VNP client with this session's renderer.
+    RegisterVnpClient {
+        client_id: u64,
+        capabilities: ClientCapabilities,
+        render_tx: SyncSender<RenderBatch>,
+        initial_reply: mpsc::Sender<InitialState>,
+    },
+    /// Remove a VNP client from this session's renderer.
+    UnregisterVnpClient { client_id: u64 },
+    /// A typed keyboard event from a VNP client.
+    KeyInput { key: KeyEvent },
+    /// A frame acknowledgement from a VNP client.
+    AckFrame { client_id: u64, frame_seq: u64 },
     /// Graceful shutdown.
     Shutdown,
 }
@@ -77,6 +95,20 @@ impl std::fmt::Debug for SessionCommand {
                 .field("len", &data.len())
                 .finish(),
             Self::GetOutput { .. } => f.debug_struct("GetOutput").finish(),
+            Self::RegisterVnpClient { client_id, .. } => f
+                .debug_struct("RegisterVnpClient")
+                .field("client_id", client_id)
+                .finish(),
+            Self::UnregisterVnpClient { client_id } => f
+                .debug_struct("UnregisterVnpClient")
+                .field("client_id", client_id)
+                .finish(),
+            Self::KeyInput { .. } => f.debug_struct("KeyInput").finish(),
+            Self::AckFrame { client_id, frame_seq } => f
+                .debug_struct("AckFrame")
+                .field("client_id", client_id)
+                .field("frame_seq", frame_seq)
+                .finish(),
             Self::Shutdown => write!(f, "Shutdown"),
         }
     }
@@ -91,6 +123,10 @@ pub struct SessionExecutor {
     layout_config: LayoutConfig,
     compat: Option<CompatTranslator>,
     mash_env: Env,
+    renderer: RendererHost,
+    editor: Editor,
+    render_pushers: HashMap<u64, SyncSender<RenderBatch>>,
+    resolved_panes: Vec<ResolvedPane>,
 }
 
 impl SessionExecutor {
@@ -115,6 +151,10 @@ impl SessionExecutor {
                     layout_config: LayoutConfig::default(),
                     compat: None,
                     mash_env: env,
+                    renderer: RendererHost::new(),
+                    editor: Editor::new(EditMode::Emacs),
+                    render_pushers: HashMap::new(),
+                    resolved_panes: Vec::new(),
                 };
                 executor.run(rx);
             })
@@ -131,6 +171,8 @@ impl SessionExecutor {
         info!(session = ?self.session.id(), "session executor started");
         // Initialize compat translator with default terminal size
         self.init_compat(self.terminal_size.w, self.terminal_size.h);
+        // Compute initial layout so resolved_panes is populated before any render.
+        self.recompute_layout();
 
         loop {
             match rx.recv() {
@@ -187,10 +229,85 @@ impl SessionExecutor {
                     let output = self.get_grid_output();
                     let _ = reply.send(output);
                 }
+                Ok(SessionCommand::RegisterVnpClient {
+                    client_id,
+                    capabilities,
+                    render_tx,
+                    initial_reply,
+                }) => {
+                    self.renderer.register_client(client_id, capabilities);
+                    self.render_pushers.insert(client_id, render_tx);
+                    let element = match &self.compat {
+                        Some(c) => c.frame_element(),
+                        None => malt_protocol::frame_element::FrameElement::VtPassthrough {
+                            data: Vec::new(),
+                        },
+                    };
+                    let pane_id = self.session.focused_pane().clone();
+                    let panes = vec![PaneFrame { pane_id, element }];
+                    let layout = self.resolved_panes.clone();
+                    let initial = self.renderer.snapshot_initial_state(&panes, &layout, client_id);
+                    let _ = initial_reply.send(initial);
+                }
+                Ok(SessionCommand::UnregisterVnpClient { client_id }) => {
+                    self.renderer.remove_client(client_id);
+                    self.render_pushers.remove(&client_id);
+                }
+                Ok(SessionCommand::KeyInput { key }) => {
+                    if let Some(input_event) =
+                        crate::input_bridge::vnp_key_to_input_event(&key)
+                    {
+                        match self.editor.feed(input_event) {
+                            EditResult::Accept(line) => {
+                                let _ = self.run_mash_command(&line);
+                                self.editor.reset();
+                                self.dispatch_render();
+                            }
+                            EditResult::Interrupt => {
+                                self.editor.reset();
+                                if let Some(compat) = &mut self.compat {
+                                    compat.feed(b"^C\r\n");
+                                }
+                                self.dispatch_render();
+                            }
+                            EditResult::Eof | EditResult::Suspend => {
+                                self.editor.reset();
+                                self.dispatch_render();
+                            }
+                            EditResult::Continue => {}
+                            // EditResult is #[non_exhaustive]; handle future variants gracefully.
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(SessionCommand::AckFrame { client_id, frame_seq }) => {
+                    self.renderer.ack_frame(client_id, frame_seq);
+                }
                 Err(_) => {
                     warn!(session = ?self.session.id(), "command channel closed");
                     break;
                 }
+            }
+        }
+    }
+
+    /// Dispatch a render frame to all registered VNP clients.
+    fn dispatch_render(&mut self) {
+        if self.render_pushers.is_empty() {
+            return;
+        }
+        let element = match &self.compat {
+            Some(c) => c.frame_element(),
+            None => return,
+        };
+        let pane_id = self.session.focused_pane().clone();
+        let panes = vec![PaneFrame { pane_id, element }];
+        let layout = self.resolved_panes.clone();
+        let batches = self.renderer.process_frame(&panes, &layout);
+        for crb in batches {
+            if let Some(tx) = self.render_pushers.get(&crb.client_id) {
+                // Non-blocking: drop if channel full (client lagging)
+                let _ = tx.try_send(crb.batch);
             }
         }
     }
@@ -241,7 +358,7 @@ impl SessionExecutor {
     }
 
     fn recompute_layout(&mut self) {
-        let _resolved = compute_resolved_panes(
+        self.resolved_panes = compute_resolved_panes(
             self.session.layout(),
             self.terminal_size,
             self.session.focused_pane().clone(),
