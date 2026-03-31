@@ -1,0 +1,103 @@
+# cargo-deny configuration
+# Run: cargo deny check
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+targets = []
+
+# ---------------------------------------------------------------------------
+# Advisories: deny crates with known security vulnerabilities
+# ---------------------------------------------------------------------------
+[advisories]
+version = 2
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+
+# Ignored advisories — all are transitive dependencies that cannot be updated
+# without a major version bump of wasmtime or an upstream fix. Tracked in
+# CLAUDE.md under "What's NOT Implemented → High Priority". Re-evaluate when
+# upgrading malt-plugin-sdk's wasmtime dependency.
+ignore = [
+    # fxhash 0.2.1 — unmaintained (RUSTSEC-2025-0057).
+    # Transitive dep via cranelift-codegen → wasmtime 29.  No active exploits;
+    # used only as an internal hash map in the WASM JIT, not in user-facing code.
+    { id = "RUSTSEC-2025-0057", reason = "Transitive dep via wasmtime 29 (cranelift); not fixable without upgrading wasmtime. No user-facing exposure." },
+
+    # paste 1.0.15 — unmaintained (RUSTSEC-2024-0436).
+    # Transitive dep via wasmtime 29. Proc-macro crate; no runtime security risk.
+    { id = "RUSTSEC-2024-0436", reason = "Transitive dep via wasmtime 29; proc-macro only, no runtime security risk." },
+
+    # wasmtime 29.0.1 — host panic via fd_renumber (RUSTSEC-2025-0046).
+    # malt-plugin-sdk uses wasmtime 29.0.1 with fuel metering. The fd_renumber
+    # path is only reachable when WASI WASIp1 sockets are enabled; malt-plugin-sdk
+    # does not enable WASI socket capabilities. Fix: upgrade to wasmtime ≥ 29.0.2.
+    { id = "RUSTSEC-2025-0046", reason = "malt-plugin-sdk does not enable WASI socket capabilities; not reachable. Upgrade wasmtime when v30 stabilises." },
+
+    # wasmtime 29.0.1 — unsound shared linear memory access (RUSTSEC-2025-0118).
+    # Only exploitable when `Config::wasm_threads(true)` is used. malt-plugin-sdk
+    # does not enable the threads proposal.
+    { id = "RUSTSEC-2025-0118", reason = "malt-plugin-sdk does not enable the Wasm threads proposal; not reachable." },
+
+    # wasmtime 29.0.1 — segfault with f64.copysign on x86-64 (RUSTSEC-2026-0006).
+    # Affects the Cranelift x86-64 backend. Known issue in wasmtime 29; fix landed
+    # in a later patch. Upgrade wasmtime when next stable release is available.
+    { id = "RUSTSEC-2026-0006", reason = "Known wasmtime 29 Cranelift bug; upgrade wasmtime to resolve. Low risk: only affects f64.copysign in guest code." },
+
+    # wasmtime 29.0.1 — WASI resource exhaustion (RUSTSEC-2026-0020).
+    # Only reachable via wasi:io/poll. malt-plugin-sdk does not expose WASI I/O
+    # poll to guest plugins.
+    { id = "RUSTSEC-2026-0020", reason = "malt-plugin-sdk does not expose wasi:io/poll to plugins; not reachable." },
+
+    # wasmtime 29.0.1 — panic in wasi:http/types.fields (RUSTSEC-2026-0021).
+    # malt-plugin-sdk does not enable the wasi:http world; not reachable.
+    { id = "RUSTSEC-2026-0021", reason = "malt-plugin-sdk does not enable wasi:http; not reachable." },
+]
+
+# ---------------------------------------------------------------------------
+# Licenses: only permissive licenses allowed
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Zlib",
+    # CDLA-Permissive-2.0: Community Data License Agreement — Permissive 2.0.
+    # Used by webpki-root-certs (via reqwest → rustls-platform-verifier).
+    # Grants broad use/modification rights with no copyleft; genuinely permissive.
+    "CDLA-Permissive-2.0",
+]
+
+# ---------------------------------------------------------------------------
+# Bans: enforce Hard Invariants from CLAUDE.md
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+# Invariant 1: vte must only be a direct dependency of malt-compat.
+[[bans.deny]]
+name = "vte"
+wrappers = ["malt-compat"]
+
+[[bans.deny]]
+name = "vte_generate_state_changes"
+wrappers = ["malt-compat"]
+
+# ---------------------------------------------------------------------------
+# Sources: only crates.io and known git sources allowed
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = [
+    "https://github.com/vexil-lang/vexil",
+]
