@@ -192,9 +192,18 @@ fn name_uniqueness_increments_past_existing() {
     let mut coord = Coordinator::new(PoolConfig::default(), store);
 
     // Pre-fill foo, foo-2, foo-3
-    coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
-    coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
-    coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
+    let id1 = coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
+    let id2 = coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
+    let id3 = coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
+
+    // Verify the three pre-filled sessions have the expected names
+    let sessions = coord.list_sessions();
+    let s1 = sessions.iter().find(|s| s.session_id == id1).unwrap();
+    assert_eq!(s1.name.as_deref(), Some("foo"), "first 'foo' should be named 'foo'");
+    let s2 = sessions.iter().find(|s| s.session_id == id2).unwrap();
+    assert_eq!(s2.name.as_deref(), Some("foo-2"), "second 'foo' should be named 'foo-2'");
+    let s3 = sessions.iter().find(|s| s.session_id == id3).unwrap();
+    assert_eq!(s3.name.as_deref(), Some("foo-3"), "third 'foo' should be named 'foo-3'");
 
     // Next one must be foo-4
     let id = coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();

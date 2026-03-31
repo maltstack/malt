@@ -136,11 +136,11 @@ impl Coordinator {
     }
 
     /// Get the current output text for a session.
-    pub fn get_session_output(&self, session_id: u32) -> Result<String, DaemonError> {
+    pub fn get_session_output(&self, session_id: SessionId) -> Result<String, DaemonError> {
         let handle = self
             .sessions
-            .get(&session_id)
-            .ok_or(DaemonError::SessionNotFound(SessionId(session_id)))?;
+            .get(&session_id.0)
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
         let (reply_tx, reply_rx) = mpsc::channel();
         handle
             .cmd_tx

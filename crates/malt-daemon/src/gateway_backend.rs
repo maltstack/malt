@@ -140,7 +140,7 @@ impl GatewayBackend for DaemonBackend {
     fn get_output(&self, session_id: u32) -> Result<serde_json::Value, GatewayError> {
         let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
         let raw = coord
-            .get_session_output(session_id)
+            .get_session_output(SessionId(session_id))
             .map_err(|e| GatewayError::Internal(e.to_string()))?;
         // raw is a JSON string (array of rows with styled spans)
         let rows: serde_json::Value =
