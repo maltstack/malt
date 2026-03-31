@@ -228,7 +228,7 @@ impl VnpConnection {
         let mut w = BitWriter::new();
         hello.pack(&mut w)?;
         let hello_bytes = w.finish();
-        let combined = encode_message(&hello_envelope, &hello_bytes);
+        let combined = encode_message(&hello_envelope, &hello_bytes)?;
         let frame = Frame {
             flags: FrameFlags::new(),
             payload: combined,

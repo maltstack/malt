@@ -60,8 +60,8 @@ fn envelope_deterministic_encoding() {
         _unknown: Vec::new(),
     };
 
-    let bytes1 = encode_envelope(&env);
-    let bytes2 = encode_envelope(&env);
+    let bytes1 = encode_envelope(&env).unwrap();
+    let bytes2 = encode_envelope(&env).unwrap();
     assert_eq!(bytes1, bytes2, "deterministic encoding");
 }
 
@@ -78,8 +78,8 @@ fn encode_message_appends_payload() {
     };
 
     let payload = b"hello";
-    let combined = encode_message(&env, payload);
-    let env_bytes = encode_envelope(&env);
+    let combined = encode_message(&env, payload).unwrap();
+    let env_bytes = encode_envelope(&env).unwrap();
 
     assert_eq!(&combined[..env_bytes.len()], &env_bytes[..]);
     assert_eq!(&combined[env_bytes.len()..], payload);
@@ -98,7 +98,7 @@ fn decode_envelope_splits_payload() {
     };
 
     let payload = b"world";
-    let combined = encode_message(&env, payload);
+    let combined = encode_message(&env, payload).unwrap();
 
     let (decoded_env, remaining) = decode_envelope(&combined).unwrap();
     assert_eq!(decoded_env.session_id, 42);
@@ -120,6 +120,6 @@ fn golden_bytes_first_byte() {
         _unknown: Vec::new(),
     };
 
-    let bytes = encode_envelope(&env);
+    let bytes = encode_envelope(&env).unwrap();
     assert_eq!(bytes[0], 0x21, "byte 0: wire_version(1) | domain(2) << 4");
 }

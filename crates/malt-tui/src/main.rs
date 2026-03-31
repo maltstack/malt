@@ -99,7 +99,7 @@ fn run_loop(
                                 String::from(c)
                             }
                         }
-                        KeyCode::Enter => "\r\n".to_string(),
+                        KeyCode::Enter => "\r".to_string(),
                         KeyCode::Backspace => "\x08".to_string(),
                         KeyCode::Tab => "\t".to_string(),
                         KeyCode::Esc => "\x1b".to_string(),

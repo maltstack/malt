@@ -21,7 +21,7 @@ fn encode_hello(hello: &Hello) -> Vec<u8> {
     let mut w = BitWriter::new();
     hello.pack(&mut w).unwrap();
     let msg_bytes = w.finish();
-    let combined = encode_message(&envelope, &msg_bytes);
+    let combined = encode_message(&envelope, &msg_bytes).unwrap();
     let frame = Frame {
         flags: FrameFlags::new(),
         payload: combined,

@@ -136,7 +136,7 @@ fn send_hello(writer: &mut FrameWriter<TcpStream>) {
     let mut w = BitWriter::new();
     hello.pack(&mut w).unwrap();
     let hello_bytes = w.finish();
-    let combined = encode_message(&envelope, &hello_bytes);
+    let combined = encode_message(&envelope, &hello_bytes).unwrap();
     let frame = Frame {
         flags: FrameFlags::new(),
         payload: combined,

@@ -67,7 +67,8 @@ pub fn perform_server_handshake<R: Read, W: Write>(
         skew.pack(&mut w)
             .map_err(|e| DaemonError::HandshakeFailed(format!("VersionSkew encode: {e}")))?;
         let skew_bytes = w.finish();
-        let combined = encode_message(&skew_envelope, &skew_bytes);
+        let combined = encode_message(&skew_envelope, &skew_bytes)
+            .map_err(|e| DaemonError::HandshakeFailed(format!("encode: {e}")))?;
         let frame = Frame {
             flags: FrameFlags::new(),
             payload: combined,
@@ -98,7 +99,8 @@ pub fn perform_server_handshake<R: Read, W: Write>(
     ack.pack(&mut w)
         .map_err(|e| DaemonError::HandshakeFailed(format!("HelloAck encode: {e}")))?;
     let ack_bytes = w.finish();
-    let combined = encode_message(&ack_envelope, &ack_bytes);
+    let combined = encode_message(&ack_envelope, &ack_bytes)
+        .map_err(|e| DaemonError::HandshakeFailed(format!("encode: {e}")))?;
     let frame = Frame {
         flags: FrameFlags::new(),
         payload: combined,

@@ -100,15 +100,8 @@ impl Coordinator {
             Ok(_) => {
                 // Take I/O handles from supervisor
                 if let Some((reader, writer)) = self.supervisor.take_io(&pane_id) {
-                    // Send PTY writer to session executor
-                    let _ = cmd_tx.send(SessionCommand::WriteInput {
-                        data: Vec::new(), // No-op write to trigger nothing; writer set below
-                    });
-
-                    // Actually, we need to send the writer handle to the session.
-                    // But SessionCommand doesn't carry File handles (not Send-safe easily).
-                    // Instead, we'll set up the PTY reader thread that sends PtyOutput commands,
-                    // and for writes, we'll store the writer in the coordinator.
+                    // PTY writer stored in coordinator for input routing via write_to_session().
+                    // PTY reader fed to a background thread that sends PtyOutput commands.
 
                     // Start PTY reader thread
                     let reader_tx = cmd_tx.clone();
