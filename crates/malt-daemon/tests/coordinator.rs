@@ -319,6 +319,69 @@ fn session_goes_dormant_on_last_client_detach() {
 }
 
 #[test]
+fn dormant_session_visible_in_list_sessions() {
+    use malt_protocol::common::SessionState;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    {
+        let store = make_store(&dir);
+        let mut coord = Coordinator::new(PoolConfig::default(), store.clone());
+        let sid = coord
+            .create_session(Some("alpha".to_string()), IsolationTier::Bare, None)
+            .unwrap();
+
+        let (render_tx, _) = std::sync::mpsc::sync_channel(4);
+        coord.register_vnp_client(sid.clone(), 1, caps(), render_tx).unwrap();
+        coord.unregister_vnp_client(sid.clone(), 1).unwrap();
+        store.flush_all();
+    }
+
+    let store2 = make_store(&dir);
+    let coord2 = Coordinator::new(PoolConfig::default(), store2);
+    let sessions = coord2.list_sessions();
+    assert_eq!(sessions.len(), 1, "second coordinator should see 1 dormant session");
+    assert_eq!(
+        sessions[0].state,
+        SessionState::Dormant,
+        "session should be Dormant in new coordinator"
+    );
+    assert_eq!(sessions[0].name.as_deref(), Some("alpha"));
+}
+
+#[test]
+fn restore_shell_session_from_dormant() {
+    use malt_protocol::render::RenderBatch;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    {
+        let store = make_store(&dir);
+        let mut coord = Coordinator::new(PoolConfig::default(), store.clone());
+        let sid = coord.create_session(Some("beta".to_string()), IsolationTier::Bare, None).unwrap();
+        let (render_tx, _) = std::sync::mpsc::sync_channel(4);
+        coord.register_vnp_client(sid.clone(), 1, caps(), render_tx).unwrap();
+        coord.unregister_vnp_client(sid.clone(), 1).unwrap();
+        store.flush_all();
+    }
+
+    let store2 = make_store(&dir);
+    let mut coord2 = Coordinator::new(PoolConfig::default(), store2);
+    let sessions = coord2.list_sessions();
+    let sid = sessions[0].session_id.clone();
+
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let initial = coord2.register_vnp_client(sid.clone(), 2, caps(), render_tx).unwrap();
+    assert_eq!(initial.frame_seq, 0, "restored session should start at frame 0");
+
+    let sessions = coord2.list_sessions();
+    let s = sessions.iter().find(|s| s.session_id == sid).unwrap();
+    assert_eq!(s.state, malt_protocol::common::SessionState::Active);
+
+    let _ = coord2.unregister_vnp_client(sid, 2);
+}
+
+#[test]
 fn error_variants_are_distinct() {
     use malt_daemon::DaemonError;
     use malt_protocol::common::SessionId;

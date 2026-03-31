@@ -53,6 +53,7 @@ impl Coordinator {
     pub fn new(pool_config: PoolConfig, store: DebouncedStore) -> Self {
         let mut next_session_id = 1u32;
         let mut next_pane_id = 1u32;
+        let mut initial_sessions: HashMap<u32, SessionHandle> = HashMap::new();
 
         match store.load_daemon_state() {
             Ok(state) => {
@@ -63,6 +64,28 @@ impl Coordinator {
                     next_pane_id,
                     "coordinator: restored counters from daemon state"
                 );
+
+                for sid in &state.sessions {
+                    match store.load_session(sid) {
+                        Ok(persisted) => {
+                            initial_sessions.insert(
+                                sid.0,
+                                SessionHandle {
+                                    id: persisted.id.clone(),
+                                    name: persisted.name.clone(),
+                                    isolation: persisted.isolation,
+                                    lifecycle: SessionLifecycle::Dormant { persisted },
+                                },
+                            );
+                        }
+                        Err(StoreError::SessionNotFound(_)) => {
+                            warn!(?sid, "coordinator startup: persisted session not found; skipping");
+                        }
+                        Err(e) => {
+                            warn!(?sid, %e, "coordinator startup: failed to load persisted session; skipping");
+                        }
+                    }
+                }
             }
             Err(StoreError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
                 // First run — defaults are fine.
@@ -73,7 +96,7 @@ impl Coordinator {
         }
 
         Self {
-            sessions: HashMap::new(),
+            sessions: initial_sessions,
             next_session_id,
             next_pane_id,
             store,
@@ -263,6 +286,18 @@ impl Coordinator {
         capabilities: ClientCapabilities,
         render_tx: mpsc::SyncSender<RenderBatch>,
     ) -> Result<InitialState, DaemonError> {
+        // Check whether the session is Dormant — if so, restore it first.
+        // We do this with a short immutable borrow so that the subsequent
+        // `restore_session(&mut self)` call does not fight the borrow checker.
+        let is_dormant = match self.sessions.get(&session_id.0) {
+            None => return Err(DaemonError::SessionNotFound(session_id)),
+            Some(h) => matches!(h.lifecycle, SessionLifecycle::Dormant { .. }),
+        };
+        if is_dormant {
+            self.restore_session(session_id.clone())?;
+        }
+
+        // At this point the session is Active.
         let handle = self
             .sessions
             .get_mut(&session_id.0)
@@ -290,6 +325,8 @@ impl Coordinator {
                 }
                 result
             }
+            // restore_session succeeded but lifecycle is still Dormant — should
+            // never happen, but defend against it rather than panic.
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
         }
     }
@@ -378,14 +415,91 @@ impl Coordinator {
     }
 
     /// Shutdown all sessions gracefully.
+    ///
+    /// Active sessions are sent `Shutdown` and their threads are joined.
+    /// Dormant sessions are left intact in the store so they can be restored
+    /// on the next daemon startup.
     pub fn shutdown_all(&mut self) {
         let ids: Vec<u32> = self.sessions.keys().copied().collect();
         for id in ids {
-            self.destroy_session(SessionId(id));
+            let is_active = matches!(
+                self.sessions.get(&id).map(|h| &h.lifecycle),
+                Some(SessionLifecycle::Active { .. })
+            );
+            if is_active {
+                self.destroy_session(SessionId(id));
+            }
+            // Dormant handles are intentionally left in place — their data is
+            // already on disk and should survive daemon restart.
         }
     }
 
     // --- Private ---
+
+    /// Restore a Dormant Shell session to Active by re-spawning its mash thread.
+    ///
+    /// For App or Compat pane types this returns a specific error — those restore
+    /// paths are not yet implemented.  On success the lifecycle transitions from
+    /// `Dormant` to `Active` and `persist_daemon_state` is called.
+    fn restore_session(&mut self, id: SessionId) -> Result<(), DaemonError> {
+        let (persisted, _session_name, session_isolation) = {
+            let handle = self
+                .sessions
+                .get(&id.0)
+                .ok_or(DaemonError::SessionNotFound(id.clone()))?;
+            match &handle.lifecycle {
+                SessionLifecycle::Dormant { persisted } => {
+                    (persisted.clone(), handle.name.clone(), handle.isolation)
+                }
+                SessionLifecycle::Active { .. } => return Ok(()),
+            }
+        };
+
+        let (pane_id_raw, pane) = persisted
+            .panes
+            .iter()
+            .next()
+            .ok_or_else(|| {
+                DaemonError::RestoreFailed(id.clone(), "no panes in persisted session".to_string())
+            })?;
+
+        let pane_id = PaneId(*pane_id_raw);
+        let cwd = std::path::PathBuf::from(&pane.cwd);
+
+        let (cmd_tx, thread) = match &pane.pane_type {
+            malt_protocol::persist::session::PersistedPaneType::Shell { .. } => {
+                SessionExecutor::spawn_with_cwd(id.clone(), pane_id, session_isolation, cwd)
+                    .map_err(|e| DaemonError::RestoreFailed(id.clone(), e.to_string()))?
+            }
+            malt_protocol::persist::session::PersistedPaneType::App { .. } => {
+                return Err(DaemonError::AppRestoreNotSupported);
+            }
+            malt_protocol::persist::session::PersistedPaneType::Compat { .. } => {
+                return Err(DaemonError::RestoreFailed(
+                    id.clone(),
+                    "compat pane restore not yet implemented".to_string(),
+                ));
+            }
+            _ => {
+                return Err(DaemonError::RestoreFailed(
+                    id.clone(),
+                    "unknown pane type".to_string(),
+                ));
+            }
+        };
+
+        if let Some(handle) = self.sessions.get_mut(&id.0) {
+            handle.lifecycle = SessionLifecycle::Active {
+                cmd_tx,
+                thread: Some(thread),
+                client_count: 0,
+            };
+        }
+
+        self.persist_daemon_state();
+        info!(?id, "session restored from Dormant to Active");
+        Ok(())
+    }
 
     /// Transition an Active session to Dormant.
     ///
