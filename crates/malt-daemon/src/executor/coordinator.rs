@@ -175,7 +175,7 @@ impl Coordinator {
             match handle.lifecycle {
                 SessionLifecycle::Active {
                     cmd_tx,
-                    ref mut thread,
+                    mut thread,
                     ..
                 } => {
                     let _ = cmd_tx.send(SessionCommand::Shutdown);
