@@ -20,6 +20,26 @@ impl DaemonBackend {
     }
 }
 
+/// Extract plain text from styled grid JSON.
+fn extract_plain_text(grid_json: &str) -> String {
+    let rows: Vec<Vec<serde_json::Value>> =
+        serde_json::from_str(grid_json).unwrap_or_default();
+    let mut lines = Vec::new();
+    for row in &rows {
+        let mut line = String::new();
+        for span in row {
+            if let Some(t) = span.get("t").and_then(|v| v.as_str()) {
+                line.push_str(t);
+            }
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    while lines.last().map_or(false, |l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
 fn parse_isolation(s: Option<String>) -> IsolationTier {
     match s.as_deref() {
         Some("Restricted") | Some("restricted") => IsolationTier::Restricted,
@@ -101,14 +121,16 @@ impl GatewayBackend for DaemonBackend {
             .map_err(|e| GatewayError::Internal(e.to_string()))?;
 
         // Wait briefly for output to appear
-        drop(coord); // Release lock before sleeping
+        drop(coord);
         std::thread::sleep(std::time::Duration::from_millis(200));
 
-        // Read current output
+        // Read current output (styled JSON) and extract plain text
         let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
-        let output = coord
+        let raw = coord
             .get_session_output(session_id)
-            .unwrap_or_default();
+            .unwrap_or_else(|_| "[]".to_string());
+
+        let output = extract_plain_text(&raw);
 
         Ok(ExecResult {
             command_id: 0,
@@ -127,12 +149,15 @@ impl GatewayBackend for DaemonBackend {
 
     fn get_output(&self, session_id: u32) -> Result<serde_json::Value, GatewayError> {
         let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
-        let output = coord
+        let raw = coord
             .get_session_output(session_id)
             .map_err(|e| GatewayError::Internal(e.to_string()))?;
+        // raw is a JSON string (array of rows with styled spans)
+        let rows: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or(serde_json::Value::Array(vec![]));
         Ok(serde_json::json!({
-            "type": "Text",
-            "text": output,
+            "type": "StyledGrid",
+            "rows": rows,
         }))
     }
 

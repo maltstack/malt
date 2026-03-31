@@ -173,7 +173,7 @@ impl SessionExecutor {
                     }
                 }
                 Ok(SessionCommand::GetOutput { reply }) => {
-                    let output = self.get_grid_text();
+                    let output = self.get_grid_output();
                     let _ = reply.send(output);
                 }
                 Err(_) => {
@@ -193,21 +193,75 @@ impl SessionExecutor {
         );
     }
 
-    /// Extract visible text from the compat translator's grid.
-    fn get_grid_text(&self) -> String {
+    /// Extract the grid as styled JSON for the API.
+    fn get_grid_output(&self) -> String {
         let Some(compat) = &self.compat else {
-            return String::new();
+            return "[]".to_string();
         };
         let grid = compat.grid();
-        let mut lines = Vec::new();
+        let mut rows_json = Vec::new();
+
         for row in grid.rows_data() {
-            let line: String = row.cells.iter().map(|c| c.ch).collect();
-            lines.push(line.trim_end().to_string());
+            let mut spans = Vec::new();
+            let mut current_text = String::new();
+            let mut current_fg = (0u8, 0u8, 0u8);
+            let mut current_bg = (0u8, 0u8, 0u8);
+            let mut current_bold = false;
+            let mut first = true;
+
+            for cell in &row.cells {
+                let fg = cell.style.fg;
+                let bg = cell.style.bg;
+                let bold = cell.style.bold;
+
+                if first {
+                    current_fg = fg;
+                    current_bg = bg;
+                    current_bold = bold;
+                    first = false;
+                }
+
+                if fg != current_fg || bg != current_bg || bold != current_bold {
+                    // Flush current span
+                    if !current_text.is_empty() {
+                        spans.push(serde_json::json!({
+                            "t": current_text,
+                            "fg": [current_fg.0, current_fg.1, current_fg.2],
+                            "bg": [current_bg.0, current_bg.1, current_bg.2],
+                            "b": current_bold,
+                        }));
+                    }
+                    current_text = String::new();
+                    current_fg = fg;
+                    current_bg = bg;
+                    current_bold = bold;
+                }
+                current_text.push(cell.ch);
+            }
+            // Flush last span
+            if !current_text.is_empty() {
+                spans.push(serde_json::json!({
+                    "t": current_text,
+                    "fg": [current_fg.0, current_fg.1, current_fg.2],
+                    "bg": [current_bg.0, current_bg.1, current_bg.2],
+                    "b": current_bold,
+                }));
+            }
+            rows_json.push(serde_json::Value::Array(spans));
         }
-        // Trim trailing empty lines
-        while lines.last().map_or(false, |l| l.is_empty()) {
-            lines.pop();
+
+        // Trim trailing empty rows
+        while rows_json.last().map_or(false, |r| {
+            r.as_array().map_or(true, |a| {
+                a.len() == 1
+                    && a[0].get("t").and_then(|t| t.as_str()).map_or(false, |s| {
+                        s.trim().is_empty()
+                    })
+            })
+        }) {
+            rows_json.pop();
         }
-        lines.join("\n")
+
+        serde_json::to_string(&rows_json).unwrap_or_else(|_| "[]".to_string())
     }
 }

@@ -37,6 +37,23 @@ impl DaemonConnection for MockConnection {
     fn send_input(&mut self, _input: &str) {}
 }
 
+/// Parse an RGB array `[r, g, b]` from JSON.
+fn parse_rgb(val: Option<&serde_json::Value>) -> (u8, u8, u8) {
+    val.and_then(|v| v.as_array())
+        .and_then(|arr| {
+            if arr.len() == 3 {
+                Some((
+                    arr[0].as_u64().unwrap_or(204) as u8,
+                    arr[1].as_u64().unwrap_or(204) as u8,
+                    arr[2].as_u64().unwrap_or(204) as u8,
+                ))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((204, 204, 204))
+}
+
 /// Live HTTP connection to the MALT daemon.
 ///
 /// Polls `/sessions/:id/output` for terminal content and sends
@@ -70,44 +87,74 @@ impl DaemonConnection for HttpConnection {
         );
         let resp = self.http.get(&url).send().ok()?;
         let json: serde_json::Value = resp.json().ok()?;
+        let data = json.get("data")?;
 
-        let text = json
-            .get("data")
-            .and_then(|d| d.get("text"))
-            .and_then(|t| t.as_str())
-            .unwrap_or("");
-
-        // Only update if content changed
-        if text == self.last_output {
+        // Check content hash to avoid re-rendering identical frames
+        let raw = data.to_string();
+        if raw == self.last_output {
             return None;
         }
-        self.last_output = text.to_string();
-
-        // Convert text lines to DrawText commands
-        let style = ResolvedStyle {
-            fg: (204, 204, 204),
-            bg: (0, 0, 0),
-            bold: false,
-            italic: false,
-            underline: false,
-            dim: false,
-            strikethrough: false,
-            reverse: false,
-            blink: false,
-            _unknown: Vec::new(),
-        };
+        self.last_output = raw;
 
         let mut commands = vec![RenderCommand::Clear {}];
-        for (i, line) in text.lines().enumerate() {
-            if !line.is_empty() {
-                commands.push(RenderCommand::DrawText {
-                    x: 0,
-                    y: i as u16,
-                    text: line.to_string(),
-                    style: style.clone(),
-                });
+
+        // Try styled grid format first
+        if let Some(rows) = data.get("rows").and_then(|r| r.as_array()) {
+            for (y, row) in rows.iter().enumerate() {
+                if let Some(spans) = row.as_array() {
+                    let mut x: u16 = 0;
+                    for span in spans {
+                        let text = span.get("t").and_then(|t| t.as_str()).unwrap_or("");
+                        if text.trim().is_empty() {
+                            x += text.len() as u16;
+                            continue;
+                        }
+                        let fg = parse_rgb(span.get("fg"));
+                        let bg = parse_rgb(span.get("bg"));
+                        let bold = span.get("b").and_then(|b| b.as_bool()).unwrap_or(false);
+
+                        commands.push(RenderCommand::DrawText {
+                            x,
+                            y: y as u16,
+                            text: text.to_string(),
+                            style: ResolvedStyle {
+                                fg,
+                                bg,
+                                bold,
+                                italic: false,
+                                underline: false,
+                                dim: false,
+                                strikethrough: false,
+                                reverse: false,
+                                blink: false,
+                                _unknown: Vec::new(),
+                            },
+                        });
+                        x += text.len() as u16;
+                    }
+                }
+            }
+        } else if let Some(text) = data.get("text").and_then(|t| t.as_str()) {
+            // Fallback: plain text
+            let default_style = ResolvedStyle {
+                fg: (204, 204, 204),
+                bg: (0, 0, 0),
+                bold: false, italic: false, underline: false,
+                dim: false, strikethrough: false, reverse: false, blink: false,
+                _unknown: Vec::new(),
+            };
+            for (i, line) in text.lines().enumerate() {
+                if !line.is_empty() {
+                    commands.push(RenderCommand::DrawText {
+                        x: 0,
+                        y: i as u16,
+                        text: line.to_string(),
+                        style: default_style.clone(),
+                    });
+                }
             }
         }
+
         Some(commands)
     }
 
