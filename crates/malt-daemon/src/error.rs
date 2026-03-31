@@ -32,4 +32,13 @@ pub enum DaemonError {
 
     #[error("name conflict: cannot find unique name for '{0}' after 100 attempts")]
     NameConflict(String),
+
+    #[error("app pane restore is not supported until Phase G plugin infrastructure is implemented")]
+    AppRestoreNotSupported,
+
+    #[error("failed to restore session {0:?}: {1}")]
+    RestoreFailed(malt_protocol::common::SessionId, String),
+
+    #[error("session {0:?} is dormant — attach to restore it")]
+    SessionDormant(malt_protocol::common::SessionId),
 }

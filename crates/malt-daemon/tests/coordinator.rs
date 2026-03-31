@@ -246,3 +246,16 @@ fn coordinator_corrupt_state_uses_defaults() {
     let id = coord.create_session(None, IsolationTier::Bare, None).unwrap();
     assert_eq!(id, SessionId(1));
 }
+
+#[test]
+fn error_variants_are_distinct() {
+    use malt_daemon::DaemonError;
+    use malt_protocol::common::SessionId;
+    let e1 = DaemonError::AppRestoreNotSupported;
+    let e2 = DaemonError::RestoreFailed(SessionId(1), "boom".to_string());
+    let e3 = DaemonError::SessionDormant(SessionId(2));
+    // Just check they format without panic.
+    assert!(format!("{e1}").contains("not supported"));
+    assert!(format!("{e2}").contains("1"));
+    assert!(format!("{e3}").contains("dormant"));
+}
