@@ -48,8 +48,22 @@ fn session_ids_never_recycled() {
 
 use malt_daemon::bus::BusMessage;
 use malt_daemon::executor::session_thread::SessionCommand;
-use malt_protocol::common::InputAuthority;
+use malt_protocol::common::{ClientCapabilities, ColorDepth, ImageProtocol, InputAuthority, KeyModifiers, UnicodeLevel};
+use malt_protocol::input::{KeyEvent, KeyValue};
 use malt_protocol::priority::Priority;
+use malt_protocol::render::RenderBatch;
+
+fn caps() -> ClientCapabilities {
+    ClientCapabilities {
+        color_depth: ColorDepth::TrueColor,
+        unicode: UnicodeLevel::Full,
+        image_protocol: ImageProtocol::None,
+        overlay: false,
+        vt_passthrough: true,
+        max_fps: 60,
+        _unknown: Vec::new(),
+    }
+}
 
 #[test]
 fn route_to_nonexistent_session_errors() {
@@ -87,4 +101,41 @@ fn shutdown_all_cleans_up() {
     coord.create_session(None, IsolationTier::Bare, None).unwrap();
     coord.shutdown_all();
     assert_eq!(coord.session_count(), 0);
+}
+
+#[test]
+fn register_vnp_client_returns_initial_state() {
+    let mut coord = Coordinator::new(PoolConfig::default());
+    let sid = coord.create_session(None, IsolationTier::Bare, None).unwrap();
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let initial = coord.register_vnp_client(sid, 1, caps(), render_tx).unwrap();
+    assert_eq!(initial.frame_seq, 0);
+}
+
+#[test]
+fn unregister_vnp_client_succeeds() {
+    let mut coord = Coordinator::new(PoolConfig::default());
+    let sid = coord.create_session(None, IsolationTier::Bare, None).unwrap();
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let _ = coord.register_vnp_client(sid.clone(), 1, caps(), render_tx).unwrap();
+    coord.unregister_vnp_client(sid, 1).unwrap();
+}
+
+#[test]
+fn send_key_input_succeeds() {
+    let mut coord = Coordinator::new(PoolConfig::default());
+    let sid = coord.create_session(None, IsolationTier::Bare, None).unwrap();
+    let key = KeyEvent {
+        key: KeyValue::Char { codepoint: 'x' as u32 },
+        modifiers: KeyModifiers::empty(),
+        _unknown: Vec::new(),
+    };
+    coord.send_key_input(sid, key).unwrap();
+}
+
+#[test]
+fn ack_frame_succeeds() {
+    let mut coord = Coordinator::new(PoolConfig::default());
+    let sid = coord.create_session(None, IsolationTier::Bare, None).unwrap();
+    coord.ack_frame(sid, 1, 0).unwrap();
 }

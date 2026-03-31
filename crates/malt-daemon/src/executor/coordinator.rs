@@ -4,10 +4,13 @@ use crate::executor::session_thread::{SessionCommand, SessionExecutor};
 use crate::supervisor::ProcessSupervisor;
 use crate::DaemonError;
 use malt_protocol::common::{
-    GroupId, IsolationTier, PaneId, SessionId, SessionInfo, SessionState,
+    ClientCapabilities, GroupId, IsolationTier, PaneId, SessionId, SessionInfo, SessionState,
 };
+use malt_protocol::input::KeyEvent;
+use malt_protocol::render::{InitialState, RenderBatch};
 use std::collections::HashMap;
 use std::sync::mpsc;
+use std::time::Duration;
 use tracing::info;
 
 struct SessionHandle {
@@ -148,6 +151,85 @@ impl Coordinator {
                 _unknown: Vec::new(),
             })
             .collect()
+    }
+
+    /// Register a VNP client with a session's renderer.
+    ///
+    /// Sends `RegisterVnpClient` to the session thread and waits up to 5 s for
+    /// the `InitialState` snapshot.
+    pub fn register_vnp_client(
+        &self,
+        session_id: SessionId,
+        client_id: u64,
+        capabilities: ClientCapabilities,
+        render_tx: mpsc::SyncSender<RenderBatch>,
+    ) -> Result<InitialState, DaemonError> {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or(DaemonError::SessionNotFound(session_id))?;
+        let (initial_tx, initial_rx) = mpsc::channel();
+        handle
+            .cmd_tx
+            .send(SessionCommand::RegisterVnpClient {
+                client_id,
+                capabilities,
+                render_tx,
+                initial_reply: initial_tx,
+            })
+            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
+        initial_rx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+    }
+
+    /// Unregister a VNP client from a session's renderer (fire-and-forget).
+    pub fn unregister_vnp_client(
+        &self,
+        session_id: SessionId,
+        client_id: u64,
+    ) -> Result<(), DaemonError> {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or(DaemonError::SessionNotFound(session_id))?;
+        handle
+            .cmd_tx
+            .send(SessionCommand::UnregisterVnpClient { client_id })
+            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+    }
+
+    /// Route a typed keyboard event to a session's line editor.
+    pub fn send_key_input(
+        &self,
+        session_id: SessionId,
+        key: KeyEvent,
+    ) -> Result<(), DaemonError> {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or(DaemonError::SessionNotFound(session_id))?;
+        handle
+            .cmd_tx
+            .send(SessionCommand::KeyInput { key })
+            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+    }
+
+    /// Forward a frame acknowledgement to a session's renderer host.
+    pub fn ack_frame(
+        &self,
+        session_id: SessionId,
+        client_id: u64,
+        frame_seq: u64,
+    ) -> Result<(), DaemonError> {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or(DaemonError::SessionNotFound(session_id))?;
+        handle
+            .cmd_tx
+            .send(SessionCommand::AckFrame { client_id, frame_seq })
+            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
     }
 
     pub fn session_count(&self) -> usize {
