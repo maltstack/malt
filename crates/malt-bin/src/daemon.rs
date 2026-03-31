@@ -30,7 +30,7 @@ pub fn run_daemon(port: u16) -> Result<()> {
         let default_token = token_store.load_or_generate_default();
         println!("API token: {default_token}");
 
-        let backend = Arc::new(DaemonBackend::new(coordinator));
+        let backend = Arc::new(DaemonBackend::new(coordinator.clone()));
 
         // Shutdown channel: POST /shutdown sends signal
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -51,6 +51,13 @@ pub fn run_daemon(port: u16) -> Result<()> {
         axum::serve(listener, router)
             .with_graceful_shutdown(shutdown_signal(shutdown_rx))
             .await?;
+
+        // Explicitly persist all active sessions before process exit.
+        // The Drop impl also calls shutdown_graceful as a safety net.
+        {
+            let mut coord = coordinator.lock().unwrap_or_else(|p| p.into_inner());
+            coord.shutdown_graceful();
+        }
 
         println!("daemon stopped");
         Ok(())

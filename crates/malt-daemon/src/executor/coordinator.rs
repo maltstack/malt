@@ -414,6 +414,70 @@ impl Coordinator {
         self.sessions.contains_key(&id.0)
     }
 
+    /// Snapshot all Active sessions, persist them, join threads.
+    ///
+    /// After this call, all sessions are either Dormant (snapshot succeeded) or
+    /// their threads are joined (snapshot timed out). The store is flushed.
+    ///
+    /// Called explicitly from daemon.rs before process exit. Also called from
+    /// `Drop` as a safety net (idempotent — second call finds no Active sessions).
+    pub fn shutdown_graceful(&mut self) {
+        let ids: Vec<u32> = self.sessions.keys().copied().collect();
+        for id in ids {
+            let session_id = SessionId(id);
+            let (cmd_tx_clone, session_name, session_isolation) = {
+                let handle = match self.sessions.get(&session_id.0) {
+                    Some(h) => h,
+                    None => continue,
+                };
+                match &handle.lifecycle {
+                    SessionLifecycle::Active { cmd_tx, .. } => {
+                        (cmd_tx.clone(), handle.name.clone(), handle.isolation)
+                    }
+                    SessionLifecycle::Dormant { .. } => continue,
+                }
+            };
+
+            // Snapshot.
+            let (reply_tx, reply_rx) = mpsc::channel();
+            let _ = cmd_tx_clone.send(SessionCommand::Snapshot {
+                reply: reply_tx,
+                name: session_name,
+                isolation: session_isolation,
+            });
+            match reply_rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(persisted) => {
+                    self.store.mark_dirty(session_id.clone(), persisted.clone());
+                    // Shut down thread and transition to Dormant.
+                    if let Some(handle) = self.sessions.get_mut(&session_id.0) {
+                        if let SessionLifecycle::Active { thread, .. } = &mut handle.lifecycle {
+                            let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
+                            if let Some(t) = thread.take() {
+                                let _ = t.join();
+                            }
+                        }
+                        handle.lifecycle = SessionLifecycle::Dormant { persisted };
+                    }
+                }
+                Err(_) => {
+                    warn!(?session_id, "shutdown_graceful: Snapshot timeout; skipping save for this session");
+                    // Shut down thread anyway so it doesn't linger.
+                    let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
+                    if let Some(handle) = self.sessions.get_mut(&session_id.0) {
+                        if let SessionLifecycle::Active { thread, .. } = &mut handle.lifecycle {
+                            if let Some(t) = thread.take() {
+                                let _ = t.join();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.store.flush_all();
+        self.persist_daemon_state();
+    }
+
     /// Shutdown all sessions gracefully.
     ///
     /// Active sessions are sent `Shutdown` and their threads are joined.
@@ -576,6 +640,6 @@ impl Coordinator {
 
 impl Drop for Coordinator {
     fn drop(&mut self) {
-        self.shutdown_all();
+        self.shutdown_graceful();
     }
 }

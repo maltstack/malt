@@ -382,6 +382,34 @@ fn restore_shell_session_from_dormant() {
 }
 
 #[test]
+fn shutdown_graceful_saves_all_active_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+
+    {
+        let store = make_store(&dir);
+        let mut coord = Coordinator::new(PoolConfig::default(), store.clone());
+        let sid1 = coord.create_session(Some("s1".to_string()), IsolationTier::Bare, None).unwrap();
+        let sid2 = coord.create_session(Some("s2".to_string()), IsolationTier::Bare, None).unwrap();
+
+        coord.shutdown_graceful();
+
+        // After shutdown_graceful, both sessions should be persisted.
+        store.flush_all();
+        let p1 = store.load_session(&sid1).unwrap();
+        let p2 = store.load_session(&sid2).unwrap();
+        assert_eq!(p1.name.as_deref(), Some("s1"));
+        assert_eq!(p2.name.as_deref(), Some("s2"));
+    }
+
+    // Second coordinator picks them up as Dormant.
+    let store2 = make_store(&dir);
+    let coord2 = Coordinator::new(PoolConfig::default(), store2);
+    assert_eq!(coord2.session_count(), 2);
+    let sessions = coord2.list_sessions();
+    assert!(sessions.iter().all(|s| s.state == malt_protocol::common::SessionState::Dormant));
+}
+
+#[test]
 fn error_variants_are_distinct() {
     use malt_daemon::DaemonError;
     use malt_protocol::common::SessionId;
