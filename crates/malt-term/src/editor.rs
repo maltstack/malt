@@ -506,4 +506,13 @@ impl Editor {
         self.vi_mode = ViMode::Normal;
     }
 
+    /// Clear the current line buffer and return to Insert mode (for Vi) or
+    /// the start state (for Emacs). Call this after Accept, Interrupt, or Eof
+    /// so the editor is ready for the next line without constructing a new instance.
+    pub fn reset(&mut self) {
+        self.line.clear();
+        self.vi_mode = ViMode::Insert;
+        self.undo_stack = UndoStack::default();
+    }
+
 }

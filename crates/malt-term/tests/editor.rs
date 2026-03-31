@@ -193,3 +193,30 @@ fn suspend_signal() {
     let result = ed.feed(InputEvent::Ctrl('z'));
     assert!(matches!(result, EditResult::Suspend));
 }
+
+#[test]
+fn reset_clears_line_and_accepts_new_input() {
+    let mut ed = Editor::new(EditMode::Emacs);
+    ed.feed(InputEvent::Char('h'));
+    ed.feed(InputEvent::Char('i'));
+    assert_eq!(ed.line(), "hi");
+
+    ed.reset();
+    assert_eq!(ed.line(), "");
+
+    ed.feed(InputEvent::Char('o'));
+    ed.feed(InputEvent::Char('k'));
+    let result = ed.feed(InputEvent::Key(SpecialKey::Enter));
+    assert!(matches!(result, EditResult::Accept(s) if s == "ok"));
+}
+
+#[test]
+fn reset_after_accept_is_safe() {
+    let mut ed = Editor::new(EditMode::Emacs);
+    ed.feed(InputEvent::Char('a'));
+    let _ = ed.feed(InputEvent::Key(SpecialKey::Enter));
+    // After Accept, the line text is consumed by the caller.
+    // reset() must still work without panicking.
+    ed.reset();
+    assert_eq!(ed.line(), "");
+}
