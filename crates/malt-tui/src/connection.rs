@@ -255,11 +255,14 @@ impl DaemonConnection for HttpConnection {
     fn send_key_event(&mut self, event: &KeyEvent) {
         if let Some(text) = key_event_to_text(event) {
             let url = format!("{}/sessions/{}/send", self.base_url, self.session_id);
-            let _ = self
+            if let Err(e) = self
                 .http
                 .post(&url)
                 .json(&serde_json::json!({ "input": text }))
-                .send();
+                .send()
+            {
+                tracing::warn!("HTTP send_key_event failed: {e}");
+            }
         }
     }
 
@@ -420,7 +423,9 @@ impl VnpConnection {
                     flags: FrameFlags::new(),
                     payload: combined,
                 };
-                let _ = self.writer.write_frame(&frame);
+                if let Err(e) = self.writer.write_frame(&frame) {
+                    tracing::warn!("failed to write FrameAck frame: {e}");
+                }
             }
             Err(e) => {
                 tracing::warn!("failed to encode FrameAck: {e}");
@@ -442,17 +447,35 @@ impl DaemonConnection for VnpConnection {
 
         match self.reader.read_frame() {
             Ok(frame) => {
-                let (env, msg_bytes) = decode_envelope(&frame.payload).ok()?;
+                let (env, msg_bytes) = match decode_envelope(&frame.payload) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("VNP decode_envelope failed: {e}");
+                        return None;
+                    }
+                };
                 match (env.domain, env.msg_type) {
                     (d, t) if d == DOMAIN_RENDER && t == MSG_RENDER_BATCH => {
                         let mut r = BitReader::new(msg_bytes);
-                        let batch = RenderBatch::unpack(&mut r).ok()?;
+                        let batch = match RenderBatch::unpack(&mut r) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!("VNP RenderBatch unpack failed: {e}");
+                                return None;
+                            }
+                        };
                         self.send_frame_ack(batch.frame_seq);
                         Some(batch.commands)
                     }
                     (d, t) if d == DOMAIN_RENDER && t == MSG_INITIAL_STATE => {
                         let mut r = BitReader::new(msg_bytes);
-                        let initial = InitialState::unpack(&mut r).ok()?;
+                        let initial = match InitialState::unpack(&mut r) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!("VNP InitialState unpack failed: {e}");
+                                return None;
+                            }
+                        };
                         self.send_frame_ack(initial.frame_seq);
                         Some(initial.commands)
                     }
@@ -465,8 +488,14 @@ impl DaemonConnection for VnpConnection {
             {
                 None
             }
-            Err(FrameError::UnexpectedEof) => None,
-            Err(_) => None,
+            Err(FrameError::UnexpectedEof) => {
+                tracing::warn!("VNP connection closed by daemon (EOF)");
+                None
+            }
+            Err(e) => {
+                tracing::warn!("VNP frame read error: {e}");
+                None
+            }
         }
     }
 
@@ -483,7 +512,9 @@ impl DaemonConnection for VnpConnection {
                     flags: FrameFlags::new(),
                     payload: combined,
                 };
-                let _ = self.writer.write_frame(&frame);
+                if let Err(e) = self.writer.write_frame(&frame) {
+                    tracing::warn!("failed to write KeyEvent frame: {e}");
+                }
             }
             Err(e) => {
                 tracing::warn!("failed to encode KeyEvent: {e}");
@@ -509,7 +540,9 @@ impl DaemonConnection for VnpConnection {
                     flags: FrameFlags::new(),
                     payload: combined,
                 };
-                let _ = self.writer.write_frame(&frame);
+                if let Err(e) = self.writer.write_frame(&frame) {
+                    tracing::warn!("failed to write Resize frame: {e}");
+                }
             }
             Err(e) => {
                 tracing::warn!("failed to encode Resize: {e}");
