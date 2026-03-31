@@ -1,4 +1,5 @@
 use crate::executor::coordinator::Coordinator;
+use crate::executor::session_thread::SessionCommand;
 use malt_gateway::backend::GatewayBackend;
 use malt_gateway::error::GatewayError;
 use malt_gateway::types::{ExecResult, PaneResponse, SessionResponse};
@@ -18,26 +19,6 @@ impl DaemonBackend {
     pub fn coordinator(&self) -> &Arc<Mutex<Coordinator>> {
         &self.coordinator
     }
-}
-
-/// Extract plain text from styled grid JSON.
-fn extract_plain_text(grid_json: &str) -> String {
-    let rows: Vec<Vec<serde_json::Value>> =
-        serde_json::from_str(grid_json).unwrap_or_default();
-    let mut lines = Vec::new();
-    for row in &rows {
-        let mut line = String::new();
-        for span in row {
-            if let Some(t) = span.get("t").and_then(|v| v.as_str()) {
-                line.push_str(t);
-            }
-        }
-        lines.push(line.trim_end().to_string());
-    }
-    while lines.last().map_or(false, |l| l.is_empty()) {
-        lines.pop();
-    }
-    lines.join("\n")
 }
 
 fn parse_isolation(s: Option<String>) -> IsolationTier {
@@ -112,25 +93,23 @@ impl GatewayBackend for DaemonBackend {
         session_id: u32,
         command: String,
     ) -> Result<ExecResult, GatewayError> {
-        let mut coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        {
+            let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+            coord
+                .send_command(
+                    SessionId(session_id),
+                    SessionCommand::RunCommand {
+                        command,
+                        reply: reply_tx,
+                    },
+                )
+                .map_err(|e| GatewayError::Internal(e.to_string()))?;
+        } // Release lock before waiting
 
-        // Write command + newline to PTY
-        let input = format!("{command}\n");
-        coord
-            .write_to_session(session_id, input.as_bytes())
-            .map_err(|e| GatewayError::Internal(e.to_string()))?;
-
-        // Wait briefly for output to appear
-        drop(coord);
-        std::thread::sleep(std::time::Duration::from_millis(200));
-
-        // Read current output (styled JSON) and extract plain text
-        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
-        let raw = coord
-            .get_session_output(session_id)
-            .unwrap_or_else(|_| "[]".to_string());
-
-        let output = extract_plain_text(&raw);
+        let output = reply_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|_| GatewayError::Internal("command timed out".to_string()))?;
 
         Ok(ExecResult {
             command_id: 0,
@@ -140,10 +119,21 @@ impl GatewayBackend for DaemonBackend {
     }
 
     fn send_input(&self, session_id: u32, input: String) -> Result<(), GatewayError> {
-        let mut coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
-        coord
-            .write_to_session(session_id, input.as_bytes())
-            .map_err(|e| GatewayError::Internal(e.to_string()))?;
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        {
+            let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+            coord
+                .send_command(
+                    SessionId(session_id),
+                    SessionCommand::RunCommand {
+                        command: input,
+                        reply: reply_tx,
+                    },
+                )
+                .map_err(|e| GatewayError::Internal(e.to_string()))?;
+        }
+        // Wait for completion but discard output
+        let _ = reply_rx.recv_timeout(std::time::Duration::from_secs(30));
         Ok(())
     }
 

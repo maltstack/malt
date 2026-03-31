@@ -144,8 +144,15 @@ fn handle_client(stream: TcpStream, coordinator: Arc<Mutex<Coordinator>>) {
                                     .and_then(|d| d.as_str())
                                     .unwrap_or("");
                                 if let Some(sid) = sid {
-                                    if let Ok(mut coord) = coordinator.lock() {
-                                        let _ = coord.write_to_session(sid, data.as_bytes());
+                                    let (reply_tx, _reply_rx) = std::sync::mpsc::channel();
+                                    if let Ok(coord) = coordinator.lock() {
+                                        let _ = coord.send_command(
+                                            malt_protocol::common::SessionId(sid),
+                                            crate::executor::session_thread::SessionCommand::RunCommand {
+                                                command: data.to_string(),
+                                                reply: reply_tx,
+                                            },
+                                        );
                                     }
                                 }
                             }

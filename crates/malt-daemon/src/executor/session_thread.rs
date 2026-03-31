@@ -7,8 +7,9 @@ use malt_layout::{LayoutConfig, Rect};
 use malt_protocol::common::{IsolationTier, PaneId, SessionId};
 use malt_protocol::priority::Priority;
 use malt_session::session::SessionRuntime;
-use std::fs::File;
-use std::io::Write;
+use mash::env::Env;
+use mash::executor::execute_list;
+use mash::parser;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use tracing::{info, warn};
@@ -28,6 +29,11 @@ pub enum SessionCommand {
     Resize { cols: u16, rows: u16 },
     /// Raw bytes from PTY output (from reader thread).
     PtyOutput { pane_id: PaneId, data: Vec<u8> },
+    /// Execute a command via mash (from exec_command API).
+    RunCommand {
+        command: String,
+        reply: mpsc::Sender<String>,
+    },
     /// Write input to PTY stdin.
     WriteInput { data: Vec<u8> },
     /// Get the current output snapshot (requester sends back via channel).
@@ -62,6 +68,10 @@ impl std::fmt::Debug for SessionCommand {
                 .field("pane_id", pane_id)
                 .field("len", &data.len())
                 .finish(),
+            Self::RunCommand { command, .. } => f
+                .debug_struct("RunCommand")
+                .field("command", command)
+                .finish(),
             Self::WriteInput { data } => f
                 .debug_struct("WriteInput")
                 .field("len", &data.len())
@@ -80,7 +90,7 @@ pub struct SessionExecutor {
     terminal_size: Rect,
     layout_config: LayoutConfig,
     compat: Option<CompatTranslator>,
-    pty_writer: Option<File>,
+    mash_env: Env,
 }
 
 impl SessionExecutor {
@@ -95,6 +105,8 @@ impl SessionExecutor {
         let handle = thread::Builder::new()
             .name(format!("session-{}", session_id.0))
             .spawn(move || {
+                let mut env = Env::from_os();
+                env.set_interactive(true);
                 let mut executor = SessionExecutor {
                     session: SessionRuntime::new(session_id, first_pane, isolation),
                     bus: Bus::new(BusConfig::default()),
@@ -102,17 +114,12 @@ impl SessionExecutor {
                     terminal_size: Rect::new(0, 0, 80, 24),
                     layout_config: LayoutConfig::default(),
                     compat: None,
-                    pty_writer: None,
+                    mash_env: env,
                 };
                 executor.run(rx);
             })
             .map_err(DaemonError::Io)?;
         Ok((tx, handle))
-    }
-
-    /// Set the PTY writer for this session (called after spawn via command).
-    pub fn set_pty_writer(&mut self, writer: File) {
-        self.pty_writer = Some(writer);
     }
 
     /// Initialize the compat translator for this session.
@@ -152,6 +159,10 @@ impl SessionExecutor {
                     }
                     self.recompute_layout();
                 }
+                Ok(SessionCommand::RunCommand { command, reply }) => {
+                    let output = self.run_mash_command(&command);
+                    let _ = reply.send(output);
+                }
                 Ok(SessionCommand::PtyOutput { data, .. }) => {
                     if let Some(compat) = &mut self.compat {
                         compat.feed(&data);
@@ -166,10 +177,10 @@ impl SessionExecutor {
                     });
                 }
                 Ok(SessionCommand::WriteInput { data }) => {
-                    if let Some(writer) = &mut self.pty_writer {
-                        if let Err(e) = writer.write_all(&data) {
-                            warn!(error = %e, "failed to write to PTY");
-                        }
+                    let input = String::from_utf8_lossy(&data);
+                    let input = input.trim();
+                    if !input.is_empty() {
+                        let _ = self.run_mash_command(input);
                     }
                 }
                 Ok(SessionCommand::GetOutput { reply }) => {
@@ -182,6 +193,51 @@ impl SessionExecutor {
                 }
             }
         }
+    }
+
+    /// Parse and execute a command string via mash, feeding output through the
+    /// compat translator and returning the plain stdout text.
+    fn run_mash_command(&mut self, input: &str) -> String {
+        let commands = match parser::parse(input) {
+            Ok(cmds) => cmds,
+            Err(e) => {
+                let err_msg = format!("mash: parse error: {e}\n");
+                if let Some(compat) = &mut self.compat {
+                    compat.feed(err_msg.as_bytes());
+                }
+                return err_msg;
+            }
+        };
+
+        if commands.is_empty() {
+            return String::new();
+        }
+
+        let result = execute_list(&commands, input, &mut self.mash_env);
+
+        // Feed stdout through compat translator for grid rendering
+        if !result.stdout.is_empty() {
+            if let Some(compat) = &mut self.compat {
+                compat.feed(&result.stdout);
+            }
+            // Publish output to bus
+            self.bus.publish(BusMessage {
+                domain: 1, // Shell
+                msg_type: 4, // OutputChunk
+                priority: Priority::Normal,
+                producer_id: 0,
+                payload: result.stdout.clone(),
+            });
+        }
+
+        // Feed stderr through compat translator too
+        if !result.stderr.is_empty() {
+            if let Some(compat) = &mut self.compat {
+                compat.feed(&result.stderr);
+            }
+        }
+
+        String::from_utf8_lossy(&result.stdout).to_string()
     }
 
     fn recompute_layout(&mut self) {
