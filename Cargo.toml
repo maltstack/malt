@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/malt-protocol", "crates/malt-platform", "crates/malt-config", "crates/mash", "crates/malt-layout", "crates/malt-session", "crates/malt-term", "crates/malt-tools", "crates/malt-elevate", "crates/malt-daemon", "crates/malt-renderer", "crates/malt-compat", "crates/malt-gateway", "crates/malt-bin", "crates/malt-tui"]
+members = ["crates/malt-protocol", "crates/malt-platform", "crates/malt-config", "crates/mash", "crates/malt-layout", "crates/malt-session", "crates/malt-term", "crates/malt-tools", "crates/malt-elevate", "crates/malt-daemon", "crates/malt-renderer", "crates/malt-compat", "crates/malt-gateway", "crates/malt-bin", "crates/malt-tui", "crates/malt-mcp"]
 
 [workspace.package]
 version = "0.1.0"

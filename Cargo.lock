@@ -1410,6 +1410,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "malt-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "malt-platform"
 version = "0.1.0"
 dependencies = [
