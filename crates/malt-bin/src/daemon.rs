@@ -15,9 +15,10 @@ pub fn run_daemon(port: u16) -> Result<()> {
         // Start VNP socket listener on port+1 (e.g. 7701 when HTTP is 7700)
         let vnp_coord = coordinator.clone();
         let vnp_port = port + 1;
+        let client_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
         std::thread::spawn(move || {
             let vnp_addr = format!("127.0.0.1:{vnp_port}");
-            malt_daemon::vnp_listener::start_vnp_listener(&vnp_addr, vnp_coord);
+            malt_daemon::vnp_listener::start_vnp_listener(&vnp_addr, vnp_coord, client_counter);
         });
 
         let token_store = Arc::new(TokenStore::new());
