@@ -2,6 +2,7 @@ use anyhow::Result;
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
 use malt_daemon::gateway_backend::DaemonBackend;
+use malt_daemon::store::{DebouncedStore, SessionStore};
 use malt_gateway::auth::TokenStore;
 use malt_gateway::server::build_router;
 use std::sync::{Arc, Mutex};
@@ -10,7 +11,11 @@ use tokio::sync::watch;
 pub fn run_daemon(port: u16) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default())));
+        // TODO(Task 7): replace with XDG data dir.
+        let data_dir = std::env::temp_dir().join("malt-daemon");
+        std::fs::create_dir_all(&data_dir)?;
+        let store = DebouncedStore::new(SessionStore::new(data_dir));
+        let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
 
         // Start VNP socket listener on port+1 (e.g. 7701 when HTTP is 7700)
         let vnp_coord = coordinator.clone();

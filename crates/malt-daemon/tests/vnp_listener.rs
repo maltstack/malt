@@ -27,12 +27,15 @@ use vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
+use malt_daemon::store::{DebouncedStore, SessionStore};
 use malt_daemon::vnp_listener::accept_vnp_connections;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn make_coordinator_with_session() -> (Arc<Mutex<Coordinator>>, u32) {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     let sid = coord
         .create_session(None, IsolationTier::Bare, None)
         .unwrap();
@@ -177,7 +180,9 @@ fn send_enter_key(writer: &mut FrameWriter<TcpStream>, session_id: u32) {
 /// valid HelloAck (domain=0, type=0x02) with negotiated_version=1.
 #[test]
 fn vnp_handshake_succeeds() {
-    let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default())));
+    let dir = tempfile::tempdir().unwrap();
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
     let addr = start_test_listener(coordinator);
 
     let stream = TcpStream::connect(&addr).unwrap();

@@ -1,17 +1,26 @@
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
+use malt_daemon::store::{DebouncedStore, SessionStore};
 use malt_protocol::common::{IsolationTier, SessionId};
+
+fn make_store(dir: &tempfile::TempDir) -> DebouncedStore {
+    DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+}
 
 #[test]
 fn create_session() {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     let id = coord.create_session(None, IsolationTier::Bare, None).unwrap();
     assert_eq!(id, SessionId(1));
 }
 
 #[test]
 fn create_multiple_sessions() {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     let id1 = coord.create_session(None, IsolationTier::Bare, None).unwrap();
     let id2 = coord.create_session(None, IsolationTier::Bare, None).unwrap();
     assert_eq!(id1, SessionId(1));
@@ -21,7 +30,9 @@ fn create_multiple_sessions() {
 
 #[test]
 fn destroy_session() {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     let id = coord.create_session(None, IsolationTier::Bare, None).unwrap();
     coord.destroy_session(id);
     assert_eq!(coord.session_count(), 0);
@@ -29,7 +40,9 @@ fn destroy_session() {
 
 #[test]
 fn list_sessions() {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     coord.create_session(Some("alpha".to_string()), IsolationTier::Bare, None).unwrap();
     coord.create_session(Some("beta".to_string()), IsolationTier::Restricted, None).unwrap();
     let sessions = coord.list_sessions();
@@ -38,7 +51,9 @@ fn list_sessions() {
 
 #[test]
 fn session_ids_never_recycled() {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     let id1 = coord.create_session(None, IsolationTier::Bare, None).unwrap();
     coord.destroy_session(id1.clone());
     let id2 = coord.create_session(None, IsolationTier::Bare, None).unwrap();
@@ -67,7 +82,9 @@ fn caps() -> ClientCapabilities {
 
 #[test]
 fn route_to_nonexistent_session_errors() {
-    let coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let coord = Coordinator::new(PoolConfig::default(), store);
     let msg = BusMessage {
         domain: 1,
         msg_type: 1,
@@ -82,7 +99,9 @@ fn route_to_nonexistent_session_errors() {
 
 #[test]
 fn send_attach_command() {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     let id = coord.create_session(None, IsolationTier::Bare, None).unwrap();
     coord.send_command(
         id.clone(),
@@ -96,7 +115,9 @@ fn send_attach_command() {
 
 #[test]
 fn shutdown_all_cleans_up() {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     coord.create_session(None, IsolationTier::Bare, None).unwrap();
     coord.create_session(None, IsolationTier::Bare, None).unwrap();
     coord.shutdown_all();
@@ -105,7 +126,9 @@ fn shutdown_all_cleans_up() {
 
 #[test]
 fn register_vnp_client_returns_initial_state() {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     let sid = coord.create_session(None, IsolationTier::Bare, None).unwrap();
     let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
     let initial = coord.register_vnp_client(sid, 1, caps(), render_tx).unwrap();
@@ -114,7 +137,9 @@ fn register_vnp_client_returns_initial_state() {
 
 #[test]
 fn unregister_vnp_client_succeeds() {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     let sid = coord.create_session(None, IsolationTier::Bare, None).unwrap();
     let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
     let _ = coord.register_vnp_client(sid.clone(), 1, caps(), render_tx).unwrap();
@@ -123,7 +148,9 @@ fn unregister_vnp_client_succeeds() {
 
 #[test]
 fn send_key_input_succeeds() {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     let sid = coord.create_session(None, IsolationTier::Bare, None).unwrap();
     let key = KeyEvent {
         key: KeyValue::Char { codepoint: 'x' as u32 },
@@ -135,7 +162,78 @@ fn send_key_input_succeeds() {
 
 #[test]
 fn ack_frame_succeeds() {
-    let mut coord = Coordinator::new(PoolConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
     let sid = coord.create_session(None, IsolationTier::Bare, None).unwrap();
     coord.ack_frame(sid, 1, 0).unwrap();
+}
+
+#[test]
+fn name_uniqueness_appends_suffix() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
+
+    // Create "foo" — succeeds, name is "foo"
+    coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
+
+    // Create "foo" again — must get "foo-2"
+    let id2 = coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
+    let sessions = coord.list_sessions();
+    let s2 = sessions.iter().find(|s| s.session_id == id2).unwrap();
+    assert_eq!(s2.name.as_deref(), Some("foo-2"), "second 'foo' should be named 'foo-2'");
+}
+
+#[test]
+fn name_uniqueness_increments_past_existing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
+
+    // Pre-fill foo, foo-2, foo-3
+    coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
+    coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
+    coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
+
+    // Next one must be foo-4
+    let id = coord.create_session(Some("foo".to_string()), IsolationTier::Bare, None).unwrap();
+    let sessions = coord.list_sessions();
+    let s = sessions.iter().find(|s| s.session_id == id).unwrap();
+    assert_eq!(s.name.as_deref(), Some("foo-4"));
+}
+
+#[test]
+fn coordinator_restores_counters_from_store() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // First coordinator: create sessions to advance counters, flush, drop.
+    {
+        let store = make_store(&dir);
+        let mut coord = Coordinator::new(PoolConfig::default(), store.clone());
+        coord.create_session(None, IsolationTier::Bare, None).unwrap(); // id=1
+        coord.create_session(None, IsolationTier::Bare, None).unwrap(); // id=2
+        store.flush_all();
+    }
+
+    // Second coordinator: restores next_session_id=3.
+    let store2 = make_store(&dir);
+    let mut coord2 = Coordinator::new(PoolConfig::default(), store2);
+    let id = coord2.create_session(None, IsolationTier::Bare, None).unwrap();
+    assert_eq!(id, SessionId(3), "coordinator should restore counter to 3");
+}
+
+#[test]
+fn coordinator_corrupt_state_uses_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Write garbage daemon state
+    std::fs::write(dir.path().join("daemon.vxb"), b"garbage").unwrap();
+
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
+
+    // Should start with defaults — first session gets id=1
+    let id = coord.create_session(None, IsolationTier::Bare, None).unwrap();
+    assert_eq!(id, SessionId(1));
 }

@@ -1,17 +1,19 @@
 use crate::bus::BusMessage;
 use crate::executor::pools::PoolConfig;
 use crate::executor::session_thread::{SessionCommand, SessionExecutor};
+use crate::store::{DebouncedStore, StoreError};
 use crate::supervisor::ProcessSupervisor;
 use crate::DaemonError;
 use malt_protocol::common::{
     ClientCapabilities, GroupId, IsolationTier, PaneId, SessionId, SessionInfo, SessionState,
 };
 use malt_protocol::input::KeyEvent;
+use malt_protocol::persist::daemon::DaemonState;
 use malt_protocol::render::{InitialState, RenderBatch};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 struct SessionHandle {
     id: SessionId,
@@ -24,10 +26,12 @@ struct SessionHandle {
 /// Coordinator manages session lifecycle and routes messages to session threads.
 ///
 /// Monotonically increasing session IDs — never recycled within daemon lifetime.
+/// Counter state is persisted to the store and restored on construction.
 pub struct Coordinator {
     sessions: HashMap<u32, SessionHandle>,
     next_session_id: u32,
     next_pane_id: u32,
+    store: DebouncedStore,
     #[allow(dead_code)]
     supervisor: ProcessSupervisor,
     #[allow(dead_code)]
@@ -35,23 +39,76 @@ pub struct Coordinator {
 }
 
 impl Coordinator {
-    pub fn new(pool_config: PoolConfig) -> Self {
+    pub fn new(pool_config: PoolConfig, store: DebouncedStore) -> Self {
+        let mut next_session_id = 1u32;
+        let mut next_pane_id = 1u32;
+
+        match store.load_daemon_state() {
+            Ok(state) => {
+                next_session_id = state.next_session_id;
+                next_pane_id = state.next_pane_id;
+                info!(
+                    next_session_id,
+                    next_pane_id,
+                    "coordinator: restored counters from daemon state"
+                );
+            }
+            Err(StoreError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                // First run — defaults are fine.
+            }
+            Err(e) => {
+                warn!(%e, "coordinator: daemon state unreadable; starting with defaults");
+            }
+        }
+
         Self {
             sessions: HashMap::new(),
-            next_session_id: 1,
-            next_pane_id: 1,
+            next_session_id,
+            next_pane_id,
+            store,
             supervisor: ProcessSupervisor::new(),
             pool_config,
         }
     }
 
     /// Create a new session with an in-process mash shell.
+    ///
+    /// If `name` is `None`, the base `"session"` is used. If the name (or base)
+    /// already exists, numeric suffixes `-2`, `-3` … `-100` are tried in order.
+    /// Returns `DaemonError::NameConflict` if all 100 suffixes are taken.
     pub fn create_session(
         &mut self,
         name: Option<String>,
         isolation: IsolationTier,
         _group: Option<GroupId>,
     ) -> Result<SessionId, DaemonError> {
+        // --- Name uniqueness ---
+        let base = name.unwrap_or_else(|| "session".to_string());
+        let existing: HashSet<String> = self
+            .sessions
+            .values()
+            .filter_map(|h| h.name.clone())
+            .collect();
+
+        let final_name = if !existing.contains(&base) {
+            base.clone()
+        } else {
+            let mut candidate = String::new();
+            let mut found = false;
+            for i in 2u32..=100 {
+                candidate = format!("{base}-{i}");
+                if !existing.contains(&candidate) {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Err(DaemonError::NameConflict(base));
+            }
+            candidate
+        };
+
+        // --- Session creation ---
         let session_id = SessionId(self.next_session_id);
         self.next_session_id += 1;
 
@@ -61,19 +118,20 @@ impl Coordinator {
         let (cmd_tx, thread) =
             SessionExecutor::spawn(session_id.clone(), pane_id.clone(), isolation)?;
 
-        info!(?session_id, "session created with in-process mash shell");
+        info!(?session_id, name = %final_name, "session created with in-process mash shell");
 
         self.sessions.insert(
             session_id.0,
             SessionHandle {
                 id: session_id.clone(),
-                name,
+                name: Some(final_name),
                 isolation,
                 cmd_tx,
                 thread: Some(thread),
             },
         );
 
+        self.persist_daemon_state();
         Ok(session_id)
     }
 
@@ -101,6 +159,7 @@ impl Coordinator {
                 let _ = thread.join();
             }
             info!(?id, "session destroyed");
+            self.persist_daemon_state();
         }
     }
 
@@ -154,9 +213,6 @@ impl Coordinator {
     }
 
     /// Register a VNP client with a session's renderer.
-    ///
-    /// Sends `RegisterVnpClient` to the session thread and waits up to 5 s for
-    /// the `InitialState` snapshot.
     pub fn register_vnp_client(
         &self,
         session_id: SessionId,
@@ -247,6 +303,20 @@ impl Coordinator {
             self.destroy_session(SessionId(id));
         }
     }
+
+    // --- Private ---
+
+    fn persist_daemon_state(&self) {
+        let state = DaemonState {
+            schema_version: 1,
+            sessions: self.sessions.values().map(|h| h.id.clone()).collect(),
+            active_groups: vec![],
+            next_session_id: self.next_session_id,
+            next_pane_id: self.next_pane_id,
+            _unknown: vec![],
+        };
+        self.store.mark_dirty_daemon(state);
+    }
 }
 
 impl Drop for Coordinator {
@@ -254,4 +324,3 @@ impl Drop for Coordinator {
         self.shutdown_all();
     }
 }
-

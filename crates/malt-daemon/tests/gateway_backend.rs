@@ -1,11 +1,14 @@
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
 use malt_daemon::gateway_backend::DaemonBackend;
+use malt_daemon::store::{DebouncedStore, SessionStore};
 use malt_gateway::backend::GatewayBackend;
 use std::sync::{Arc, Mutex};
 
 fn make_backend() -> DaemonBackend {
-    let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default())));
+    let dir = tempfile::tempdir().unwrap();
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
     DaemonBackend::new(coordinator)
 }
 
