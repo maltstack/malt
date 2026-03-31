@@ -269,7 +269,6 @@ impl Coordinator {
             .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
         match &mut handle.lifecycle {
             SessionLifecycle::Active { cmd_tx, client_count, .. } => {
-                *client_count += 1;
                 let cmd_tx = cmd_tx.clone();
                 // Clone the id upfront to avoid a second borrow of `handle` inside
                 // the error closures below.
@@ -283,9 +282,13 @@ impl Coordinator {
                         initial_reply: initial_tx,
                     })
                     .map_err(|_| DaemonError::SessionUnreachable(session_id_for_err.clone()))?;
-                initial_rx
+                let result = initial_rx
                     .recv_timeout(Duration::from_secs(5))
-                    .map_err(|_| DaemonError::SessionUnreachable(session_id_for_err))
+                    .map_err(|_| DaemonError::SessionUnreachable(session_id_for_err));
+                if result.is_ok() {
+                    *client_count += 1;
+                }
+                result
             }
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
         }
