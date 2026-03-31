@@ -29,4 +29,7 @@ pub enum DaemonError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("name conflict: cannot find unique name for '{0}' after 100 attempts")]
+    NameConflict(String),
 }
