@@ -159,7 +159,7 @@ fn handle_client(stream: TcpStream, coordinator: Arc<Mutex<Coordinator>>, client
 
     // Register with the coordinator; obtain the InitialState snapshot.
     let initial_state = match coordinator.lock() {
-        Ok(coord) => {
+        Ok(mut coord) => {
             match coord.register_vnp_client(
                 session_id.clone(),
                 client_id,
@@ -485,7 +485,7 @@ fn cleanup(
     peer: &str,
 ) {
     match coordinator.lock() {
-        Ok(coord) => {
+        Ok(mut coord) => {
             if let Err(e) = coord.unregister_vnp_client(session_id, client_id) {
                 warn!(peer, error = %e, "VNP: unregister_vnp_client failed");
             }

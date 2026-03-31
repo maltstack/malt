@@ -288,6 +288,37 @@ fn spawn_with_cwd_uses_provided_directory() {
 }
 
 #[test]
+fn session_goes_dormant_on_last_client_detach() {
+    use malt_protocol::render::RenderBatch;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+    let mut coord = Coordinator::new(PoolConfig::default(), store.clone());
+    let sid = coord.create_session(None, IsolationTier::Bare, None).unwrap();
+
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let _ = coord
+        .register_vnp_client(sid.clone(), 1, caps(), render_tx)
+        .unwrap();
+
+    // Detach — client count hits 0 → session should go Dormant.
+    coord.unregister_vnp_client(sid.clone(), 1).unwrap();
+
+    let sessions = coord.list_sessions();
+    let s = sessions.iter().find(|s| s.session_id == sid).unwrap();
+    assert_eq!(
+        s.state,
+        malt_protocol::common::SessionState::Dormant,
+        "session should be Dormant after last client detaches"
+    );
+
+    // Verify PersistedSession is on disk.
+    store.flush_all();
+    let persisted = store.load_session(&sid).unwrap();
+    assert_eq!(persisted.id, sid);
+}
+
+#[test]
 fn error_variants_are_distinct() {
     use malt_daemon::DaemonError;
     use malt_protocol::common::SessionId;

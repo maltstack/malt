@@ -251,8 +251,13 @@ impl Coordinator {
     }
 
     /// Register a VNP client with a session's renderer.
+    ///
+    /// Increments the session's `client_count`. When the session is Active,
+    /// forwards `RegisterVnpClient` to the session thread and returns the
+    /// `InitialState` snapshot. Returns `DaemonError::SessionDormant` if the
+    /// session is not currently running.
     pub fn register_vnp_client(
-        &self,
+        &mut self,
         session_id: SessionId,
         client_id: u64,
         capabilities: ClientCapabilities,
@@ -260,10 +265,15 @@ impl Coordinator {
     ) -> Result<InitialState, DaemonError> {
         let handle = self
             .sessions
-            .get(&session_id.0)
+            .get_mut(&session_id.0)
             .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
-        match &handle.lifecycle {
-            SessionLifecycle::Active { cmd_tx, .. } => {
+        match &mut handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, client_count, .. } => {
+                *client_count += 1;
+                let cmd_tx = cmd_tx.clone();
+                // Clone the id upfront to avoid a second borrow of `handle` inside
+                // the error closures below.
+                let session_id_for_err = handle.id.clone();
                 let (initial_tx, initial_rx) = mpsc::channel();
                 cmd_tx
                     .send(SessionCommand::RegisterVnpClient {
@@ -272,31 +282,51 @@ impl Coordinator {
                         render_tx,
                         initial_reply: initial_tx,
                     })
-                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
+                    .map_err(|_| DaemonError::SessionUnreachable(session_id_for_err.clone()))?;
                 initial_rx
                     .recv_timeout(Duration::from_secs(5))
-                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+                    .map_err(|_| DaemonError::SessionUnreachable(session_id_for_err))
             }
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
         }
     }
 
-    /// Unregister a VNP client from a session's renderer (fire-and-forget).
+    /// Unregister a VNP client from a session's renderer.
+    ///
+    /// Decrements the session's `client_count`. If `client_count` reaches zero
+    /// the session is transitioned to `Dormant` via `go_dormant`.
     pub fn unregister_vnp_client(
-        &self,
+        &mut self,
         session_id: SessionId,
         client_id: u64,
     ) -> Result<(), DaemonError> {
-        let handle = self
-            .sessions
-            .get(&session_id.0)
-            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
-        match &handle.lifecycle {
-            SessionLifecycle::Active { cmd_tx, .. } => cmd_tx
-                .send(SessionCommand::UnregisterVnpClient { client_id })
-                .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone())),
-            SessionLifecycle::Dormant { .. } => Ok(()), // nothing to unregister
+        {
+            let handle = self
+                .sessions
+                .get_mut(&session_id.0)
+                .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+            match &mut handle.lifecycle {
+                SessionLifecycle::Active { cmd_tx, client_count, .. } => {
+                    let _ = cmd_tx.send(SessionCommand::UnregisterVnpClient { client_id });
+                    if *client_count > 0 {
+                        *client_count -= 1;
+                    }
+                }
+                SessionLifecycle::Dormant { .. } => return Ok(()), // nothing to unregister
+            }
         }
+        // Transition to Dormant if the last client just detached.
+        let should_go_dormant = match self.sessions.get(&session_id.0) {
+            Some(h) => matches!(
+                &h.lifecycle,
+                SessionLifecycle::Active { client_count, .. } if *client_count == 0
+            ),
+            None => false,
+        };
+        if should_go_dormant {
+            self.go_dormant(session_id);
+        }
+        Ok(())
     }
 
     /// Route a typed keyboard event to a session's line editor.
@@ -353,6 +383,66 @@ impl Coordinator {
     }
 
     // --- Private ---
+
+    /// Transition an Active session to Dormant.
+    ///
+    /// Sends a `Snapshot` command to the session thread and waits up to 5 s
+    /// for the reply. On success:
+    ///   1. Persists the snapshot synchronously via `flush_all`.
+    ///   2. Sends `Shutdown` to the session thread and joins it.
+    ///   3. Replaces the session lifecycle with `Dormant { persisted }`.
+    ///   4. Updates the persisted daemon state.
+    ///
+    /// If the snapshot times out, the session is left Active and a warning is
+    /// logged — this is a best-effort degradation path, not a hard error.
+    fn go_dormant(&mut self, id: SessionId) {
+        let (cmd_tx_clone, session_name, session_isolation) = {
+            let handle = match self.sessions.get(&id.0) {
+                Some(h) => h,
+                None => return,
+            };
+            match &handle.lifecycle {
+                SessionLifecycle::Active { cmd_tx, .. } => {
+                    (cmd_tx.clone(), handle.name.clone(), handle.isolation)
+                }
+                SessionLifecycle::Dormant { .. } => return,
+            }
+        };
+
+        // Request a snapshot from the session thread.
+        let (reply_tx, reply_rx) = mpsc::channel();
+        let _ = cmd_tx_clone.send(SessionCommand::Snapshot {
+            reply: reply_tx,
+            name: session_name,
+            isolation: session_isolation,
+        });
+
+        let persisted = match reply_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(p) => p,
+            Err(_) => {
+                warn!(?id, "go_dormant: Snapshot timed out; leaving session Active");
+                return;
+            }
+        };
+
+        // Persist synchronously so state is on disk before killing the thread.
+        self.store.mark_dirty(id.clone(), persisted.clone());
+        self.store.flush_all();
+
+        // Shut down the session thread.
+        let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
+        if let Some(handle) = self.sessions.get_mut(&id.0) {
+            if let SessionLifecycle::Active { thread, .. } = &mut handle.lifecycle {
+                if let Some(t) = thread.take() {
+                    let _ = t.join();
+                }
+            }
+            handle.lifecycle = SessionLifecycle::Dormant { persisted };
+        }
+
+        self.persist_daemon_state();
+        info!(?id, "session transitioned to Dormant");
+    }
 
     fn persist_daemon_state(&self) {
         let state = DaemonState {
