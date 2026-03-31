@@ -1,6 +1,9 @@
 pub mod error;
 pub use error::StoreError;
 
+pub mod debounce;
+pub use debounce::DebouncedStore;
+
 use malt_protocol::common::SessionId;
 use malt_protocol::persist::daemon::DaemonState;
 use malt_protocol::persist::session::PersistedSession;
