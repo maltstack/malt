@@ -90,6 +90,13 @@ impl DebouncedStore {
     }
 
     /// Delete a persisted session synchronously.
+    ///
+    /// # Note
+    ///
+    /// Callers must call `flush_all()` before `delete_session` if any prior
+    /// `mark_dirty` for this ID may be outstanding in the background queue.
+    /// Otherwise the background thread may re-create the deleted file after
+    /// the delete completes.
     pub fn delete_session(&self, id: &SessionId) -> Result<(), StoreError> {
         self.inner.store.delete_session(id)
     }
