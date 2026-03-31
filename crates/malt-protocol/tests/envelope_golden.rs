@@ -123,3 +123,51 @@ fn golden_bytes_first_byte() {
     let bytes = encode_envelope(&env).unwrap();
     assert_eq!(bytes[0], 0x21, "byte 0: wire_version(1) | domain(2) << 4");
 }
+
+/// Full golden byte vector for an envelope without msg_id.
+///
+/// Pins the complete bitpack encoding of the VNP Envelope type.
+/// If this test fails after a vexil-runtime or schema change:
+///   1. Verify the new encoding is intentional (not a regression)
+///   2. Update this vector AND bump the wire_version in Hello/HelloAck
+///   3. Add a migration note to docs/baseline-audit-2026-03-31.md
+#[test]
+fn golden_full_encoding_without_msg_id() {
+    let env = Envelope {
+        wire_version: 1,
+        domain: 2,
+        msg_type: 5,
+        session_id: 42,
+        timestamp: 0x0000_AABB_CCDD_EEFFu64,
+        msg_id: None,
+        _unknown: Vec::new(),
+    };
+    let bytes = encode_envelope(&env).unwrap();
+    let expected: &[u8] = &[33, 5, 42, 0, 0, 0, 255, 238, 221, 204, 187, 170, 0];
+    assert_eq!(
+        bytes, expected,
+        "Envelope wire encoding changed — see test doc comment for update procedure"
+    );
+}
+
+/// Full golden byte vector for an envelope with msg_id present.
+///
+/// Same invariant as golden_full_encoding_without_msg_id.
+#[test]
+fn golden_full_encoding_with_msg_id() {
+    let env = Envelope {
+        wire_version: 1,
+        domain: 2,
+        msg_type: 5,
+        session_id: 42,
+        timestamp: 0x0000_AABB_CCDD_EEFFu64,
+        msg_id: Some(0xDEAD_BEEF),
+        _unknown: Vec::new(),
+    };
+    let bytes = encode_envelope(&env).unwrap();
+    let expected: &[u8] = &[33, 5, 42, 0, 0, 0, 255, 238, 221, 204, 187, 170, 1, 239, 190, 173, 222];
+    assert_eq!(
+        bytes, expected,
+        "Envelope wire encoding changed — see test doc comment for update procedure"
+    );
+}
