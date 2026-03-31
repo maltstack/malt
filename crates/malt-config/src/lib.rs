@@ -50,6 +50,8 @@ fn load_from_vx<T: VxDecoder>(
     let compile_result = vexil_lang::compile(schema_source);
     let schema = compile_result.compiled.ok_or_else(|| ConfigError::Invalid {
         path: path.to_path_buf(),
+        // NOTE: Diagnostic has no Display impl; use message field only. Span is available
+        // but requires external line/col computation from source text (not done here).
         reason: compile_result
             .diagnostics
             .iter()
@@ -87,7 +89,13 @@ fn load_or_default_daemon(path: &Path) -> Result<Config<DaemonConfig>, ConfigErr
             path: None,
         });
     }
-    load_from_vx(path, DAEMON_SCHEMA_SOURCE)
+    match load_from_vx(path, DAEMON_SCHEMA_SOURCE) {
+        Ok(cfg) => Ok(cfg),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "daemon config invalid");
+            Err(e)
+        }
+    }
 }
 
 fn load_or_default_user(path: &Path) -> Result<Config<UserConfig>, ConfigError> {
@@ -98,7 +106,13 @@ fn load_or_default_user(path: &Path) -> Result<Config<UserConfig>, ConfigError> 
             path: None,
         });
     }
-    load_from_vx(path, USER_SCHEMA_SOURCE)
+    match load_from_vx(path, USER_SCHEMA_SOURCE) {
+        Ok(cfg) => Ok(cfg),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "user config invalid");
+            Err(e)
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -144,7 +158,7 @@ mod load_tests {
     fn load_or_default_daemon_parses_valid_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.vx");
-        // .vx format: @schema directive + TypeName { field: value }
+        // vexil .vx config syntax: fields use ':' not '='; '@schema' directive required by parser
         let content = r#"@schema "malt.config.daemon"
 DaemonConfig { max_sessions: 32 log_level: "debug" }
 "#;
@@ -159,6 +173,7 @@ DaemonConfig { max_sessions: 32 log_level: "debug" }
     fn load_or_default_user_parses_valid_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("user.vx");
+        // vexil .vx config syntax: fields use ':' not '='; '@schema' directive required by parser
         let content = r#"@schema "malt.config.user"
 UserConfig { edit_mode: "vi" }
 "#;
