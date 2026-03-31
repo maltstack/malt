@@ -1360,6 +1360,7 @@ dependencies = [
 name = "malt-daemon"
 version = "0.1.0"
 dependencies = [
+ "malt-compat",
  "malt-config",
  "malt-gateway",
  "malt-layout",

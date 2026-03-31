@@ -89,26 +89,64 @@ impl GatewayBackend for DaemonBackend {
 
     fn exec_command(
         &self,
-        _session_id: u32,
-        _command: String,
+        session_id: u32,
+        command: String,
     ) -> Result<ExecResult, GatewayError> {
+        let mut coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Write command + newline to PTY
+        let input = format!("{command}\n");
+        coord
+            .write_to_session(session_id, input.as_bytes())
+            .map_err(|e| GatewayError::Internal(e.to_string()))?;
+
+        // Wait briefly for output to appear
+        drop(coord); // Release lock before sleeping
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Read current output
+        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+        let output = coord
+            .get_session_output(session_id)
+            .unwrap_or_default();
+
         Ok(ExecResult {
             command_id: 0,
-            output: String::new(),
+            output,
             exit_code: None,
         })
     }
 
-    fn send_input(&self, _session_id: u32, _input: String) -> Result<(), GatewayError> {
+    fn send_input(&self, session_id: u32, input: String) -> Result<(), GatewayError> {
+        let mut coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+        coord
+            .write_to_session(session_id, input.as_bytes())
+            .map_err(|e| GatewayError::Internal(e.to_string()))?;
         Ok(())
     }
 
-    fn get_output(&self, _session_id: u32) -> Result<serde_json::Value, GatewayError> {
-        Ok(serde_json::Value::Object(serde_json::Map::new()))
+    fn get_output(&self, session_id: u32) -> Result<serde_json::Value, GatewayError> {
+        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+        let output = coord
+            .get_session_output(session_id)
+            .map_err(|e| GatewayError::Internal(e.to_string()))?;
+        Ok(serde_json::json!({
+            "type": "Text",
+            "text": output,
+        }))
     }
 
-    fn list_panes(&self, _session_id: u32) -> Result<Vec<PaneResponse>, GatewayError> {
-        Ok(Vec::new())
+    fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError> {
+        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+        if !coord.has_session(SessionId(session_id)) {
+            return Err(GatewayError::SessionNotFound(session_id));
+        }
+        Ok(vec![PaneResponse {
+            id: 1,
+            kind: "Shell".to_string(),
+            title: None,
+            focused: true,
+        }])
     }
 
     fn split_pane(
@@ -117,9 +155,10 @@ impl GatewayBackend for DaemonBackend {
         _target_pane_id: u32,
         _direction: String,
     ) -> Result<PaneResponse, GatewayError> {
+        // Stub — split pane integration deferred
         Ok(PaneResponse {
             id: 0,
-            kind: "shell".to_string(),
+            kind: "Shell".to_string(),
             title: None,
             focused: false,
         })
