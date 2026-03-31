@@ -9,6 +9,9 @@ pub mod priority;
 // Envelope: hand-written helpers wrapping the generated type
 pub mod envelope;
 
+// VNP codec constants and helpers
+pub mod codec;
+
 // Generated code from vexilc — all domain modules.
 //
 // The generated code uses `crate::malt::*` paths for cross-module imports,
