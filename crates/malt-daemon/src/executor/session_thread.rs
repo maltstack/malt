@@ -189,7 +189,9 @@ impl SessionExecutor {
 
                 if initial_cwd.is_dir() {
                     let cwd_str = initial_cwd.to_string_lossy().to_string();
-                    let _ = env.set_global("PWD", Variable::exported_string(cwd_str));
+                    if let Err(e) = env.set_global("PWD", Variable::exported_string(cwd_str)) {
+                        warn!(?initial_cwd, error = %e, "spawn_with_cwd: failed to set PWD in mash env");
+                    }
                 } else {
                     warn!(
                         ?initial_cwd,
@@ -546,6 +548,9 @@ fn build_persisted_session(
     let mut panes = std::collections::BTreeMap::new();
     panes.insert(focused_pane.0, pane);
 
+    // NOTE: Layout is hardcoded as a single Leaf node — this is correct for
+    // the current single-pane model. Phase F multi-pane will need to read
+    // the actual layout state from the session executor and pass it here.
     PersistedSession {
         schema_version: 1,
         id: session_id.clone(),
