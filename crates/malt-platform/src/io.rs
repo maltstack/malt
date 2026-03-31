@@ -48,7 +48,10 @@ pub fn is_executable(path: &Path) -> bool {
 #[cfg(windows)]
 pub fn into_file<T: std::os::windows::io::IntoRawHandle>(handle: T) -> std::fs::File {
     use std::os::windows::io::FromRawHandle;
-    // SAFETY: caller owns the handle and transfers ownership here.
+    // SAFETY: `handle` must be a valid, open Windows HANDLE — this is a
+    // precondition the caller asserts by passing a type that implements
+    // `IntoRawHandle`. `into_raw_handle()` transfers ownership out of `T`,
+    // making this the sole owner. `File` will close the handle on drop.
     unsafe { std::fs::File::from_raw_handle(handle.into_raw_handle()) }
 }
 
