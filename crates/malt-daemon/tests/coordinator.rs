@@ -248,6 +248,46 @@ fn coordinator_corrupt_state_uses_defaults() {
 }
 
 #[test]
+fn spawn_with_cwd_uses_provided_directory() {
+    use malt_daemon::executor::session_thread::{SessionCommand, SessionExecutor};
+    use malt_protocol::common::{IsolationTier, PaneId, SessionId};
+    use std::sync::mpsc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_path_buf();
+
+    let (cmd_tx, _thread) = SessionExecutor::spawn_with_cwd(
+        SessionId(1),
+        PaneId(1),
+        IsolationTier::Bare,
+        cwd.clone(),
+    )
+    .unwrap();
+
+    let (reply_tx, reply_rx) = mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::Snapshot {
+            reply: reply_tx,
+            name: Some("test".to_string()),
+            isolation: IsolationTier::Bare,
+        })
+        .unwrap();
+
+    let persisted = reply_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("snapshot reply timeout");
+
+    let pane = persisted.panes.values().next().expect("no pane in snapshot");
+    assert_eq!(
+        pane.cwd,
+        cwd.to_string_lossy().to_string(),
+        "persisted cwd should match the spawn_with_cwd argument"
+    );
+
+    let _ = cmd_tx.send(SessionCommand::Shutdown);
+}
+
+#[test]
 fn error_variants_are_distinct() {
     use malt_daemon::DaemonError;
     use malt_protocol::common::SessionId;

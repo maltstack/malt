@@ -10,7 +10,8 @@ use malt_protocol::priority::Priority;
 use malt_protocol::render::{InitialState, RenderBatch};
 use malt_renderer::host::{PaneFrame, RendererHost};
 use malt_session::session::SessionRuntime;
-use mash::env::Env;
+use mash::env::{Env, Variable};
+use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
 use mash::executor::execute_list;
 use mash::parser;
 use malt_term::{EditMode, EditResult, Editor};
@@ -58,6 +59,13 @@ pub enum SessionCommand {
     KeyInput { key: KeyEvent },
     /// A frame acknowledgement from a VNP client.
     AckFrame { client_id: u64, frame_seq: u64 },
+    /// Take a snapshot of the current session state for persistence.
+    /// The reply channel receives a `PersistedSession` built from current env + layout.
+    Snapshot {
+        reply: mpsc::Sender<PersistedSession>,
+        name: Option<String>,
+        isolation: IsolationTier,
+    },
     /// Graceful shutdown.
     Shutdown,
 }
@@ -109,6 +117,7 @@ impl std::fmt::Debug for SessionCommand {
                 .field("client_id", client_id)
                 .field("frame_seq", frame_seq)
                 .finish(),
+            Self::Snapshot { .. } => write!(f, "Snapshot"),
             Self::Shutdown => write!(f, "Shutdown"),
         }
     }
@@ -143,6 +152,51 @@ impl SessionExecutor {
             .spawn(move || {
                 let mut env = Env::from_os();
                 env.set_interactive(true);
+                let mut executor = SessionExecutor {
+                    session: SessionRuntime::new(session_id, first_pane, isolation),
+                    bus: Bus::new(BusConfig::default()),
+                    authority: AuthorityTracker::new(),
+                    terminal_size: Rect::new(0, 0, 80, 24),
+                    layout_config: LayoutConfig::default(),
+                    compat: None,
+                    mash_env: env,
+                    renderer: RendererHost::new(),
+                    editor: Editor::new(EditMode::Emacs),
+                    render_pushers: HashMap::new(),
+                    resolved_panes: Vec::new(),
+                };
+                executor.run(rx);
+            })
+            .map_err(DaemonError::Io)?;
+        Ok((tx, handle))
+    }
+
+    /// Spawn a new session executor on a dedicated thread, setting the working directory.
+    /// If `initial_cwd` is not a directory at spawn time, a warning is logged and the
+    /// OS-inherited cwd is used instead.
+    pub fn spawn_with_cwd(
+        session_id: SessionId,
+        first_pane: PaneId,
+        isolation: IsolationTier,
+        initial_cwd: std::path::PathBuf,
+    ) -> Result<(mpsc::Sender<SessionCommand>, JoinHandle<()>), DaemonError> {
+        let (tx, rx) = mpsc::channel();
+        let handle = thread::Builder::new()
+            .name(format!("session-{}", session_id.0))
+            .spawn(move || {
+                let mut env = Env::from_os();
+                env.set_interactive(true);
+
+                if initial_cwd.is_dir() {
+                    let cwd_str = initial_cwd.to_string_lossy().to_string();
+                    let _ = env.set_global("PWD", Variable::exported_string(cwd_str));
+                } else {
+                    warn!(
+                        ?initial_cwd,
+                        "spawn_with_cwd: directory no longer exists; falling back to OS cwd"
+                    );
+                }
+
                 let mut executor = SessionExecutor {
                     session: SessionRuntime::new(session_id, first_pane, isolation),
                     bus: Bus::new(BusConfig::default()),
@@ -284,6 +338,16 @@ impl SessionExecutor {
                 }
                 Ok(SessionCommand::AckFrame { client_id, frame_seq }) => {
                     self.renderer.ack_frame(client_id, frame_seq);
+                }
+                Ok(SessionCommand::Snapshot { reply, name, isolation }) => {
+                    let persisted = build_persisted_session(
+                        self.session.id(),
+                        self.session.focused_pane(),
+                        name.as_deref(),
+                        isolation,
+                        &self.mash_env,
+                    );
+                    let _ = reply.send(persisted);
                 }
                 Err(_) => {
                     warn!(session = ?self.session.id(), "command channel closed");
@@ -441,5 +505,57 @@ impl SessionExecutor {
         }
 
         serde_json::to_string(&rows_json).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
+/// Build a `PersistedSession` from current runtime state.
+///
+/// Called from the `Snapshot` command handler — runs on the session thread,
+/// so all access to `env` is unsynchronized by design.
+fn build_persisted_session(
+    session_id: &SessionId,
+    focused_pane: &PaneId,
+    name: Option<&str>,
+    isolation: IsolationTier,
+    env: &Env,
+) -> PersistedSession {
+    let shell_path = {
+        let s = env.get_str("SHELL");
+        if s.is_empty() {
+            #[cfg(unix)]
+            { "/bin/sh".to_string() }
+            #[cfg(not(unix))]
+            { "cmd.exe".to_string() }
+        } else {
+            s.to_string()
+        }
+    };
+
+    let cwd = {
+        let s = env.get_str("PWD");
+        if s.is_empty() { ".".to_string() } else { s.to_string() }
+    };
+
+    let pane = PersistedPane {
+        cwd,
+        title: None,
+        pane_type: PersistedPaneType::Shell { shell_path },
+        _unknown: vec![],
+    };
+
+    let mut panes = std::collections::BTreeMap::new();
+    panes.insert(focused_pane.0, pane);
+
+    PersistedSession {
+        schema_version: 1,
+        id: session_id.clone(),
+        name: name.map(|s| s.to_string()),
+        layout: malt_protocol::common::LayoutNode::Leaf { pane_id: focused_pane.clone() },
+        focus: focused_pane.clone(),
+        panes,
+        theme: None,
+        group: None,
+        isolation,
+        _unknown: vec![],
     }
 }
