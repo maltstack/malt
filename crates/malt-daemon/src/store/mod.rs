@@ -133,7 +133,15 @@ fn unpack_from_bytes<T: Unpack>(bytes: &[u8], path: &Path) -> Result<T, StoreErr
             // Best-effort rename — if it fails, we still return CorruptFile.
             let moved_to = match fs::rename(path, &corrupt_path) {
                 Ok(()) => corrupt_path,
-                Err(_) => corrupt_path,
+                Err(rename_err) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        quarantine = %corrupt_path.display(),
+                        error = %rename_err,
+                        "failed to quarantine corrupt file; leaving in place"
+                    );
+                    path.to_path_buf()
+                }
             };
             Err(StoreError::CorruptFile {
                 path: path.to_path_buf(),
