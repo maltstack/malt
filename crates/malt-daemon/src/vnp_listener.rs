@@ -62,12 +62,14 @@ pub fn accept_vnp_connections(
                     .map(|a| a.to_string())
                     .unwrap_or_else(|_| "unknown".to_string());
                 info!(peer = %peer, client_id, "VNP client connected");
-                thread::Builder::new()
+                if let Err(e) = thread::Builder::new()
                     .name(format!("vnp-client-{client_id}"))
                     .spawn(move || {
                         handle_client(stream, coord, client_id);
                     })
-                    .ok();
+                {
+                    warn!(peer = %peer, error = %e, "failed to spawn VNP client handler thread");
+                }
             }
             Err(e) => {
                 warn!(error = %e, "VNP accept error");
@@ -192,6 +194,8 @@ fn handle_client(stream: TcpStream, coordinator: Arc<Mutex<Coordinator>>, client
     }
 
     // Switch to 16 ms read timeout for the main loop.
+    // Set timeout on the write-side clone. Both clones share the same underlying
+    // socket descriptor, so SO_RCVTIMEO applies to reads on the read-side too.
     if let Err(e) = frame_writer
         .inner_ref()
         .set_read_timeout(Some(std::time::Duration::from_millis(16)))
@@ -436,6 +440,17 @@ fn dispatch_frame(
     Ok(())
 }
 
+/// Errors that can occur when encoding and sending a VNP message.
+#[derive(Debug, thiserror::Error)]
+enum VnpSendError {
+    #[error("bitpack encode failed: {0}")]
+    Pack(String),
+    #[error("envelope encode failed: {0}")]
+    Encode(String),
+    #[error("frame write failed: {0}")]
+    Write(#[from] FrameError),
+}
+
 /// Encode `msg` as a VNP envelope frame and write it to `writer`.
 fn send_vnp_msg<W: std::io::Write, T: Pack>(
     writer: &mut FrameWriter<W>,
@@ -443,24 +458,23 @@ fn send_vnp_msg<W: std::io::Write, T: Pack>(
     msg_type: u8,
     session_id: u32,
     msg: &T,
-) -> Result<(), String> {
+) -> Result<(), VnpSendError> {
     let envelope = make_envelope(domain, msg_type, session_id);
 
     let mut bw = BitWriter::new();
     msg.pack(&mut bw)
-        .map_err(|e| format!("bitpack encode failed: {e}"))?;
+        .map_err(|e| VnpSendError::Pack(e.to_string()))?;
     let msg_bytes = bw.finish();
 
     let payload = encode_message(&envelope, &msg_bytes)
-        .map_err(|e| format!("envelope encode failed: {e}"))?;
+        .map_err(|e| VnpSendError::Encode(e.to_string()))?;
 
     let frame = Frame {
         flags: FrameFlags::new(),
         payload,
     };
-    writer
-        .write_frame(&frame)
-        .map_err(|e| format!("frame write failed: {e}"))
+    writer.write_frame(&frame)?;
+    Ok(())
 }
 
 /// Unregister the client from the coordinator on disconnect.
