@@ -1415,19 +1415,7 @@ fn test_unary(op: &str, operand: &str) -> Result<bool, String> {
             Ok(path.metadata().map(|m| !m.permissions().readonly()).unwrap_or(false))
         }
         "-x" => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                Ok(path.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false))
-            }
-            #[cfg(not(unix))]
-            {
-                // On Windows, check for executable extensions
-                Ok(path.exists() && path.extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| matches!(e.to_lowercase().as_str(), "exe" | "cmd" | "bat" | "com"))
-                    .unwrap_or(false))
-            }
+            Ok(malt_platform::io::is_executable(path))
         }
         "-L" | "-h" => {
             Ok(path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false))
@@ -1440,15 +1428,7 @@ fn test_unary(op: &str, operand: &str) -> Result<bool, String> {
         "-t" => {
             // -t fd: is fd a terminal
             if let Ok(fd) = operand.parse::<i32>() {
-                #[cfg(unix)]
-                {
-                    Ok(unsafe { libc::isatty(fd) } != 0)
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = fd;
-                    Ok(false)
-                }
+                Ok(malt_platform::io::is_tty(fd))
             } else {
                 Err(format!("integer expression expected: `{operand}'"))
             }
