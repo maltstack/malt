@@ -3,6 +3,12 @@
 use mash::env::{Env, Variable};
 use mash::executor::{execute_list, ExecResult};
 use mash::parser::parse;
+use std::sync::Mutex;
+
+/// Tests that call `cd` mutate the process-wide working directory via
+/// `std::env::set_current_dir`. Acquire this lock in every such test to
+/// prevent races when the test suite runs in parallel.
+static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 fn run(input: &str) -> (ExecResult, Env) {
     let cmds = parse(input).expect("parse failed");
@@ -516,6 +522,7 @@ fn builtin_readonly() {
 
 #[test]
 fn builtin_cd_and_pwd() {
+    let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_string_lossy().replace('\\', "/");
     let cmd = format!("cd {} && pwd", path);
@@ -525,6 +532,7 @@ fn builtin_cd_and_pwd() {
 
 #[test]
 fn builtin_cd_home() {
+    let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (_, env) = run("cd");
     let pwd = env.get_str("PWD").replace('\\', "/");
     let home = env.get_str("HOME").replace('\\', "/");
@@ -535,6 +543,7 @@ fn builtin_cd_home() {
 
 #[test]
 fn builtin_cd_dash() {
+    let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_string_lossy().replace('\\', "/");
     let cmd = format!("FIRST=$PWD; cd {}; cd -", path);
@@ -545,6 +554,7 @@ fn builtin_cd_dash() {
 
 #[test]
 fn builtin_cd_updates_oldpwd() {
+    let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_string_lossy().replace('\\', "/");
     let cmd = format!("BEFORE=$PWD; cd {}", path);
