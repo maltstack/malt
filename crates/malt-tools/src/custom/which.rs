@@ -71,7 +71,7 @@ fn find_in_path(name: &str, dirs: &[&Path], extensions: &[String]) -> Option<Pat
     // Absolute or relative path given directly
     if name.contains('/') || name.contains('\\') {
         let p = PathBuf::from(name);
-        if is_executable(&p) {
+        if p.is_file() && is_executable(&p) {
             return Some(p);
         }
         if let Some(found) = try_extensions(&p, extensions) {
@@ -82,7 +82,7 @@ fn find_in_path(name: &str, dirs: &[&Path], extensions: &[String]) -> Option<Pat
 
     for dir in dirs {
         let candidate = dir.join(name);
-        if is_executable(&candidate) {
+        if candidate.is_file() && is_executable(&candidate) {
             return Some(candidate);
         }
         if let Some(found) = try_extensions(&candidate, extensions) {
@@ -105,25 +105,7 @@ fn try_extensions(base: &Path, extensions: &[String]) -> Option<PathBuf> {
 }
 
 fn is_executable(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = path.metadata() {
-            return meta.permissions().mode() & 0o111 != 0;
-        }
-        false
-    }
-
-    #[cfg(windows)]
-    {
-        // On Windows, any file with a recognized extension is executable.
-        // We already check is_file() above; PATHEXT matching handles the rest.
-        true
-    }
+    malt_platform::io::is_executable(path)
 }
 
 #[cfg(test)]

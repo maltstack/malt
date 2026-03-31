@@ -19,13 +19,14 @@ pub fn is_tty(fd: i32) -> bool {
     }
 }
 
-/// Returns `true` if `path` is a file with executable bits set.
+/// Returns `true` if `path` exists and has execute permission.
 ///
-/// On Unix, checks the execute bits via `PermissionsExt`.
-/// On Windows, returns `true` for any regular file (PATHEXT extension matching
+/// On Unix, checks the execute bits via `PermissionsExt` on any path type
+/// (files, directories, symlinks). This matches POSIX `test -x` semantics.
+/// On Windows, returns `true` only for regular files (PATHEXT extension matching
 /// handles executability at the call site).
 pub fn is_executable(path: &Path) -> bool {
-    if !path.is_file() {
+    if !path.exists() {
         return false;
     }
     #[cfg(unix)]
@@ -37,7 +38,7 @@ pub fn is_executable(path: &Path) -> bool {
     }
     #[cfg(not(unix))]
     {
-        true
+        path.is_file()
     }
 }
 
