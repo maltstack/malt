@@ -90,6 +90,7 @@ fn handle_start() -> Result<()> {
     let exe = std::env::current_exe()?;
     let child = std::process::Command::new(exe)
         .args(["daemon"])
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
