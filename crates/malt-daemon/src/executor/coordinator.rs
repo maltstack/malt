@@ -9,18 +9,29 @@ use malt_protocol::common::{
 };
 use malt_protocol::input::KeyEvent;
 use malt_protocol::persist::daemon::DaemonState;
+use malt_protocol::persist::session::PersistedSession;
 use malt_protocol::render::{InitialState, RenderBatch};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::time::Duration;
 use tracing::{info, warn};
 
+enum SessionLifecycle {
+    Active {
+        cmd_tx: mpsc::Sender<SessionCommand>,
+        thread: Option<std::thread::JoinHandle<()>>,
+        client_count: u32,
+    },
+    Dormant {
+        persisted: PersistedSession,
+    },
+}
+
 struct SessionHandle {
     id: SessionId,
     name: Option<String>,
     isolation: IsolationTier,
-    cmd_tx: mpsc::Sender<SessionCommand>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    lifecycle: SessionLifecycle,
 }
 
 /// Coordinator manages session lifecycle and routes messages to session threads.
@@ -126,8 +137,11 @@ impl Coordinator {
                 id: session_id.clone(),
                 name: Some(final_name),
                 isolation,
-                cmd_tx,
-                thread: Some(thread),
+                lifecycle: SessionLifecycle::Active {
+                    cmd_tx,
+                    thread: Some(thread),
+                    client_count: 0,
+                },
             },
         );
 
@@ -141,23 +155,39 @@ impl Coordinator {
             .sessions
             .get(&session_id.0)
             .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
-        let (reply_tx, reply_rx) = mpsc::channel();
-        handle
-            .cmd_tx
-            .send(SessionCommand::GetOutput { reply: reply_tx })
-            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
-        reply_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                cmd_tx
+                    .send(SessionCommand::GetOutput { reply: reply_tx })
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
+                reply_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+            }
+            SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
     }
 
     /// Destroy a session. Sends shutdown and joins the thread.
     pub fn destroy_session(&mut self, id: SessionId) {
         if let Some(mut handle) = self.sessions.remove(&id.0) {
-            let _ = handle.cmd_tx.send(SessionCommand::Shutdown);
-            if let Some(thread) = handle.thread.take() {
-                let _ = thread.join();
+            match handle.lifecycle {
+                SessionLifecycle::Active {
+                    cmd_tx,
+                    ref mut thread,
+                    ..
+                } => {
+                    let _ = cmd_tx.send(SessionCommand::Shutdown);
+                    if let Some(t) = thread.take() {
+                        let _ = t.join();
+                    }
+                }
+                SessionLifecycle::Dormant { .. } => {
+                    // No thread to shut down.
+                }
             }
+            let _ = self.store.delete_session(&id);
             info!(?id, "session destroyed");
             self.persist_daemon_state();
         }
@@ -172,12 +202,13 @@ impl Coordinator {
         let handle = self
             .sessions
             .get(&session_id.0)
-            .ok_or(DaemonError::SessionNotFound(session_id))?;
-        handle
-            .cmd_tx
-            .send(SessionCommand::Deliver(msg))
-            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
-        Ok(())
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => cmd_tx
+                .send(SessionCommand::Deliver(msg))
+                .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone())),
+            SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
     }
 
     /// Route a command to a specific session.
@@ -189,12 +220,13 @@ impl Coordinator {
         let handle = self
             .sessions
             .get(&session_id.0)
-            .ok_or(DaemonError::SessionNotFound(session_id))?;
-        handle
-            .cmd_tx
-            .send(cmd)
-            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
-        Ok(())
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => cmd_tx
+                .send(cmd)
+                .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone())),
+            SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
     }
 
     /// List all active sessions.
@@ -204,9 +236,15 @@ impl Coordinator {
             .map(|h| SessionInfo {
                 session_id: h.id.clone(),
                 name: h.name.clone(),
-                pane_count: 1,
+                pane_count: match &h.lifecycle {
+                    SessionLifecycle::Active { .. } => 1,
+                    SessionLifecycle::Dormant { persisted } => persisted.panes.len() as u16,
+                },
                 isolation: h.isolation,
-                state: SessionState::Active,
+                state: match &h.lifecycle {
+                    SessionLifecycle::Active { .. } => SessionState::Active,
+                    SessionLifecycle::Dormant { .. } => SessionState::Dormant,
+                },
                 _unknown: Vec::new(),
             })
             .collect()
@@ -223,20 +261,24 @@ impl Coordinator {
         let handle = self
             .sessions
             .get(&session_id.0)
-            .ok_or(DaemonError::SessionNotFound(session_id))?;
-        let (initial_tx, initial_rx) = mpsc::channel();
-        handle
-            .cmd_tx
-            .send(SessionCommand::RegisterVnpClient {
-                client_id,
-                capabilities,
-                render_tx,
-                initial_reply: initial_tx,
-            })
-            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
-        initial_rx
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => {
+                let (initial_tx, initial_rx) = mpsc::channel();
+                cmd_tx
+                    .send(SessionCommand::RegisterVnpClient {
+                        client_id,
+                        capabilities,
+                        render_tx,
+                        initial_reply: initial_tx,
+                    })
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
+                initial_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+            }
+            SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
     }
 
     /// Unregister a VNP client from a session's renderer (fire-and-forget).
@@ -248,11 +290,13 @@ impl Coordinator {
         let handle = self
             .sessions
             .get(&session_id.0)
-            .ok_or(DaemonError::SessionNotFound(session_id))?;
-        handle
-            .cmd_tx
-            .send(SessionCommand::UnregisterVnpClient { client_id })
-            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => cmd_tx
+                .send(SessionCommand::UnregisterVnpClient { client_id })
+                .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone())),
+            SessionLifecycle::Dormant { .. } => Ok(()), // nothing to unregister
+        }
     }
 
     /// Route a typed keyboard event to a session's line editor.
@@ -264,11 +308,13 @@ impl Coordinator {
         let handle = self
             .sessions
             .get(&session_id.0)
-            .ok_or(DaemonError::SessionNotFound(session_id))?;
-        handle
-            .cmd_tx
-            .send(SessionCommand::KeyInput { key })
-            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => cmd_tx
+                .send(SessionCommand::KeyInput { key })
+                .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone())),
+            SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
     }
 
     /// Forward a frame acknowledgement to a session's renderer host.
@@ -281,11 +327,13 @@ impl Coordinator {
         let handle = self
             .sessions
             .get(&session_id.0)
-            .ok_or(DaemonError::SessionNotFound(session_id))?;
-        handle
-            .cmd_tx
-            .send(SessionCommand::AckFrame { client_id, frame_seq })
-            .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => cmd_tx
+                .send(SessionCommand::AckFrame { client_id, frame_seq })
+                .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone())),
+            SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
     }
 
     pub fn session_count(&self) -> usize {
