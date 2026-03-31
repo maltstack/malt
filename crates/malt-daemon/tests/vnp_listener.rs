@@ -1,110 +1,56 @@
-use malt_protocol::common::{ClientCapabilities, ColorDepth, ImageProtocol, UnicodeLevel};
-use malt_protocol::envelope::{decode_envelope, encode_message, Envelope};
-use malt_protocol::framing::{Frame, FrameFlags, FrameReader, FrameWriter};
-use malt_protocol::handshake::{Hello, HelloAck};
+//! Integration tests for the VNP listener using typed bitpack framing.
+//!
+//! Each test connects to a real TCP listener, performs the VNP handshake,
+//! and verifies the typed protocol messages using real bitpack encode/decode.
+//! No JSON is used post-handshake.
+
 use std::io::BufReader;
 use std::net::TcpStream;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
+
+use malt_protocol::codec::{
+    make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, MSG_ATTACH_SESSION, MSG_FRAME_ACK,
+    MSG_HELLO, MSG_HELLO_ACK, MSG_INITIAL_STATE, MSG_KEY_EVENT, MSG_RENDER_BATCH,
+};
+use malt_protocol::common::{
+    ClientCapabilities, ColorDepth, ImageProtocol, InputAuthority, IsolationTier, KeyModifiers,
+    SessionId, UnicodeLevel,
+};
+use malt_protocol::envelope::{decode_envelope, encode_message};
+use malt_protocol::framing::{Frame, FrameFlags, FrameReader, FrameWriter};
+use malt_protocol::handshake::{Hello, HelloAck};
+use malt_protocol::input::{KeyEvent, KeyValue, NamedKey};
+use malt_protocol::render::{FrameAck, InitialState, RenderBatch};
+use malt_protocol::session::AttachSession;
 use vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
+use malt_daemon::vnp_listener::accept_vnp_connections;
 
-/// Start a VNP listener on a random port and return the address.
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn make_coordinator_with_session() -> (Arc<Mutex<Coordinator>>, u32) {
+    let mut coord = Coordinator::new(PoolConfig::default());
+    let sid = coord
+        .create_session(None, IsolationTier::Bare, None)
+        .unwrap();
+    let session_id = sid.0;
+    (Arc::new(Mutex::new(coord)), session_id)
+}
+
 fn start_test_listener(coordinator: Arc<Mutex<Coordinator>>) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-
-    // Spawn the accept loop manually (we can't use start_vnp_listener
-    // because it calls bind internally, and we need the random port).
+    let counter = Arc::new(AtomicU64::new(1));
     std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    let coord = coordinator.clone();
-                    std::thread::spawn(move || {
-                        // Reuse the handle_client logic by connecting through the module
-                        // We'll inline the handshake + message loop here for test isolation.
-                        handle_test_client(stream, coord);
-                    });
-                }
-                Err(_) => break,
-            }
-        }
+        accept_vnp_connections(listener, coordinator, counter);
     });
-
     addr
 }
 
-/// Simplified client handler for tests — mirrors vnp_listener::handle_client.
-fn handle_test_client(stream: TcpStream, coordinator: Arc<Mutex<Coordinator>>) {
-    let write_stream = match stream.try_clone() {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let mut read_stream = BufReader::new(stream);
-
-    let sessions = coordinator
-        .lock()
-        .map(|c| c.list_sessions())
-        .unwrap_or_default();
-
-    if malt_daemon::connection::handshake::perform_server_handshake(
-        &mut read_stream,
-        &mut &write_stream,
-        &sessions,
-    )
-    .is_err()
-    {
-        return;
-    }
-
-    // Message loop
-    let mut frame_reader = FrameReader::new(read_stream);
-    let mut frame_writer = FrameWriter::new(write_stream);
-
-    // Set read timeout so loop doesn't block forever
-    if let Ok(peer) = frame_writer.inner_ref().peer_addr() {
-        let _ = frame_writer
-            .inner_ref()
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)));
-        let _ = peer;
-    }
-
-    loop {
-        match frame_reader.read_frame() {
-            Ok(frame) => {
-                let payload = String::from_utf8_lossy(&frame.payload);
-                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&payload) {
-                    let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    if msg_type == "attach" {
-                        let sid = msg.get("session").and_then(|s| s.as_u64()).unwrap_or(1) as u32;
-                        // Send an output frame
-                        let output = coordinator
-                            .lock()
-                            .ok()
-                            .and_then(|c| c.get_session_output(sid).ok())
-                            .unwrap_or_else(|| "session output placeholder".to_string());
-                        let resp = serde_json::json!({
-                            "type": "output",
-                            "session": sid,
-                            "text": output,
-                        });
-                        let payload = resp.to_string().into_bytes();
-                        let mut flags = FrameFlags::new();
-                        flags.set_json_encoded(true);
-                        let frame = Frame { flags, payload };
-                        if frame_writer.write_frame(&frame).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(_) => break,
-        }
-    }
-}
-
+/// Build a Hello message with test capabilities.
 fn make_hello() -> Hello {
     Hello {
         version: 1,
@@ -122,21 +68,13 @@ fn make_hello() -> Hello {
     }
 }
 
-fn send_hello(writer: &mut FrameWriter<TcpStream>) {
-    let hello = make_hello();
-    let envelope = Envelope {
-        wire_version: 0,
-        domain: 0,
-        msg_type: 0x01,
-        session_id: 0,
-        timestamp: 0,
-        msg_id: None,
-        _unknown: Vec::new(),
-    };
+/// Encode and send a typed VNP message as a frame.
+fn send_vnp<T: Pack>(writer: &mut FrameWriter<TcpStream>, domain: u8, msg_type: u8, session_id: u32, msg: &T) {
+    let env = make_envelope(domain, msg_type, session_id);
     let mut w = BitWriter::new();
-    hello.pack(&mut w).unwrap();
-    let hello_bytes = w.finish();
-    let combined = encode_message(&envelope, &hello_bytes).unwrap();
+    msg.pack(&mut w).unwrap();
+    let payload = w.finish();
+    let combined = encode_message(&env, &payload).unwrap();
     let frame = Frame {
         flags: FrameFlags::new(),
         payload: combined,
@@ -144,40 +82,135 @@ fn send_hello(writer: &mut FrameWriter<TcpStream>) {
     writer.write_frame(&frame).unwrap();
 }
 
-fn read_hello_ack(reader: &mut FrameReader<BufReader<TcpStream>>) -> HelloAck {
+/// Read the next frame and decode the VNP envelope, returning (domain, msg_type, msg_bytes).
+fn read_vnp_frame(reader: &mut FrameReader<BufReader<TcpStream>>) -> (u8, u8, Vec<u8>) {
     let frame = reader.read_frame().unwrap();
-    let (envelope, msg_bytes) = decode_envelope(&frame.payload).unwrap();
-    assert_eq!(envelope.domain, 0);
-    assert_eq!(envelope.msg_type, 0x02, "expected HelloAck");
+    let (env, msg_bytes) = decode_envelope(&frame.payload).unwrap();
+    (env.domain, env.msg_type, msg_bytes.to_vec())
+}
+
+/// Perform the VNP handshake: send Hello and read HelloAck. Returns the ack.
+fn perform_handshake(
+    writer: &mut FrameWriter<TcpStream>,
+    reader: &mut FrameReader<BufReader<TcpStream>>,
+) -> HelloAck {
+    send_vnp(writer, DOMAIN_RENDER & 0xF0 & !0xF0 | 0, MSG_HELLO, 0, &make_hello());
+    let (domain, msg_type, msg_bytes) = read_vnp_frame(reader);
+    assert_eq!(domain, 0, "expected DOMAIN_HANDSHAKE (0) for HelloAck");
+    assert_eq!(msg_type, MSG_HELLO_ACK, "expected HelloAck msg_type");
+    let mut r = BitReader::new(&msg_bytes);
+    HelloAck::unpack(&mut r).unwrap()
+}
+
+/// Perform the VNP handshake using the correct DOMAIN_HANDSHAKE (0) constant.
+fn do_handshake(
+    writer: &mut FrameWriter<TcpStream>,
+    reader: &mut FrameReader<BufReader<TcpStream>>,
+) -> HelloAck {
+    let hello = make_hello();
+    // domain = 0 (DOMAIN_HANDSHAKE), msg_type = MSG_HELLO = 0x01
+    let env = make_envelope(0, MSG_HELLO, 0);
+    let mut w = BitWriter::new();
+    hello.pack(&mut w).unwrap();
+    let payload = w.finish();
+    let combined = encode_message(&env, &payload).unwrap();
+    let frame = Frame {
+        flags: FrameFlags::new(),
+        payload: combined,
+    };
+    writer.write_frame(&frame).unwrap();
+
+    let recv_frame = reader.read_frame().unwrap();
+    let (env, msg_bytes) = decode_envelope(&recv_frame.payload).unwrap();
+    assert_eq!(env.domain, 0, "expected DOMAIN_HANDSHAKE for HelloAck");
+    assert_eq!(env.msg_type, MSG_HELLO_ACK, "expected HelloAck");
     let mut r = BitReader::new(msg_bytes);
     HelloAck::unpack(&mut r).unwrap()
 }
 
-#[test]
-fn vnp_connect_and_handshake() {
-    let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default())));
-    let addr = start_test_listener(coordinator);
-
-    // Give listener a moment to start
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
-    let stream = TcpStream::connect(&addr).unwrap();
-    let write_stream = stream.try_clone().unwrap();
-    let read_stream = BufReader::new(stream);
-
-    let mut writer = FrameWriter::new(write_stream);
-    let mut reader = FrameReader::new(read_stream);
-
-    // Send Hello
-    send_hello(&mut writer);
-
-    // Read HelloAck
-    let ack = read_hello_ack(&mut reader);
-    assert_eq!(ack.negotiated_version, 1);
+/// Send AttachSession for the given session_id.
+fn do_attach(writer: &mut FrameWriter<TcpStream>, session_id: u32) {
+    let attach = AttachSession {
+        session_id: SessionId(session_id),
+        authority: InputAuthority::Exclusive,
+        _unknown: Vec::new(),
+    };
+    let env = make_envelope(DOMAIN_SESSION, MSG_ATTACH_SESSION, session_id);
+    let mut w = BitWriter::new();
+    attach.pack(&mut w).unwrap();
+    let payload = w.finish();
+    let combined = encode_message(&env, &payload).unwrap();
+    let frame = Frame {
+        flags: FrameFlags::new(),
+        payload: combined,
+    };
+    writer.write_frame(&frame).unwrap();
 }
 
+/// Read and decode the next InitialState frame, asserting correct domain/type.
+fn read_initial_state(reader: &mut FrameReader<BufReader<TcpStream>>) -> InitialState {
+    let frame = reader.read_frame().unwrap();
+    let (env, msg_bytes) = decode_envelope(&frame.payload).unwrap();
+    assert_eq!(
+        env.domain, DOMAIN_RENDER,
+        "expected DOMAIN_RENDER for InitialState"
+    );
+    assert_eq!(
+        env.msg_type, MSG_INITIAL_STATE,
+        "expected MSG_INITIAL_STATE"
+    );
+    let mut r = BitReader::new(msg_bytes);
+    InitialState::unpack(&mut r).unwrap()
+}
+
+/// Send a character KeyEvent.
+fn send_char_key(writer: &mut FrameWriter<TcpStream>, session_id: u32, ch: char) {
+    let key = KeyEvent {
+        key: KeyValue::Char {
+            codepoint: ch as u32,
+        },
+        modifiers: KeyModifiers::empty(),
+        _unknown: Vec::new(),
+    };
+    let env = make_envelope(DOMAIN_INPUT, MSG_KEY_EVENT, session_id);
+    let mut w = BitWriter::new();
+    key.pack(&mut w).unwrap();
+    let payload = w.finish();
+    let combined = encode_message(&env, &payload).unwrap();
+    let frame = Frame {
+        flags: FrameFlags::new(),
+        payload: combined,
+    };
+    writer.write_frame(&frame).unwrap();
+}
+
+/// Send an Enter (Named) KeyEvent.
+fn send_enter_key(writer: &mut FrameWriter<TcpStream>, session_id: u32) {
+    let key = KeyEvent {
+        key: KeyValue::Named { key: NamedKey::Enter },
+        modifiers: KeyModifiers::empty(),
+        _unknown: Vec::new(),
+    };
+    let env = make_envelope(DOMAIN_INPUT, MSG_KEY_EVENT, session_id);
+    let mut w = BitWriter::new();
+    key.pack(&mut w).unwrap();
+    let payload = w.finish();
+    let combined = encode_message(&env, &payload).unwrap();
+    let frame = Frame {
+        flags: FrameFlags::new(),
+        payload: combined,
+    };
+    writer.write_frame(&frame).unwrap();
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+/// Test 1: VNP handshake succeeds.
+///
+/// Connect to the listener, send Hello (domain=0, type=0x01), and read a
+/// valid HelloAck (domain=0, type=0x02) with negotiated_version=1.
 #[test]
-fn vnp_attach_and_receive_output() {
+fn vnp_handshake_succeeds() {
     let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default())));
     let addr = start_test_listener(coordinator);
 
@@ -193,26 +226,195 @@ fn vnp_attach_and_receive_output() {
     let mut writer = FrameWriter::new(write_stream);
     let mut reader = FrameReader::new(read_stream);
 
-    // Handshake
-    send_hello(&mut writer);
-    let _ack = read_hello_ack(&mut reader);
+    let ack = do_handshake(&mut writer, &mut reader);
+    assert_eq!(ack.negotiated_version, 1, "negotiated version must be 1");
+}
 
-    // Send attach message
-    let attach = serde_json::json!({
-        "type": "attach",
-        "session": 1,
-    });
-    let payload = attach.to_string().into_bytes();
-    let mut flags = FrameFlags::new();
-    flags.set_json_encoded(true);
-    let frame = Frame { flags, payload };
-    writer.write_frame(&frame).unwrap();
+/// Test 2: After attaching, the listener sends an InitialState frame.
+///
+/// Connect + handshake, send AttachSession for a valid session, and verify the
+/// response is InitialState (domain=6, type=0x03) with frame_seq=0.
+#[test]
+fn vnp_attach_receives_initial_state() {
+    let (coordinator, session_id) = make_coordinator_with_session();
+    let addr = start_test_listener(coordinator);
 
-    // Read output frame
-    let output_frame = reader.read_frame().unwrap();
-    let output_str = String::from_utf8_lossy(&output_frame.payload);
-    let msg: serde_json::Value = serde_json::from_str(&output_str).unwrap();
-    assert_eq!(msg.get("type").and_then(|t| t.as_str()), Some("output"));
-    assert_eq!(msg.get("session").and_then(|s| s.as_u64()), Some(1));
-    assert!(msg.get("text").is_some(), "output should contain text field");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let stream = TcpStream::connect(&addr).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let write_stream = stream.try_clone().unwrap();
+    let read_stream = BufReader::new(stream);
+
+    let mut writer = FrameWriter::new(write_stream);
+    let mut reader = FrameReader::new(read_stream);
+
+    let _ack = do_handshake(&mut writer, &mut reader);
+    do_attach(&mut writer, session_id);
+
+    let initial = read_initial_state(&mut reader);
+    assert_eq!(
+        initial.frame_seq, 0,
+        "InitialState must have frame_seq=0 on first attach"
+    );
+}
+
+/// Test 3: Sending key input followed by Enter produces a RenderBatch.
+///
+/// Connect + handshake + attach, type "echo ok" char by char as KeyEvent frames,
+/// then send Enter. Read frames until a RenderBatch (domain=6, type=0x01) with
+/// non-empty commands appears, or timeout.
+#[test]
+fn vnp_key_input_followed_by_enter_produces_render_batch() {
+    let (coordinator, session_id) = make_coordinator_with_session();
+    let addr = start_test_listener(coordinator);
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let stream = TcpStream::connect(&addr).unwrap();
+    // Short per-read timeout so the loop can check the deadline frequently.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+        .unwrap();
+    let write_stream = stream.try_clone().unwrap();
+    let read_stream = BufReader::new(stream);
+
+    let mut writer = FrameWriter::new(write_stream);
+    let mut reader = FrameReader::new(read_stream);
+
+    let _ack = do_handshake(&mut writer, &mut reader);
+    do_attach(&mut writer, session_id);
+
+    // Consume the InitialState frame before sending input.
+    let _initial = read_initial_state(&mut reader);
+
+    // Type "echo ok" character by character.
+    for ch in "echo ok".chars() {
+        send_char_key(&mut writer, session_id, ch);
+    }
+    // Send Enter to execute the command.
+    send_enter_key(&mut writer, session_id);
+
+    // Give the session thread a moment to process the Enter key and produce output.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // The server's main loop drains render_rx only after reading a client frame.
+    // Send FrameAck(0) frames periodically to keep the server loop ticking so it
+    // can drain the render_rx channel and forward the RenderBatch to us.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    let mut last_ping = std::time::Instant::now();
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for a RenderBatch with non-empty commands"
+        );
+
+        // Periodically send FrameAck(0) to tick the server's main loop so it
+        // drains render_rx and forwards any queued RenderBatch frames to us.
+        if last_ping.elapsed() >= std::time::Duration::from_millis(100) {
+            let ping = FrameAck {
+                frame_seq: 0,
+                _unknown: Vec::new(),
+            };
+            let env = make_envelope(DOMAIN_RENDER, MSG_FRAME_ACK, session_id);
+            let mut w = BitWriter::new();
+            ping.pack(&mut w).unwrap();
+            let payload = w.finish();
+            let combined = encode_message(&env, &payload).unwrap();
+            let f = Frame {
+                flags: FrameFlags::new(),
+                payload: combined,
+            };
+            writer.write_frame(&f).unwrap();
+            last_ping = std::time::Instant::now();
+        }
+
+        match reader.read_frame() {
+            Ok(frame) => {
+                let (env, msg_bytes) = decode_envelope(&frame.payload).unwrap();
+                if env.domain == DOMAIN_RENDER && env.msg_type == MSG_RENDER_BATCH {
+                    let mut r = BitReader::new(msg_bytes);
+                    let batch = RenderBatch::unpack(&mut r).unwrap();
+                    if !batch.commands.is_empty() {
+                        // Success: a render batch with drawing commands was produced.
+                        break;
+                    }
+                }
+                // Any other frame — keep reading.
+            }
+            Err(malt_protocol::framing::FrameError::Io(ref e))
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                // No data yet — yield briefly and retry.
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                continue;
+            }
+            Err(e) => panic!("unexpected frame error while waiting for RenderBatch: {e}"),
+        }
+    }
+}
+
+/// Test 4: FrameAck is accepted without crashing the listener.
+///
+/// Connect + handshake + attach, receive InitialState, send a FrameAck for
+/// frame_seq=0, wait 100 ms, and assert the connection is still alive by
+/// verifying no error occurred.
+#[test]
+fn vnp_frame_ack_accepted() {
+    let (coordinator, session_id) = make_coordinator_with_session();
+    let addr = start_test_listener(coordinator);
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let stream = TcpStream::connect(&addr).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let write_stream = stream.try_clone().unwrap();
+    let read_stream = BufReader::new(stream);
+
+    let mut writer = FrameWriter::new(write_stream);
+    let mut reader = FrameReader::new(read_stream);
+
+    let _ack = do_handshake(&mut writer, &mut reader);
+    do_attach(&mut writer, session_id);
+
+    let initial = read_initial_state(&mut reader);
+    let initial_seq = initial.frame_seq;
+
+    // Send FrameAck for the initial frame.
+    let frame_ack = FrameAck {
+        frame_seq: initial_seq,
+        _unknown: Vec::new(),
+    };
+    let env = make_envelope(DOMAIN_RENDER, MSG_FRAME_ACK, session_id);
+    let mut w = BitWriter::new();
+    frame_ack.pack(&mut w).unwrap();
+    let payload = w.finish();
+    let combined = encode_message(&env, &payload).unwrap();
+    let ack_frame = Frame {
+        flags: FrameFlags::new(),
+        payload: combined,
+    };
+    writer.write_frame(&ack_frame).unwrap();
+
+    // Wait a moment; if the listener crashed or disconnected we would see an
+    // error on the next read (WouldBlock/TimedOut is fine — it means idle).
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // A WouldBlock / TimedOut is expected (no data yet); anything else would
+    // indicate the listener dropped the connection.  We only fail on hard errors.
+    match reader.read_frame() {
+        Ok(_) => {} // A frame arrived unexpectedly — still not a failure.
+        Err(malt_protocol::framing::FrameError::Io(ref e))
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            // Expected: idle connection, no data within the timeout.
+        }
+        Err(e) => panic!("unexpected frame error after FrameAck: {e}"),
+    }
 }
