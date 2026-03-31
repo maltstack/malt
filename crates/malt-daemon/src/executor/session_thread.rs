@@ -247,7 +247,9 @@ impl SessionExecutor {
                     let panes = vec![PaneFrame { pane_id, element }];
                     let layout = self.resolved_panes.clone();
                     let initial = self.renderer.snapshot_initial_state(&panes, &layout, client_id);
-                    let _ = initial_reply.send(initial);
+                    if initial_reply.send(initial).is_err() {
+                        warn!(client_id, "RegisterVnpClient: initial_reply receiver dropped before send");
+                    }
                 }
                 Ok(SessionCommand::UnregisterVnpClient { client_id }) => {
                     self.renderer.remove_client(client_id);
@@ -298,6 +300,9 @@ impl SessionExecutor {
         }
         let element = match &self.compat {
             Some(c) => c.frame_element(),
+            // When compat is None, no content exists yet — skip the render dispatch.
+            // Note: RegisterVnpClient sends an empty VtPassthrough frame in this case,
+            // because the initial snapshot is required to complete the handshake regardless.
             None => return,
         };
         let pane_id = self.session.focused_pane().clone();
