@@ -87,32 +87,12 @@ fn run_loop(
                         app.quit();
                         continue;
                     }
-
-                    // Map key to text and send to daemon
-                    let text = match key.code {
-                        KeyCode::Char(c) => {
-                            if key.modifiers.contains(KeyModifiers::CONTROL) {
-                                // Ctrl+letter → control character
-                                let ctrl = (c as u8).wrapping_sub(b'a').wrapping_add(1);
-                                String::from(ctrl as char)
-                            } else {
-                                String::from(c)
-                            }
-                        }
-                        KeyCode::Enter => "\r".to_string(),
-                        KeyCode::Backspace => "\x08".to_string(),
-                        KeyCode::Tab => "\t".to_string(),
-                        KeyCode::Esc => "\x1b".to_string(),
-                        KeyCode::Up => "\x1b[A".to_string(),
-                        KeyCode::Down => "\x1b[B".to_string(),
-                        KeyCode::Right => "\x1b[C".to_string(),
-                        KeyCode::Left => "\x1b[D".to_string(),
-                        _ => continue,
-                    };
-                    conn.send_input(&text);
+                    if let Some(vnp_key) = input::convert_key_event(&key) {
+                        conn.send_key_event(&vnp_key);
+                    }
                 }
-                Event::Resize(_, _) => {
-                    // Terminal resized — force re-render
+                Event::Resize(cols, rows) => {
+                    conn.send_resize(cols, rows);
                 }
                 _ => {}
             }
