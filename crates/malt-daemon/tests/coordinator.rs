@@ -410,6 +410,170 @@ fn shutdown_graceful_saves_all_active_sessions() {
 }
 
 #[test]
+fn destroy_dormant_session_removes_from_store() {
+    let dir = tempfile::tempdir().unwrap();
+
+    {
+        let store = make_store(&dir);
+        let mut coord = Coordinator::new(PoolConfig::default(), store.clone());
+        let sid = coord.create_session(None, IsolationTier::Bare, None).unwrap();
+        let (render_tx, _) = std::sync::mpsc::sync_channel(4);
+        coord.register_vnp_client(sid.clone(), 1, caps(), render_tx).unwrap();
+        coord.unregister_vnp_client(sid.clone(), 1).unwrap();
+        store.flush_all();
+
+        // Destroy the dormant session.
+        coord.destroy_session(sid.clone());
+        assert_eq!(coord.session_count(), 0);
+
+        // Verify it's gone from the store.
+        store.flush_all();
+        assert!(store.load_session(&sid).is_err());
+    }
+}
+
+#[test]
+fn second_daemon_sees_dormant_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+
+    {
+        let store = make_store(&dir);
+        let mut coord = Coordinator::new(PoolConfig::default(), store.clone());
+        let sid1 = coord.create_session(Some("x".to_string()), IsolationTier::Bare, None).unwrap();
+        let sid2 = coord.create_session(Some("y".to_string()), IsolationTier::Bare, None).unwrap();
+
+        // Detach both → dormant.
+        let (tx1, _) = std::sync::mpsc::sync_channel(4);
+        coord.register_vnp_client(sid1.clone(), 1, caps(), tx1).unwrap();
+        coord.unregister_vnp_client(sid1, 1).unwrap();
+
+        let (tx2, _) = std::sync::mpsc::sync_channel(4);
+        coord.register_vnp_client(sid2.clone(), 2, caps(), tx2).unwrap();
+        coord.unregister_vnp_client(sid2, 2).unwrap();
+
+        store.flush_all();
+    }
+
+    let store2 = make_store(&dir);
+    let coord2 = Coordinator::new(PoolConfig::default(), store2);
+    let sessions = coord2.list_sessions();
+    assert_eq!(sessions.len(), 2);
+    assert!(sessions.iter().all(|s| s.state == malt_protocol::common::SessionState::Dormant));
+}
+
+#[test]
+fn restore_fails_cleanly_on_bad_cwd() {
+    use malt_protocol::render::RenderBatch;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // Create session, make it go dormant.
+    let sid = {
+        let store = make_store(&dir);
+        let mut coord = Coordinator::new(PoolConfig::default(), store.clone());
+        let sid = coord.create_session(None, IsolationTier::Bare, None).unwrap();
+        let (render_tx, _) = std::sync::mpsc::sync_channel(4);
+        coord.register_vnp_client(sid.clone(), 1, caps(), render_tx).unwrap();
+        coord.unregister_vnp_client(sid.clone(), 1).unwrap();
+        store.flush_all();
+        sid
+    };
+
+    // Overwrite the persisted cwd with a nonexistent path.
+    {
+        let store = make_store(&dir);
+        let mut persisted = store.load_session(&sid).unwrap();
+        if let Some(pane) = persisted.panes.values_mut().next() {
+            pane.cwd = "/this/path/does/not/exist/anywhere".to_string();
+        }
+        store.mark_dirty(sid.clone(), persisted);
+        store.flush_all();
+    }
+
+    // Restore should succeed (spawn_with_cwd falls back to OS cwd on bad path).
+    let store2 = make_store(&dir);
+    let mut coord2 = Coordinator::new(PoolConfig::default(), store2);
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let result = coord2.register_vnp_client(sid.clone(), 2, caps(), render_tx);
+    assert!(result.is_ok(), "restore with bad cwd should succeed via fallback: {:?}", result);
+
+    let sessions = coord2.list_sessions();
+    let s = sessions.iter().find(|s| s.session_id == sid).unwrap();
+    assert_eq!(s.state, malt_protocol::common::SessionState::Active);
+}
+
+#[test]
+fn app_restore_returns_error() {
+    use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
+    use malt_protocol::common::{LayoutNode, PaneId, SessionState};
+    use malt_protocol::render::RenderBatch;
+    use std::collections::BTreeMap;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+
+    // Manually persist a session with an App pane.
+    let sid = malt_protocol::common::SessionId(99);
+    let pane = PersistedPane {
+        cwd: ".".to_string(),
+        title: None,
+        pane_type: PersistedPaneType::App {
+            app_id: "test-app".to_string(),
+            config: None,
+        },
+        _unknown: vec![],
+    };
+    let mut panes = BTreeMap::new();
+    panes.insert(1u32, pane);
+    let persisted = PersistedSession {
+        schema_version: 1,
+        id: sid.clone(),
+        name: Some("app-session".to_string()),
+        layout: LayoutNode::Leaf { pane_id: PaneId(1) },
+        focus: PaneId(1),
+        panes,
+        theme: None,
+        group: None,
+        isolation: IsolationTier::Bare,
+        _unknown: vec![],
+    };
+    store.mark_dirty(sid.clone(), persisted);
+    store.flush_all();
+
+    // Inject the session ID into daemon state so the coordinator scans it.
+    let daemon_state = malt_protocol::persist::daemon::DaemonState {
+        schema_version: 1,
+        sessions: vec![sid.clone()],
+        active_groups: vec![],
+        next_session_id: 100,
+        next_pane_id: 2,
+        _unknown: vec![],
+    };
+    store.mark_dirty_daemon(daemon_state);
+    store.flush_all();
+
+    // New coordinator: session is dormant with App pane.
+    let store2 = make_store(&dir);
+    let mut coord2 = Coordinator::new(PoolConfig::default(), store2);
+    let sessions = coord2.list_sessions();
+    let s = sessions.iter().find(|s| s.session_id == sid).unwrap();
+    assert_eq!(s.state, SessionState::Dormant);
+
+    // Attach should fail with AppRestoreNotSupported.
+    let (render_tx, _) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let result = coord2.register_vnp_client(sid.clone(), 1, caps(), render_tx);
+    assert!(
+        matches!(result, Err(malt_daemon::DaemonError::AppRestoreNotSupported)),
+        "expected AppRestoreNotSupported, got: {:?}", result
+    );
+
+    // Session must still be Dormant (no partial Active state).
+    let sessions = coord2.list_sessions();
+    let s = sessions.iter().find(|s| s.session_id == sid).unwrap();
+    assert_eq!(s.state, SessionState::Dormant, "session must remain Dormant after failed restore");
+}
+
+#[test]
 fn error_variants_are_distinct() {
     use malt_daemon::DaemonError;
     use malt_protocol::common::SessionId;
