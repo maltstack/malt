@@ -7,12 +7,12 @@ use malt_gateway::auth::TokenStore;
 use malt_gateway::server::build_router;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
+use malt_config::paths;
 
 pub fn run_daemon(port: u16) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        // TODO(Task 7): replace with XDG data dir.
-        let data_dir = std::env::temp_dir().join("malt-daemon");
+        let data_dir = paths::data_dir();
         std::fs::create_dir_all(&data_dir)?;
         let store = DebouncedStore::new(SessionStore::new(data_dir));
         let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
