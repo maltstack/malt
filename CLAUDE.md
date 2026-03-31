@@ -1,10 +1,35 @@
 # CLAUDE.md
 
+## Engineering Standards
+
+**No time constraints. No deadlines. Every line of code is production-ready and mission-critical.**
+
+- No stubs, no `todo!()`, no `unimplemented!()`, no placeholder logic
+- No hand-waving ("this could be improved later", "for now we just...")
+- No deferring — if a component is needed, implement it fully
+- No shortcuts that would need to be revisited
+- No half-measures: if the architecture specifies X, implement X completely
+- All error paths handled — no silent ignores, no bare `unwrap()` outside tests
+- All tests pass before any task is marked complete
+
+This is the standard for every change, regardless of scope.
+
+## Context Engine
+
+**Always use the context-engine MCP tools** for codebase work in this repo:
+
+- `context_status` + `session_update` — register/update the session at start and end
+- `context_search` / `find_path` — semantic search before raw Grep/Glob
+- `file_skeleton` — understand a file's structure before editing
+- `impact_graph` — check blast radius before changing a file
+- `save_observation` — record notable findings during exploration
+- `context_dependency_search` / `context_dependency_index` — dependency questions
+
 ## What is MALT?
 
 MALT (structured terminal platform) inverts the traditional terminal model: the daemon is the authority, not the renderer. The daemon owns session state, layout, pane identity, and structured output. Clients are interchangeable consumers of a typed RenderCommand stream. All inter-component communication uses VNP (Vexil Native Protocol) — typed, schema-defined, bitpack-encoded messages.
 
-**Current state:** All phases implemented. 18 Rust crates + 1 SvelteKit web client. ~830 tests across 88 test suites. The `malt` command starts a daemon with an in-process mash (POSIX shell), serves HTTP + VNP socket APIs, and opens an interactive TUI. MCP server available for AI agents. WASM plugin host ready. GPU terminal (maltty) scaffolded.
+**Current state:** Foundation + Phase A + Phase B1 implemented. 18 Rust crates + 1 SvelteKit web client. ~885 tests across 63 non-empty test suites. The `malt` command starts a daemon with an in-process mash (POSIX shell), serves HTTP + VNP socket APIs, and opens an interactive TUI. Full VNP bitpack encoding used end-to-end (no JSON post-handshake). Real `.vx` config file loading wired. Session store hardened (.bak backup, corruption quarantine, debounced 1s flush, XDG-compliant data dir, counter restore on startup). MCP server available for AI agents. WASM plugin host ready. GPU terminal (maltty) scaffolded. Many architecture spec features remain unimplemented — see Implementation Roadmap below.
 
 ## Project Relationships
 
@@ -16,6 +41,8 @@ orix/vexil-v2/      Legacy prototype — source for porting
 
 MALT depends on `vexil-lang` for schema compilation and `vexil-runtime` for encode/decode. The `vexil-store` crate (in vexil-lang workspace) provides `.vx`/`.vxb` persistence formats.
 
+`~/projects/vexil-v2/` is a legacy prototype. Code quality and engineering standards are poor — do not port code verbatim. It does contain working implementations of systems not yet built in MALT (isolation, scrollback, plugin lifecycle, etc.) that can be used as **reference for logic and algorithms**. When implementing a Phase B–I feature, check vexil-v2 for a working equivalent first.
+
 ## Repo Structure
 
 ```
@@ -25,16 +52,16 @@ docs/superpowers/
   specs/                       # Sub-project design specs (3A-3F, 4.1-4.2, integration)
   plans/                       # Implementation plans
 crates/
-  malt-protocol/               # L0: VNP types, framing, envelope (34 tests)
+  malt-protocol/               # L0: VNP types, framing, envelope, codec (46 tests)
   malt-platform/               # L0: PTY, process, signals, sockets (25 tests)
-  malt-config/                 # L0: Config loading (5 tests)
+  malt-config/                 # L0: Config loading, VxDecoder, real .vx parsing (17 tests)
   mash/                        # L1: POSIX shell — lexer, parser, expander, executor (330 tests)
-  malt-term/                   # L1: Line editor — vi/emacs, completion, history (37 tests)
+  malt-term/                   # L1: Line editor — vi/emacs, completion, history (41 tests)
   malt-tools/                  # L1: In-process POSIX utilities (40 tests)
   malt-layout/                 # L1: Layout engine — n-ary tree, resolution, focus (48 tests)
   malt-session/                # L1: Session lifecycle, pane runtime, groups (23 tests)
   malt-elevate/                # Elevated helper binary (17 tests)
-  malt-daemon/                 # L2: Daemon core (75 tests)
+  malt-daemon/                 # L2: Daemon core (120 tests)
   malt-compat/                 # L2: VT emulator — vte 0.15 parser + grid (22 tests)
   malt-renderer/               # L2: Renderer host — walker, dirty, client state (29 tests)
   malt-gateway/                # L2: HTTP API — axum, auth, rate limiting (22 tests)
@@ -55,7 +82,7 @@ schemas/
 ```
 L0  malt-platform     OS abstractions: PTY, process, signals, sockets, spawn_with_pty
 L0  malt-config       Vexil Store config: typed structs
-L0  malt-protocol     VNP spine: all shared types, framing, envelope, encode/decode
+L0  malt-protocol     VNP spine: all shared types, framing, envelope, codec (domain/type constants, make_envelope), encode/decode
 
 L1  mash              POSIX shell: lexer, parser, expander, executor, builtins
 L1  malt-term         Line editor: vi/emacs, completion, history, multiline
@@ -86,15 +113,15 @@ Clients:
 These are non-negotiable. Violating any is a bug.
 
 1. **VT codes in `malt-compat` only.** No other crate may import `vte` or handle escape sequences. ✅ Clean.
-2. **OS calls in `malt-platform` only.** No `nix`, `windows-sys`, `libc`, `std::os::unix` elsewhere.
-   - ⚠️ Known violations: mash (`isatty`), malt-tools (`PermissionsExt`), malt-daemon (`FromRawHandle`). Fix pending.
+2. **OS calls in `malt-platform` only.** No `nix`, `windows-sys`, `libc`, `std::os::unix` elsewhere. ✅ Clean — `PermissionsExt` violation in `mash/src/executor.rs` fixed in Phase A.
 3. **`malt-protocol` is dependency-free within workspace.** Only external deps. ✅ Clean.
 4. **`malt-plugin-sdk` has zero internal deps.** ✅ Clean — only external deps (wasmtime, serde, thiserror).
-5. **All `unsafe` blocks require `// SAFETY:` comments.** ✅ Clean (one minor gap in mash).
-6. **No `unwrap()` or `expect()` in non-test code.** ⚠️ Known violations in mash (parser, env). Fix pending.
-7. **VNP is the only inter-component protocol.** ⚠️ Post-handshake uses JSON-in-frames as interim. Full VNP bitpack pending.
-8. **Shell ships when POSIX conformance suite passes.** Smoosh (186 tests) + Modernish. Not yet wired to CI.
+5. **All `unsafe` blocks require `// SAFETY:` comments.** ✅ Clean — `malt-platform/src/env.rs:25,27` fixed in Phase A.
+6. **No `unwrap()` or `expect()` in non-test code.** ✅ Clean — all found uses are in `#[cfg(test)]` blocks.
+7. **VNP is the only inter-component protocol.** ✅ Clean. Full bitpack envelope used post-handshake for all message types.
+8. **Shell ships when POSIX conformance suite passes.** Smoosh (186 tests) + Modernish. Not yet wired to CI. Fix in Phase C.
 9. **Layer violations are compile errors.** No upward dependencies in the crate graph. ✅ Clean.
+10. **Invariants are CI-enforced via `deny.toml`.** ✅ Clean — `deny.toml` added in Phase A.
 
 ## CLI Commands (all working)
 
@@ -118,11 +145,15 @@ malt kill ID                  # Destroy session
 - **Message bus:** Per-session synchronous dispatcher, bounded ring buffers, priority eviction (Low→Normal→High), Reliable never evicted, Critical separate inbox, flow control (25% per-producer, 60% global)
 - **Session-sharded executor:** Per-session thread with own bus, authority tracker, compat translator, mash shell environment
 - **Mash integration:** In-process POSIX shell — parse → execute_list → capture stdout/stderr → feed compat translator
-- **Coordinator:** Session lifecycle, message routing, output retrieval via reply channels
+- **Coordinator:** Session lifecycle, message routing, output retrieval via reply channels; `DebouncedStore` field; counter restore from `DaemonState` on startup; session name uniqueness (auto-suffix `-2`…`-100`); `persist_daemon_state` after every create/destroy
 - **Process supervisor:** spawn_with_pty, kill, check_exited, resize (for future compat pane processes)
-- **Session store:** Bitpack persistence (Pack/Unpack), atomic writes (temp+rename), save/load/list/delete
-- **VNP listener:** TCP socket on port+1, VNP handshake, JSON-in-frames message loop, output streaming
+- **Session store:** Bitpack persistence (Pack/Unpack), atomic writes (temp+rename → `.bak` backup), corruption quarantine (`.corrupt.{ts}.vxb`), save/load/list/delete; `DebouncedStore` wrapper with background 1s flush thread and `flush_all()`
+- **VNP listener:** TCP socket on port+1, VNP handshake, typed bitpack envelope dispatch post-handshake — KeyEvent/Resize/FrameAck inbound, RenderBatch/InitialState outbound. No JSON in the message loop.
+- **Input bridge:** `input_bridge` module — `vnp_key_to_input_event` converts VNP `KeyEvent` → mash `InputEvent`
+- **RendererHost + Editor wiring:** Session executor owns a `RendererHost` and `Editor`; `RegisterVnpClient` returns `InitialState`, `KeyInput` drives the line editor, `dispatch_render` pushes `RenderBatch` to per-client `SyncSender<RenderBatch>(4)` channels
 - **Gateway backend:** GatewayBackend impl wrapping Coordinator, exec via RunCommand with reply channel
+- **Config loading:** `VxDecoder` trait + `DaemonConfig`/`UserConfig` impls; `load_or_default_daemon/user` parse real `.vx` files via `vexil_lang::compile` + `vexil_store::parse`; missing fields use `Default`, wrong-type fields log `warn` and use `Default`
+- **XDG storage:** daemon startup uses `malt_config::paths::data_dir()` for all persistence; `std::fs::create_dir_all` ensures path exists before `SessionStore` construction
 
 ### VT Emulator (malt-compat)
 - Cell/Row grid, TerminalGrid (cursor, scroll, erase, resize)
@@ -155,32 +186,91 @@ malt kill ID                  # Destroy session
 
 ### Clients
 - **malt-bin:** clap CLI with auto-workflow (start daemon → create session → attach TUI)
-- **malt-tui:** ratatui rendering (DrawText, DrawRect, Clear, clip), crossterm input, HttpConnection + VnpConnection, styled output with RGB colors
+- **malt-tui:** ratatui rendering (DrawText, DrawRect, Clear, clip), crossterm input, `VnpConnection` uses full bitpack handshake + typed envelope for all messages (send_key_event, send_resize, poll_commands), styled output with RGB colors
 - **maltty:** wgpu window, surface setup, dark background clear, daemon HTTP connection, input mapping (scaffold — text rendering pending)
 - **malt-web:** SvelteKit MVP, styled span grid rendering, keyboard input, session polling
 
-## What's NOT Implemented (remaining work)
+## Implementation Roadmap
 
-### High Priority
-- **cosmic-text glyph rendering in maltty** — GPU terminal opens but shows black screen. Needs glyph atlas, quad instancing, shader pipeline.
-- **Full VNP bitpack messages** — Post-handshake communication uses JSON-in-frames. Should use real VNP envelope + bitpack encode/decode for all message types.
-- **OS-call invariant fixes** — Move `isatty`, `PermissionsExt`, `FromRawHandle` from mash/malt-tools/malt-daemon into malt-platform.
-- **unwrap/expect cleanup** — Fix remaining violations in mash parser and env modules.
+Goal: fully realize `specs/architecture.md`. Every phase is production-ready before starting the next.
+Audit baseline: `docs/baseline-audit-2026-03-31.md`.
 
-### Medium Priority
-- **Structured output parser** — Recognize command output patterns (cargo build, git status, etc.) and emit StructuredOutput messages for semantic rendering.
-- **Isolation enforcement** — IsolationTier is defined but not enforced. Need to actually apply namespaces/cgroups/Job Objects/Seatbelt at process spawn.
-- **malt-app-sdk** — App trait with dual-mode runner (VNP connected + standalone ratatui fallback). Needed for third-party terminal apps.
-- **Observability** — Metrics registry, Prometheus `/metrics` endpoint, structured logging with tracing fields.
-- **POSIX conformance CI** — Wire smoosh (186 tests) + Modernish test suite into CI pipeline.
+### Phase A — Foundation Hardening ✅ COMPLETE
+- ✅ Fix Invariant 2: moved `PermissionsExt` usage into malt-platform
+- ✅ Fix Invariant 5: added `// SAFETY:` to `malt-platform/src/env.rs:25,27`
+- ✅ Add `deny.toml` to workspace root
+- ✅ Wire-format golden file tests for envelope encode/decode stability
 
-### Lower Priority
-- **Out-of-process compat worker** — malt-compat-worker binary for Restricted+ isolation tiers. Heartbeat, crash recovery, memory limits.
-- **Named layout presets** — Save/load layout configurations from .vx files.
-- **OutputChunk batching** — Adaptive batching with 8-chunk threshold and 16ms tick.
-- **malt-elevate integration** — Wire elevated helper into daemon spawn flow for privileged operations.
-- **Remote TLS** — rustls integration, self-signed certs with TOFU, CA-signed for shared infra.
-- **Config file loading** — malt-config currently returns defaults. Wire actual .vx file parsing when vexil-store typed API matures.
+### Phase B — Config + Persistence
+**B1 ✅ COMPLETE** (specs: `docs/superpowers/specs/2026-03-31-phase-b1-persistence-hardening-design.md`)
+- ✅ malt-config: `VxDecoder` trait + real `.vx` file parsing via `vexil_lang::compile`
+- ✅ Corruption handler: `.corrupt.{ts}.vxb` quarantine, `.bak` backup on atomic overwrite
+- ✅ Session name uniqueness + numeric suffix (`-2`…`-100`) on conflict
+- ✅ Persistence debouncing: `DebouncedStore` with 1s timer + `flush_all()`
+- ✅ XDG storage conventions: `malt_config::paths::data_dir()` wired at daemon startup
+- ✅ Counter restore: `Coordinator` loads `DaemonState` on construction
+
+**B2 — in design** (graceful shutdown + session restore on attach)
+- Graceful shutdown: `flush_all()` → session threads stop cleanly
+- Session lifecycle: Active → Dormant state transition on last-client-detach
+- Session restore on attach: re-launch processes (mash + compat) in persisted cwd/args
+- `DetachSession` VNP message handler
+
+**B3 — pending**
+- Scrollback: mmap append-only log per pane, ring buffer header, disk budget (default 10K lines), per-client scroll offsets
+
+### Phase C — Shell Completeness
+- MASH FrameElement emission: MASH composes shell output into FrameElement trees and emits them directly (currently absent)
+- Add 11 missing FrameElement schema variants: Table, List, Tree, Diff, ProgressBar, Sparkline, Badge, KeyValue, Tabs, Modal, StatusBar
+- `catch_unwind` at every MASH poll point (keystroke, execution, expansion)
+- Alias expansion depth limit (1024) and subshell recursion limit (256)
+- Per-session watchdog: heartbeat pings, 500ms SLA enforcement
+- IsolationContext token injection from daemon into each MASH instance
+- Wire Smoosh (186 tests) + Modernish diagnostic suite into CI
+
+### Phase D — Gateway Hardening
+- Wire rate limiter into all route handlers (currently exists but not integrated)
+- Global rate limit (100 req/s across all clients)
+- X-RateLimit response headers on 429 responses
+- Payload size limits: reject POST /exec and POST /send > 64 KiB
+- Per-endpoint scope enforcement (Monitor/Read/Interact/Admin)
+- Make gateway bus-extractable: replace direct Coordinator calls with bus messages only
+
+### Phase E — Observability
+- Metrics registry: counters, gauges, histograms per subsystem (message bus, MASH, compat translator, plugin host, session store, gateway, process supervisor)
+- Prometheus `/metrics` scrape endpoint in malt-gateway
+- Real `/health`: uptime, per-subsystem status (running/degraded/failed), bus queue pressure, active session count, severity mapping
+- Diagnostics bus channel: System domain Diagnostic type (Low priority), `/diagnostics` endpoint
+- JSON structured logging with session_id, pane_id, subsystem, msg_type fields; 50 MiB rotation
+
+### Phase F — Layout + Theme Completeness
+- Focus layer segmentation: tiled base layer vs float overlay layers; directional navigation stays within layer; Escape returns to base layer
+- Theme token resolution: replace stub in malt-renderer with actual token → resolved color mapping
+
+### Phase G — Plugin System Completion
+- Plugin startup lifecycle: `[startup]` manifest section (daemon/session hooks, priority 0–100, lazy flag)
+- User overrides: `~/.config/malt/startup.vx`
+- Plugin output filtering: declare command patterns (e.g. `cargo *`), Plugin Host routes OutputChunks to matching plugins only
+- `malt-app-sdk` crate: App trait with VNP-connected mode + standalone ratatui fallback
+- `malt plugin audit` command
+- Specific latency SLO enforcement: < 5ms keystroke, < 10ms prompt, < 50ms output parser
+
+### Phase H — Isolation Enforcement
+*Most complex phase. Platform-specific per OS.*
+- `tier_available()`: runtime capability probing
+- Linux: namespaces (mount, pid, net, uts, ipc), cgroup v2 (memory + cpu limits), overlayfs, seccomp BPF, veth/bridge for network isolation
+- macOS: sandbox-exec / Seatbelt profile, setrlimit
+- Windows: Job Objects, restricted tokens, HCS bindings (feature-gated), AppContainer
+- Group atomic lifecycle ops: pause, resume, kill, checkpoint
+- malt-compat out-of-process worker (Restricted+ sessions): heartbeat (2s), restart limit (5 in 60s), memory limits, output stall detection
+- IsolationContext enforcement at MASH spawn
+
+### Phase I — Security Hardening
+- Local transport: OS peer credential verification
+- BLAKE3 content-addressed wire identity
+- Token enforcement: verify bearer tokens on every authenticated route in malt-gateway
+- malt-elevate: wire elevated helper into daemon spawn flow for privileged operations
+- Remote TLS: rustls, self-signed certs with TOFU, CA-signed for shared infra
 
 ## Code Standards
 
@@ -207,7 +297,7 @@ malt kill ID                  # Destroy session
 
 ## Testing
 
-- 88 test suites, ~830 tests, zero failures
+- 63 non-empty test suites, ~885 tests, zero failures
 - Tests use `tempfile::tempdir()` for file I/O isolation
 - VNP listener tests use random ports (`bind("127.0.0.1:0")`)
 - Supervisor tests spawn real processes (echo, sleep/ping)
