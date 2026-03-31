@@ -20,7 +20,7 @@ fn main() -> Result<()> {
         Some(Command::Stop) => handle_stop(),
         Some(Command::List) => handle_list(&client),
         Some(Command::New { name }) => handle_new(&client, name.as_deref()),
-        Some(Command::Attach { session_id }) => handle_attach(session_id),
+        Some(Command::Attach { session_id }) => handle_attach(&cli.api_addr, session_id),
         Some(Command::Kill { session_id }) => handle_kill(&client, session_id),
         Some(Command::Exec {
             session_id,
@@ -78,10 +78,37 @@ fn handle_new(client: &MaltClient, name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn handle_attach(session_id: Option<u32>) -> Result<()> {
-    match session_id {
-        Some(id) => println!("attach {id}: not yet implemented"),
-        None => println!("attach: not yet implemented"),
+fn handle_attach(api_addr: &str, session_id: Option<u32>) -> Result<()> {
+    let id = match session_id {
+        Some(id) => id,
+        None => {
+            // Default to session 1 if not specified
+            println!("no session ID specified, defaulting to 1");
+            1
+        }
+    };
+
+    // Find malt-tui binary next to our own executable
+    let exe = std::env::current_exe()?;
+    let exe_dir = exe.parent().unwrap_or(std::path::Path::new("."));
+    let tui_exe = exe_dir.join(if cfg!(windows) { "malt-tui.exe" } else { "malt-tui" });
+
+    if !tui_exe.exists() {
+        anyhow::bail!(
+            "malt-tui not found at {}. Build it with: cargo build -p malt-tui",
+            tui_exe.display()
+        );
+    }
+
+    // Launch malt-tui as a child process (replaces our terminal)
+    let status = std::process::Command::new(&tui_exe)
+        .args(["--session", &id.to_string(), "--api-addr", api_addr])
+        .status()?;
+
+    if !status.success() {
+        if let Some(code) = status.code() {
+            std::process::exit(code);
+        }
     }
     Ok(())
 }
