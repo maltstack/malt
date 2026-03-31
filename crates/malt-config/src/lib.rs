@@ -1,6 +1,8 @@
 //! Vexil Store config loading for MALT.
 
 pub mod paths;
+pub mod decode;
+pub use decode::VxDecoder;
 
 // Generated config types from vexilc (or stubs when vexilc is unavailable).
 include!(concat!(env!("OUT_DIR"), "/mod.rs"));
