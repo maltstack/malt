@@ -67,6 +67,7 @@ impl Registry {
     pub fn new() -> Self {
         let mut tools = HashMap::new();
         tools.insert("cat".to_string(), custom::cat::cat as ToolFn);
+        tools.insert("chmod".to_string(), custom::chmod::chmod as ToolFn);
         tools.insert("cp".to_string(), custom::cp::cp as ToolFn);
         tools.insert("env".to_string(), custom::env::env_cmd as ToolFn);
         tools.insert("grep".to_string(), custom::grep::grep as ToolFn);
