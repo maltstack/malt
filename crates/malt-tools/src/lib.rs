@@ -70,7 +70,9 @@ impl Registry {
         tools.insert("env".to_string(), custom::env::env_cmd as ToolFn);
         tools.insert("grep".to_string(), custom::grep::grep as ToolFn);
         tools.insert("head".to_string(), custom::head::head as ToolFn);
+        tools.insert("ls".to_string(), custom::ls::ls as ToolFn);
         tools.insert("sed".to_string(), custom::sed::sed as ToolFn);
+        tools.insert("touch".to_string(), custom::touch::touch as ToolFn);
         tools.insert("which".to_string(), custom::which::which as ToolFn);
         tools.insert("wc".to_string(), custom::wc::wc as ToolFn);
         Self { tools }

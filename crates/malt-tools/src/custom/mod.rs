@@ -2,6 +2,8 @@ pub mod cat;
 pub mod env;
 pub mod grep;
 pub mod head;
+pub mod ls;
 pub mod sed;
+pub mod touch;
 pub mod wc;
 pub mod which;
