@@ -67,11 +67,13 @@ impl Registry {
     pub fn new() -> Self {
         let mut tools = HashMap::new();
         tools.insert("cat".to_string(), custom::cat::cat as ToolFn);
+        tools.insert("cp".to_string(), custom::cp::cp as ToolFn);
         tools.insert("env".to_string(), custom::env::env_cmd as ToolFn);
         tools.insert("grep".to_string(), custom::grep::grep as ToolFn);
         tools.insert("head".to_string(), custom::head::head as ToolFn);
         tools.insert("ls".to_string(), custom::ls::ls as ToolFn);
         tools.insert("mkdir".to_string(), custom::mkdir::mkdir as ToolFn);
+        tools.insert("mv".to_string(), custom::mv::mv as ToolFn);
         tools.insert("rm".to_string(), custom::rm::rm as ToolFn);
         tools.insert("sed".to_string(), custom::sed::sed as ToolFn);
         tools.insert("touch".to_string(), custom::touch::touch as ToolFn);

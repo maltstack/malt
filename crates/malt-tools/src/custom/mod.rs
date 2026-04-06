@@ -1,9 +1,11 @@
 pub mod cat;
+pub mod cp;
 pub mod env;
 pub mod grep;
 pub mod head;
 pub mod ls;
 pub mod mkdir;
+pub mod mv;
 pub mod rm;
 pub mod sed;
 pub mod touch;
