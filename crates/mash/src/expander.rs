@@ -2,7 +2,7 @@
 //!
 //! Command substitution is stubbed — the executor sub-project wires it up.
 
-use crate::env::{Env, Variable, VarValue};
+use crate::env::{Env, VarValue, Variable};
 
 // ── Sentinels ──
 
@@ -42,7 +42,11 @@ pub enum ExpandError {
 pub fn expand_word(word: &str, env: &mut Env) -> Result<Vec<String>, ExpandError> {
     let expanded = expand_string_inner(word, env, false)?;
     let ifs = env.get_str("IFS");
-    let ifs = if env.is_set("IFS") { ifs.to_string() } else { " \t\n".to_string() };
+    let ifs = if env.is_set("IFS") {
+        ifs.to_string()
+    } else {
+        " \t\n".to_string()
+    };
     let fields = split_fields(&expanded, &ifs);
     let mut result = Vec::new();
     let noglob = env.options().noglob;
@@ -85,7 +89,11 @@ pub fn eval_arithmetic(expr: &str, env: &mut Env) -> Result<i64, ExpandError> {
 
 // ── Core engine ──
 
-fn expand_string_inner(word: &str, env: &mut Env, heredoc_mode: bool) -> Result<String, ExpandError> {
+fn expand_string_inner(
+    word: &str,
+    env: &mut Env,
+    heredoc_mode: bool,
+) -> Result<String, ExpandError> {
     let mut result = String::new();
     let mut chars = word.chars().peekable();
 
@@ -95,7 +103,10 @@ fn expand_string_inner(word: &str, env: &mut Env, heredoc_mode: bool) -> Result<
                 chars.next();
                 result.push(S_QUOTED);
                 while let Some(&c) = chars.peek() {
-                    if c == '\'' { chars.next(); break; }
+                    if c == '\'' {
+                        chars.next();
+                        break;
+                    }
                     chars.next();
                     result.push(c);
                 }
@@ -106,7 +117,10 @@ fn expand_string_inner(word: &str, env: &mut Env, heredoc_mode: bool) -> Result<
                 result.push(S_QUOTED);
                 while let Some(&c) = chars.peek() {
                     match c {
-                        '"' => { chars.next(); break; }
+                        '"' => {
+                            chars.next();
+                            break;
+                        }
                         '\\' => {
                             chars.next();
                             if let Some(&next) = chars.peek() {
@@ -194,7 +208,9 @@ fn expand_string_inner(word: &str, env: &mut Env, heredoc_mode: bool) -> Result<
 fn expand_tilde(chars: &mut std::iter::Peekable<std::str::Chars>, env: &Env) -> String {
     let mut suffix = String::new();
     while let Some(&c) = chars.peek() {
-        if c == '/' || c == ':' { break; }
+        if c == '/' || c == ':' {
+            break;
+        }
         chars.next();
         suffix.push(c);
     }
@@ -226,7 +242,11 @@ fn expand_dollar(
                 chars.next();
                 // $((expr)) — arithmetic
                 let expr = collect_until_double_paren(chars);
-                let val = eval_arithmetic(&expr, env)?;
+                // Expand any nested constructs (variables, command substitutions)
+                // within the arithmetic expression before evaluating
+                let expanded_expr = expand_string_inner(&expr, env, false)?;
+                let stripped = strip_sentinels(&expanded_expr);
+                let val = eval_arithmetic(&stripped, env)?;
                 result.push_str(&val.to_string());
             } else {
                 // $(cmd) — command substitution
@@ -237,8 +257,17 @@ fn expand_dollar(
                 }
             }
         }
-        Some(&c) if c.is_ascii_alphanumeric() || c == '_' || c == '?' || c == '!'
-            || c == '$' || c == '#' || c == '@' || c == '*' || c == '-' || c == '0' =>
+        Some(&c)
+            if c.is_ascii_alphanumeric()
+                || c == '_'
+                || c == '?'
+                || c == '!'
+                || c == '$'
+                || c == '#'
+                || c == '@'
+                || c == '*'
+                || c == '-'
+                || c == '0' =>
         {
             // $var or special parameter
             expand_simple_var(chars, result, env, in_double_quote)?;
@@ -262,7 +291,9 @@ fn expand_brace_param(
     let expr = collect_brace_expr(chars);
 
     if expr.is_empty() {
-        return Err(ExpandError::BadSubstitution { expr: String::new() });
+        return Err(ExpandError::BadSubstitution {
+            expr: String::new(),
+        });
     }
 
     // ${!VAR} — indirect expansion
@@ -273,7 +304,9 @@ fn expand_brace_param(
             if let Some(var) = env.get(arr_name) {
                 match &var.value {
                     VarValue::Array(arr) => {
-                        let keys: Vec<String> = arr.iter().enumerate()
+                        let keys: Vec<String> = arr
+                            .iter()
+                            .enumerate()
                             .filter_map(|(i, v)| v.as_ref().map(|_| i.to_string()))
                             .collect();
                         result.push_str(&keys.join(" "));
@@ -311,7 +344,9 @@ fn expand_brace_param(
                     VarValue::AssocArray(map) => {
                         result.push_str(&map.len().to_string());
                     }
-                    _ => { result.push('0'); }
+                    _ => {
+                        result.push('0');
+                    }
                 }
             } else {
                 result.push('0');
@@ -350,7 +385,8 @@ fn expand_brace_param(
             if idx == "@" || idx == "*" {
                 if let Some(var) = env.get(&name) {
                     let joined = match &var.value {
-                        VarValue::Array(arr) => arr.iter()
+                        VarValue::Array(arr) => arr
+                            .iter()
                             .filter_map(|v| v.as_deref())
                             .collect::<Vec<_>>()
                             .join(" "),
@@ -506,9 +542,12 @@ fn expand_brace_param(
                 None => (substr_expr, None),
             };
 
-            let offset: i64 = offset_str.trim().parse().map_err(|_| ExpandError::Arithmetic {
-                reason: format!("invalid offset: {}", offset_str),
-            })?;
+            let offset: i64 = offset_str
+                .trim()
+                .parse()
+                .map_err(|_| ExpandError::Arithmetic {
+                    reason: format!("invalid offset: {}", offset_str),
+                })?;
             let chars_vec: Vec<char> = val.chars().collect();
             let char_len = chars_vec.len() as i64;
 
@@ -524,7 +563,11 @@ fn expand_brace_param(
                 })?;
                 if length < 0 {
                     let end_pos = (char_len + length) as usize;
-                    if end_pos <= start { start } else { end_pos }
+                    if end_pos <= start {
+                        start
+                    } else {
+                        end_pos
+                    }
                 } else {
                     (start + length as usize).min(chars_vec.len())
                 }
@@ -584,13 +627,16 @@ fn expand_brace_param(
             result.push_str(&val.to_uppercase());
         } else {
             let expanded_pat = expand_string_inner(pat, env, false)?;
-            let s: String = val.chars().map(|c| {
-                if shell_pattern_match(&c.to_string(), &expanded_pat) {
-                    c.to_uppercase().next().unwrap_or(c)
-                } else {
-                    c
-                }
-            }).collect();
+            let s: String = val
+                .chars()
+                .map(|c| {
+                    if shell_pattern_match(&c.to_string(), &expanded_pat) {
+                        c.to_uppercase().next().unwrap_or(c)
+                    } else {
+                        c
+                    }
+                })
+                .collect();
             result.push_str(&s);
         }
         return Ok(());
@@ -606,9 +652,15 @@ fn expand_brace_param(
                     let expanded_pat = expand_string_inner(pat, env, false)?;
                     shell_pattern_match(&c.to_string(), &expanded_pat)
                 };
-                let upper = if matches { c.to_uppercase().next().unwrap_or(c) } else { c };
+                let upper = if matches {
+                    c.to_uppercase().next().unwrap_or(c)
+                } else {
+                    c
+                };
                 result.push(upper);
-                for ch in val_chars { result.push(ch); }
+                for ch in val_chars {
+                    result.push(ch);
+                }
             }
             None => {}
         }
@@ -620,13 +672,16 @@ fn expand_brace_param(
             result.push_str(&val.to_lowercase());
         } else {
             let expanded_pat = expand_string_inner(pat, env, false)?;
-            let s: String = val.chars().map(|c| {
-                if shell_pattern_match(&c.to_string(), &expanded_pat) {
-                    c.to_lowercase().next().unwrap_or(c)
-                } else {
-                    c
-                }
-            }).collect();
+            let s: String = val
+                .chars()
+                .map(|c| {
+                    if shell_pattern_match(&c.to_string(), &expanded_pat) {
+                        c.to_lowercase().next().unwrap_or(c)
+                    } else {
+                        c
+                    }
+                })
+                .collect();
             result.push_str(&s);
         }
         return Ok(());
@@ -642,9 +697,15 @@ fn expand_brace_param(
                     let expanded_pat = expand_string_inner(pat, env, false)?;
                     shell_pattern_match(&c.to_string(), &expanded_pat)
                 };
-                let lower = if matches { c.to_lowercase().next().unwrap_or(c) } else { c };
+                let lower = if matches {
+                    c.to_lowercase().next().unwrap_or(c)
+                } else {
+                    c
+                };
                 result.push(lower);
-                for ch in val_chars { result.push(ch); }
+                for ch in val_chars {
+                    result.push(ch);
+                }
             }
             None => {}
         }
@@ -937,9 +998,13 @@ fn strip_largest_prefix(val: &str, pattern: &str) -> String {
 fn shell_replace_first(val: &str, pattern: &str, replacement: &str) -> String {
     // Try each starting position, find shortest match
     for start in 0..val.len() {
-        if !val.is_char_boundary(start) { continue; }
+        if !val.is_char_boundary(start) {
+            continue;
+        }
         for end in start + 1..=val.len() {
-            if !val.is_char_boundary(end) { continue; }
+            if !val.is_char_boundary(end) {
+                continue;
+            }
             if shell_pattern_match(&val[start..end], pattern) {
                 return format!("{}{}{}", &val[..start], replacement, &val[end..]);
             }
@@ -1029,7 +1094,9 @@ fn expand_simple_var(
             .take_while(|s| !s.is_empty())
             .collect();
         for (i, arg) in args.iter().enumerate() {
-            if i > 0 { result.push(S_BOUNDARY); }
+            if i > 0 {
+                result.push(S_BOUNDARY);
+            }
             result.push_str(arg);
         }
     } else {
@@ -1046,7 +1113,10 @@ fn expand_backtick(
 ) -> Result<(), ExpandError> {
     let mut cmd = String::new();
     while let Some(&c) = chars.peek() {
-        if c == '`' { chars.next(); break; }
+        if c == '`' {
+            chars.next();
+            break;
+        }
         if c == '\\' {
             chars.next();
             if let Some(&next) = chars.peek() {
@@ -1067,12 +1137,35 @@ fn expand_backtick(
 
 fn collect_until_double_paren(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
     let mut expr = String::new();
-    let mut depth = 1;
+    let mut depth = 1; // Arithmetic nesting depth
+    let mut cmd_depth = 0; // Command substitution nesting depth
+
     while let Some(c) = chars.next() {
-        if c == ')' {
+        // If we're inside a command substitution, just collect until we exit it
+        if cmd_depth > 0 {
+            if c == '(' {
+                cmd_depth += 1;
+            } else if c == ')' {
+                cmd_depth -= 1;
+            }
+            expr.push(c);
+            continue;
+        }
+
+        // Not inside command substitution - check for special tokens
+        if c == '$' && chars.peek() == Some(&'(') {
+            // Start of command substitution $(...)
+            cmd_depth = 1;
+            expr.push(c);
+            chars.next(); // consume '('
+            expr.push('(');
+        } else if c == ')' {
             if chars.peek() == Some(&')') {
                 depth -= 1;
-                if depth == 0 { chars.next(); return expr; }
+                if depth == 0 {
+                    chars.next();
+                    return expr;
+                }
                 expr.push(')');
                 chars.next();
                 expr.push(')');
@@ -1080,6 +1173,7 @@ fn collect_until_double_paren(chars: &mut std::iter::Peekable<std::str::Chars>) 
                 expr.push(c);
             }
         } else if c == '(' && chars.peek() == Some(&'(') {
+            // Nested arithmetic
             depth += 1;
             expr.push('(');
             chars.next();
@@ -1095,10 +1189,14 @@ fn collect_until_close_paren(chars: &mut std::iter::Peekable<std::str::Chars>) -
     let mut cmd = String::new();
     let mut depth = 1;
     while let Some(c) = chars.next() {
-        if c == '(' { depth += 1; }
+        if c == '(' {
+            depth += 1;
+        }
         if c == ')' {
             depth -= 1;
-            if depth == 0 { return cmd; }
+            if depth == 0 {
+                return cmd;
+            }
         }
         cmd.push(c);
     }
@@ -1883,7 +1981,11 @@ impl<'a> ArithParser<'a> {
             ArithToken::Bang => {
                 self.advance();
                 let val = self.parse_expr(14)?;
-                if val == 0 { 1 } else { 0 }
+                if val == 0 {
+                    1
+                } else {
+                    0
+                }
             }
             ArithToken::Tilde => {
                 self.advance();
@@ -1996,28 +2098,60 @@ impl<'a> ArithParser<'a> {
                 ArithToken::Pipe => lhs | rhs,
                 ArithToken::Caret => lhs ^ rhs,
                 ArithToken::AmpAmp => {
-                    if lhs != 0 && rhs != 0 { 1 } else { 0 }
+                    if lhs != 0 && rhs != 0 {
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ArithToken::PipePipe => {
-                    if lhs != 0 || rhs != 0 { 1 } else { 0 }
+                    if lhs != 0 || rhs != 0 {
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ArithToken::EqEq => {
-                    if lhs == rhs { 1 } else { 0 }
+                    if lhs == rhs {
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ArithToken::BangEq => {
-                    if lhs != rhs { 1 } else { 0 }
+                    if lhs != rhs {
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ArithToken::Lt => {
-                    if lhs < rhs { 1 } else { 0 }
+                    if lhs < rhs {
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ArithToken::Gt => {
-                    if lhs > rhs { 1 } else { 0 }
+                    if lhs > rhs {
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ArithToken::LtEq => {
-                    if lhs <= rhs { 1 } else { 0 }
+                    if lhs <= rhs {
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ArithToken::GtEq => {
-                    if lhs >= rhs { 1 } else { 0 }
+                    if lhs >= rhs {
+                        1
+                    } else {
+                        0
+                    }
                 }
                 ArithToken::Comma => rhs,
                 _ => {

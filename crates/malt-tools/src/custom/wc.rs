@@ -43,7 +43,9 @@ pub fn wc(args: &[String], stdin: &[u8]) -> BuiltinResult {
 
     if file_args.is_empty() {
         let counts = count_data(stdin);
-        let line = format_counts(&counts, show_all, lines_only, words_only, bytes_only, chars_only, None);
+        let line = format_counts(
+            &counts, show_all, lines_only, words_only, bytes_only, chars_only, None,
+        );
         return BuiltinResult::success(line.into_bytes());
     }
 
@@ -63,7 +65,12 @@ pub fn wc(args: &[String], stdin: &[u8]) -> BuiltinResult {
                 totals.bytes += counts.bytes;
                 totals.chars += counts.chars;
                 let line = format_counts(
-                    &counts, show_all, lines_only, words_only, bytes_only, chars_only,
+                    &counts,
+                    show_all,
+                    lines_only,
+                    words_only,
+                    bytes_only,
+                    chars_only,
                     Some(path_str),
                 );
                 stdout.extend_from_slice(line.as_bytes());
@@ -78,7 +85,12 @@ pub fn wc(args: &[String], stdin: &[u8]) -> BuiltinResult {
 
     if multiple {
         let line = format_counts(
-            &totals, show_all, lines_only, words_only, bytes_only, chars_only,
+            &totals,
+            show_all,
+            lines_only,
+            words_only,
+            bytes_only,
+            chars_only,
             Some("total"),
         );
         stdout.extend_from_slice(line.as_bytes());

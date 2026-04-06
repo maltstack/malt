@@ -27,11 +27,19 @@ pub struct ExecResult {
 
 impl ExecResult {
     fn success() -> Self {
-        Self { exit_code: 0, stdout: Vec::new(), stderr: Vec::new() }
+        Self {
+            exit_code: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
     }
 
     fn with_code(code: i32) -> Self {
-        Self { exit_code: code, stdout: Vec::new(), stderr: Vec::new() }
+        Self {
+            exit_code: code,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
     }
 
     fn failure(code: i32, msg: impl Into<String>) -> Self {
@@ -88,18 +96,29 @@ pub fn execute_list(commands: &[Spanned<Command>], source: &str, env: &mut Env) 
 
 /// Execute a command string and capture stdout. Used by expander for $(cmd).
 /// Runs in a cloned Env (subshell semantics). Strips trailing newlines.
-pub fn capture_command(cmd_str: &str, env: &mut Env) -> Result<String, crate::expander::ExpandError> {
+pub fn capture_command(
+    cmd_str: &str,
+    env: &mut Env,
+) -> Result<String, crate::expander::ExpandError> {
     let cmds = match crate::parser::parse(cmd_str) {
         Ok(cmds) => cmds,
-        Err(e) => return Err(crate::expander::ExpandError::CommandSubstitution(e.to_string())),
+        Err(e) => {
+            return Err(crate::expander::ExpandError::CommandSubstitution(
+                e.to_string(),
+            ))
+        }
     };
     let mut sub_env = env.clone();
     let result = execute_list(&cmds, cmd_str, &mut sub_env);
     env.set_exit_code(result.exit_code);
     let mut output = String::from_utf8_lossy(&result.stdout).to_string();
     // Strip trailing newlines (POSIX).
-    while output.ends_with('\n') { output.pop(); }
-    while output.ends_with('\r') { output.pop(); }
+    while output.ends_with('\n') {
+        output.pop();
+    }
+    while output.ends_with('\r') {
+        output.pop();
+    }
     Ok(output)
 }
 
@@ -109,27 +128,25 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
     match &cmd.node {
         Command::Empty => ExecResult::success(),
 
-        Command::Simple { name, args, redirects, env_assigns } => {
-            execute_simple(name, args, redirects, env_assigns, source, env)
-        }
+        Command::Simple {
+            name,
+            args,
+            redirects,
+            env_assigns,
+        } => execute_simple(name, args, redirects, env_assigns, source, env),
 
-        Command::EnvAssign { assigns } => {
-            execute_env_assign(assigns, source, env)
-        }
+        Command::EnvAssign { assigns } => execute_env_assign(assigns, source, env),
 
-        Command::List { pairs, last } => {
-            execute_list_node(pairs, last, source, env)
-        }
+        Command::List { pairs, last } => execute_list_node(pairs, last, source, env),
 
-        Command::BraceGroup { body } => {
-            execute_list(body, source, env)
-        }
+        Command::BraceGroup { body } => execute_list(body, source, env),
 
         Command::Subshell { body } => {
             // Clone env so changes in the subshell don't affect the parent.
             let mut sub_env = env.clone();
             let result = execute_list(body, source, &mut sub_env);
-            // Propagate exit code but not env changes.
+            // Propagate exit code to parent env (for return to capture).
+            env.set_exit_code(result.exit_code);
             result
         }
 
@@ -151,7 +168,10 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
             ExecResult::success()
         }
 
-        Command::Redirected { cmd: inner, redirects } => {
+        Command::Redirected {
+            cmd: inner,
+            redirects,
+        } => {
             let resolved_io = match resolve_redirects(redirects, source, env) {
                 Ok(io) => io,
                 Err(err_result) => return err_result,
@@ -163,9 +183,19 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
             result
         }
 
-        Command::If { condition, then_body, elif_clauses, else_body } => {
-            execute_if(condition, then_body, elif_clauses, else_body.as_deref(), source, env)
-        }
+        Command::If {
+            condition,
+            then_body,
+            elif_clauses,
+            else_body,
+        } => execute_if(
+            condition,
+            then_body,
+            elif_clauses,
+            else_body.as_deref(),
+            source,
+            env,
+        ),
 
         Command::While { condition, body } => {
             execute_while_until(condition, body, /* is_until */ false, source, env)
@@ -175,22 +205,24 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
             execute_while_until(condition, body, /* is_until */ true, source, env)
         }
 
-        Command::For { var, words, body } => {
-            execute_for(var, words, body, source, env)
-        }
+        Command::For { var, words, body } => execute_for(var, words, body, source, env),
 
-        Command::ForArith { init, cond, step, body } => {
-            execute_for_arith(init, cond, step, body, source, env)
-        }
+        Command::ForArith {
+            init,
+            cond,
+            step,
+            body,
+        } => execute_for_arith(init, cond, step, body, source, env),
 
-        Command::Case { word, items } => {
-            execute_case(word, items, source, env)
-        }
+        Command::Case { word, items } => execute_case(word, items, source, env),
 
         Command::Select { var, words, body } => {
             // Select requires interactive input. Stub with code 1.
             let _ = (var, words, body);
-            ExecResult::failure(1, "mash: select: not yet implemented (requires interactive input)\n")
+            ExecResult::failure(
+                1,
+                "mash: select: not yet implemented (requires interactive input)\n",
+            )
         }
 
         Command::FunctionDef { name, body } => {
@@ -200,13 +232,9 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
             ExecResult::success()
         }
 
-        Command::Arithmetic { expr } => {
-            execute_arithmetic(expr, source, env)
-        }
+        Command::Arithmetic { expr } => execute_arithmetic(expr, source, env),
 
-        Command::Conditional { expr } => {
-            execute_conditional(expr, source, env)
-        }
+        Command::Conditional { expr } => execute_conditional(expr, source, env),
 
         Command::Coproc { name, cmd: inner } => {
             let _ = name;
@@ -215,7 +243,10 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
             result
         }
 
-        Command::Time { posix_format, command } => {
+        Command::Time {
+            posix_format,
+            command,
+        } => {
             let _ = posix_format;
             // Time: just execute the command (timing output comes later).
             execute(command, source, env)
@@ -322,11 +353,7 @@ fn execute_pipeline(
         let stage_cmd = commands[i].clone();
 
         // stdin for this stage: stage 0 inherits, others read from pipe[i-1].
-        let stdin_file: Option<std::fs::File> = if i > 0 {
-            read_ends[i - 1].take()
-        } else {
-            None
-        };
+        let stdin_file: Option<std::fs::File> = if i > 0 { read_ends[i - 1].take() } else { None };
 
         // stdout for this stage: last stage captures (Pipe), others write to pipe[i].
         let stdout_file: Option<std::fs::File> = if i < n - 1 {
@@ -336,7 +363,13 @@ fn execute_pipeline(
         };
 
         handles.push(std::thread::spawn(move || {
-            execute_with_io(&stage_cmd, &stage_source, &mut stage_env, stdin_file, stdout_file)
+            execute_with_io(
+                &stage_cmd,
+                &stage_source,
+                &mut stage_env,
+                stdin_file,
+                stdout_file,
+            )
         }));
     }
 
@@ -347,7 +380,19 @@ fn execute_pipeline(
     // 4. Join all threads, collect results.
     let results: Vec<ExecResult> = handles
         .into_iter()
-        .map(|h| h.join().unwrap_or_else(|_| ExecResult::with_code(1)))
+        .map(|h| {
+            h.join().unwrap_or_else(|e| {
+                let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                tracing::error!(panic = %msg, "pipeline stage panicked");
+                ExecResult::with_code(1)
+            })
+        })
         .collect();
 
     // 5. Combine output: stdout from last stage, stderr from all stages.
@@ -402,13 +447,21 @@ fn execute_with_io(
     // pipe fds directly.  For other command types, we execute normally
     // and then redirect captured output to the pipe.
     match &cmd.node {
-        Command::Simple { name, args, redirects, env_assigns } => {
-            execute_simple_with_io(
-                name, args, redirects, env_assigns,
-                source, env,
-                stdin_file, stdout_file,
-            )
-        }
+        Command::Simple {
+            name,
+            args,
+            redirects,
+            env_assigns,
+        } => execute_simple_with_io(
+            name,
+            args,
+            redirects,
+            env_assigns,
+            source,
+            env,
+            stdin_file,
+            stdout_file,
+        ),
         _ => {
             // For non-simple commands (brace groups, subshells, etc.),
             // execute normally and then write captured stdout to the pipe.
@@ -464,12 +517,58 @@ fn execute_simple_with_io(
 
     // 3. Handle builtins in pipeline context.
     // Only take stdin_file if this IS a builtin (otherwise we need it for the external process).
-    let builtin_stdin = if BUILTIN_NAMES.contains(&cmd_name.as_str()) { stdin_file.take() } else { None };
+    let builtin_stdin = if BUILTIN_NAMES.contains(&cmd_name.as_str()) {
+        stdin_file.take()
+    } else {
+        None
+    };
     if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env, builtin_stdin) {
         if let Some(mut pipe_out) = stdout_file {
-            let _ = pipe_out.write_all(&result.stdout);
+            if let Err(e) = pipe_out.write_all(&result.stdout) {
+                return ExecResult::failure(1, format!("mash: pipeline write failed: {e}\n"));
+            }
             result.stdout = Vec::new();
         }
+        return result;
+    }
+
+    // 3b. Handle malt-tools (in-process POSIX utilities like grep, cat, wc).
+    // These are separate from shell builtins and run with captured I/O.
+    let tools_registry = malt_tools::Registry::new();
+    if tools_registry.contains(&cmd_name) {
+        // Read stdin from file if provided (pipeline input).
+        let stdin_bytes: Vec<u8> = if let Some(mut file) = stdin_file.take() {
+            let mut buf = Vec::new();
+            if let Err(e) = std::io::Read::read_to_end(&mut file, &mut buf) {
+                return ExecResult::failure(
+                    1,
+                    format!("mash: {cmd_name}: read stdin failed: {e}\n"),
+                );
+            }
+            buf
+        } else {
+            Vec::new()
+        };
+
+        // Execute the tool.
+        let tool_fn = tools_registry.get(&cmd_name).unwrap();
+        let tool_result = tool_fn(&argv, &stdin_bytes);
+
+        // Convert tool result to ExecResult.
+        let mut result = ExecResult {
+            exit_code: tool_result.exit_code,
+            stdout: tool_result.stdout,
+            stderr: tool_result.stderr,
+        };
+
+        // Write to pipeline if stdout_file is provided.
+        if let Some(mut pipe_out) = stdout_file {
+            if let Err(e) = pipe_out.write_all(&result.stdout) {
+                return ExecResult::failure(1, format!("mash: pipeline write failed: {e}\n"));
+            }
+            result.stdout = Vec::new();
+        }
+
         return result;
     }
 
@@ -592,10 +691,18 @@ fn execute_simple_with_io(
     let mut stdout_bytes = Vec::new();
     let mut stderr_bytes = Vec::new();
     if let Some(mut out) = child.take_stdout() {
-        let _ = out.read_to_end(&mut stdout_bytes);
+        if let Err(e) = out.read_to_end(&mut stdout_bytes) {
+            stderr_bytes.extend_from_slice(
+                format!("mash: {cmd_name}: stdout read failed: {e}\n").as_bytes(),
+            );
+        }
     }
     if let Some(mut err) = child.take_stderr() {
-        let _ = err.read_to_end(&mut stderr_bytes);
+        if let Err(e) = err.read_to_end(&mut stderr_bytes) {
+            stderr_bytes.extend_from_slice(
+                format!("mash: {cmd_name}: stderr read failed: {e}\n").as_bytes(),
+            );
+        }
     }
 
     // Wait.
@@ -636,6 +743,46 @@ fn execute_simple(
         _ => return ExecResult::success(), // Null command.
     };
 
+    // 1b. Alias expansion: if the command name matches an alias, substitute and re-execute.
+    // Per POSIX: alias expansion happens early, before other lookups.
+    if let Some(alias_val) = env.get_alias(&cmd_name).map(|s| s.to_string()) {
+        // Prevent infinite self-recursion: if the alias value's first word
+        // equals the alias name, skip expansion.
+        let first_word = alias_val.split_whitespace().next().unwrap_or("");
+        if first_word != cmd_name {
+            // Build substituted command: alias value + original args + redirects
+            let mut substituted = alias_val;
+            for arg_span in arg_spans {
+                substituted.push(' ');
+                substituted.push_str(arg_span.text(source));
+            }
+            for r in redirects {
+                substituted.push(' ');
+                substituted.push_str(&redirect_to_text(r, source));
+            }
+
+            // An empty alias (e.g., `alias empty=''`) with no args/redirects
+            // is a null command — exit 0.
+            if substituted.trim().is_empty() {
+                return ExecResult::success();
+            }
+
+            // Re-parse and execute the substituted command.
+            match crate::parser::parse(&substituted) {
+                Ok(commands) if !commands.is_empty() => {
+                    let mut result = ExecResult::success();
+                    for cmd in &commands {
+                        result = execute(cmd, source, env);
+                    }
+                    return result;
+                }
+                _ => {
+                    // Parse failed — fall through to normal command lookup.
+                }
+            }
+        }
+    }
+
     // 2. Expand all arguments.
     let mut argv: Vec<String> = Vec::new();
     // Include remaining fields from name expansion (if word split produced multiple).
@@ -667,7 +814,38 @@ fn execute_simple(
     };
 
     // 5. Handle special builtins (break, continue, return, true, false, exit, :, echo).
-    if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env, resolved_io.stdin.take()) {
+    // Note: Don't take stdin here - only take it if the builtin actually needs it.
+    if BUILTIN_NAMES.contains(&cmd_name.as_str()) {
+        if let Some(mut result) =
+            try_execute_builtin(&cmd_name, &argv, env, resolved_io.stdin.take())
+        {
+            apply_output_redirects(&mut result, resolved_io);
+            return result;
+        }
+    }
+
+    // 5b. Handle malt-tools (in-process POSIX utilities like grep, cat, wc, env, which).
+    let tools_registry = malt_tools::Registry::new();
+    if tools_registry.contains(&cmd_name) {
+        // Read stdin if redirected.
+        let stdin_bytes: Vec<u8> = if let Some(mut file) = resolved_io.stdin.take() {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut file, &mut buf);
+            buf
+        } else {
+            Vec::new()
+        };
+
+        // Execute the tool.
+        let tool_fn = tools_registry.get(&cmd_name).unwrap();
+        let tool_result = tool_fn(&argv, &stdin_bytes);
+
+        // Convert to ExecResult and apply redirects.
+        let mut result = ExecResult {
+            exit_code: tool_result.exit_code,
+            stdout: tool_result.stdout,
+            stderr: tool_result.stderr,
+        };
         apply_output_redirects(&mut result, resolved_io);
         return result;
     }
@@ -690,6 +868,15 @@ fn execute_simple(
             line: 0,
         });
 
+        // Handle loop depth: in lexical mode, reset to 0; in non-lexical, preserve it.
+        let saved_loop_depth = if env.options().nonlexicalctrl {
+            env.loop_depth()
+        } else {
+            let prev = env.loop_depth();
+            env.set_loop_depth(0);
+            prev
+        };
+
         // Apply temporary env assignments in function scope.
         for (k, v) in &child_env {
             let _ = env.set(k, Variable::string(v.clone()));
@@ -700,11 +887,24 @@ fn execute_simple(
         let func_body = func_def.body.clone();
         let mut result = execute(&func_body, &stored_source, env);
 
-        // Handle return.
-        if let LoopControl::Return(code) = env.loop_control().clone() {
-            result.exit_code = code;
-            env.set_loop_control(LoopControl::None);
+        // Handle loop control at function boundary.
+        match env.loop_control().clone() {
+            LoopControl::Return(code) => {
+                result.exit_code = code;
+                env.set_loop_control(LoopControl::None);
+            }
+            LoopControl::Break(_) | LoopControl::Continue(_) => {
+                if !env.options().nonlexicalctrl {
+                    // Lexical mode: consume break/continue (can't escape function)
+                    env.set_loop_control(LoopControl::None);
+                }
+                // Non-lexical mode: leave it set for enclosing loop to handle
+            }
+            LoopControl::None => {}
         }
+
+        // Restore loop depth.
+        env.set_loop_depth(saved_loop_depth);
 
         // Restore state.
         env.pop_call();
@@ -773,10 +973,18 @@ fn execute_simple(
     let mut stdout_bytes = Vec::new();
     let mut stderr_bytes = Vec::new();
     if let Some(mut out) = child.take_stdout() {
-        let _ = out.read_to_end(&mut stdout_bytes);
+        if let Err(e) = out.read_to_end(&mut stdout_bytes) {
+            stderr_bytes.extend_from_slice(
+                format!("mash: {cmd_name}: stdout read failed: {e}\n").as_bytes(),
+            );
+        }
     }
     if let Some(mut err) = child.take_stderr() {
-        let _ = err.read_to_end(&mut stderr_bytes);
+        if let Err(e) = err.read_to_end(&mut stderr_bytes) {
+            stderr_bytes.extend_from_slice(
+                format!("mash: {cmd_name}: stderr read failed: {e}\n").as_bytes(),
+            );
+        }
     }
 
     // Wait for the child.
@@ -799,33 +1007,118 @@ fn execute_simple(
 // ── Builtin commands (minimal set for control flow) ───────────────────
 
 /// Try to execute a builtin command. Returns None if not a builtin.
-fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_file: Option<std::fs::File>) -> Option<ExecResult> {
+fn try_execute_builtin(
+    cmd_name: &str,
+    argv: &[String],
+    env: &mut Env,
+    stdin_file: Option<std::fs::File>,
+) -> Option<ExecResult> {
     match cmd_name {
         "break" => {
-            let n: usize = argv.first().and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+            let n: usize = argv
+                .first()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1)
+                .max(1);
+            // In lexical mode, validate: cannot break more levels than currently nested
+            // In non-lexical mode, allow any depth (will propagate to enclosing loops)
+            if !env.options().nonlexicalctrl {
+                let current_depth = env.loop_depth();
+                if n > current_depth {
+                    return Some(ExecResult::failure(
+                        1,
+                        format!("mash: break: {}: loop level out of range\n", n),
+                    ));
+                }
+            }
             env.set_loop_control(LoopControl::Break(n));
             Some(ExecResult::success())
         }
         "continue" => {
-            let n: usize = argv.first().and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+            let n: usize = argv
+                .first()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1)
+                .max(1);
+            // In lexical mode, validate: cannot continue more levels than currently nested
+            // In non-lexical mode, allow any depth (will propagate to enclosing loops)
+            if !env.options().nonlexicalctrl {
+                let current_depth = env.loop_depth();
+                if n > current_depth {
+                    return Some(ExecResult::failure(
+                        1,
+                        format!("mash: continue: {}: loop level out of range\n", n),
+                    ));
+                }
+            }
             env.set_loop_control(LoopControl::Continue(n));
             Some(ExecResult::success())
         }
         "return" => {
-            let code: i32 = argv.first().and_then(|s| s.parse().ok()).unwrap_or(env.exit_code());
+            let code: i32 = argv
+                .first()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(env.exit_code());
             env.set_loop_control(LoopControl::Return(code));
             Some(ExecResult::with_code(code))
         }
         "exit" => {
-            let code: i32 = argv.first().and_then(|s| s.parse().ok()).unwrap_or(env.exit_code());
+            let code: i32 = argv
+                .first()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(env.exit_code());
             env.request_exit(code);
             Some(ExecResult::with_code(code))
         }
-        "true" | ":" => {
-            Some(ExecResult::success())
+        "true" | ":" => Some(ExecResult::success()),
+        "false" => Some(ExecResult::with_code(1)),
+        "exec" => {
+            // exec with no args: return success (redirects are handled by caller).
+            // exec with args: execute command and replace shell (simulate by executing and exiting).
+            if argv.is_empty() {
+                // Just applying redirects in the current shell.
+                Some(ExecResult::success())
+            } else {
+                // For exec with args, we fall through to normal execution,
+                // but we need to ensure the shell exits after.
+                // The caller (execute_simple_with_io) will handle this because
+                // we're in try_execute_builtin and returning None falls through.
+                None
+            }
         }
-        "false" => {
-            Some(ExecResult::with_code(1))
+        "shopt" => Some(builtin_shopt(&argv, env)),
+        "times" => {
+            // Print accumulated CPU times for shell and children.
+            match malt_platform::resource::get_rusage() {
+                Ok(usage) => {
+                    let fmt = |secs: f64| -> String {
+                        let mins = (secs / 60.0) as u64;
+                        let rem = secs - (mins as f64 * 60.0);
+                        format!("{}m{:.3}s", mins, rem)
+                    };
+                    let out = format!(
+                        "{} {}\n{} {}\n",
+                        fmt(usage.user_secs),
+                        fmt(usage.sys_secs),
+                        fmt(usage.child_user_secs),
+                        fmt(usage.child_sys_secs),
+                    );
+                    Some(ExecResult {
+                        exit_code: 0,
+                        stdout: out.into_bytes(),
+                        stderr: Vec::new(),
+                    })
+                }
+                Err(_) => {
+                    // Fallback to zeros when unavailable (Windows, or errors)
+                    let out = "0m0.000s 0m0.000s\n0m0.000s 0m0.000s\n";
+                    Some(ExecResult {
+                        exit_code: 0,
+                        stdout: out.as_bytes().to_vec(),
+                        stderr: Vec::new(),
+                    })
+                }
+            }
         }
         "echo" => {
             // Built-in echo to avoid depending on external echo binary.
@@ -862,9 +1155,7 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_fil
                     let result = execute_list(&cmds, &input, env);
                     Some(result)
                 }
-                Err(e) => {
-                    Some(ExecResult::failure(1, format!("mash: eval: {e}\n")))
-                }
+                Err(e) => Some(ExecResult::failure(1, format!("mash: eval: {e}\n"))),
             }
         }
         "set" => {
@@ -903,6 +1194,7 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_fil
                                         "pipefail" => env.options_mut().pipefail = true,
                                         "noclobber" => env.options_mut().noclobber = true,
                                         "noexec" => env.options_mut().noexec = true,
+                                        "nonlexicalctrl" => env.options_mut().nonlexicalctrl = true,
                                         _ => {}
                                     }
                                 }
@@ -935,6 +1227,9 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_fil
                                         "pipefail" => env.options_mut().pipefail = false,
                                         "noclobber" => env.options_mut().noclobber = false,
                                         "noexec" => env.options_mut().noexec = false,
+                                        "nonlexicalctrl" => {
+                                            env.options_mut().nonlexicalctrl = false
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -980,7 +1275,26 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_fil
                 }
             };
             match crate::parser::parse(&contents) {
-                Ok(cmds) => Some(execute_list(&cmds, &contents, env)),
+                Ok(cmds) => {
+                    let mut result = execute_list(&cmds, &contents, env);
+                    // Handle loop control and return propagation from sourced script
+                    match env.loop_control().clone() {
+                        LoopControl::Return(code) => {
+                            result.exit_code = code;
+                            env.set_loop_control(LoopControl::None);
+                        }
+                        LoopControl::Break(_) | LoopControl::Continue(_) => {
+                            // Source propagates break/continue only in non-lexical mode
+                            if !env.options().nonlexicalctrl {
+                                // Lexical mode: consume break/continue (can't escape sourced script)
+                                env.set_loop_control(LoopControl::None);
+                            }
+                            // Non-lexical mode: leave it set for enclosing loop to handle
+                        }
+                        LoopControl::None => {}
+                    }
+                    Some(result)
+                }
                 Err(e) => Some(ExecResult {
                     exit_code: 1,
                     stdout: Vec::new(),
@@ -1067,9 +1381,7 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_fil
                     match env.unset(name) {
                         Ok(_) => {}
                         Err(e) => {
-                            errors.extend_from_slice(
-                                format!("mash: unset: {}\n", e).as_bytes(),
-                            );
+                            errors.extend_from_slice(format!("mash: unset: {}\n", e).as_bytes());
                             exit_code = 1;
                         }
                     }
@@ -1154,9 +1466,13 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_fil
                         .map(|p| {
                             let s = p.to_string_lossy().into_owned();
                             #[cfg(windows)]
-                            { s.replace('\\', "/") }
+                            {
+                                s.replace('\\', "/")
+                            }
                             #[cfg(not(windows))]
-                            { s }
+                            {
+                                s
+                            }
                         })
                         .unwrap_or_else(|_| target.clone());
 
@@ -1175,9 +1491,10 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_fil
                         Some(ExecResult::success())
                     }
                 }
-                Err(e) => {
-                    Some(ExecResult::failure(1, format!("mash: cd: {}: {}\n", target, e)))
-                }
+                Err(e) => Some(ExecResult::failure(
+                    1,
+                    format!("mash: cd: {}: {}\n", target, e),
+                )),
             }
         }
         "pwd" => {
@@ -1188,9 +1505,13 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_fil
                     .map(|p| {
                         let s = p.to_string_lossy().into_owned();
                         #[cfg(windows)]
-                        { s.replace('\\', "/") }
+                        {
+                            s.replace('\\', "/")
+                        }
                         #[cfg(not(windows))]
-                        { s }
+                        {
+                            s
+                        }
                     })
                     .unwrap_or_default()
             } else {
@@ -1201,9 +1522,13 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_fil
                         .map(|p| {
                             let s = p.to_string_lossy().into_owned();
                             #[cfg(windows)]
-                            { s.replace('\\', "/") }
+                            {
+                                s.replace('\\', "/")
+                            }
                             #[cfg(not(windows))]
-                            { s }
+                            {
+                                s
+                            }
                         })
                         .unwrap_or_default()
                 } else {
@@ -1219,9 +1544,7 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_fil
         }
 
         // ── test / [ ─────────────────────────────────────────────────
-        "test" => {
-            Some(builtin_test(argv, false))
-        }
+        "test" => Some(builtin_test(argv, false)),
         "[" => {
             // `[` requires a closing `]` as the last argument.
             if argv.last().map(|s| s.as_str()) != Some("]") {
@@ -1232,54 +1555,34 @@ fn try_execute_builtin(cmd_name: &str, argv: &[String], env: &mut Env, stdin_fil
         }
 
         // ── trap ─────────────────────────────────────────────────────
-        "trap" => {
-            Some(builtin_trap(argv, env))
-        }
+        "trap" => Some(builtin_trap(argv, env)),
 
         // ── type ─────────────────────────────────────────────────────
-        "type" => {
-            Some(builtin_type(argv, env))
-        }
+        "type" => Some(builtin_type(argv, env)),
 
         // ── hash ─────────────────────────────────────────────────────
-        "hash" => {
-            Some(builtin_hash(argv, env))
-        }
+        "hash" => Some(builtin_hash(argv, env)),
 
         // ── command ──────────────────────────────────────────────────
-        "command" => {
-            Some(builtin_command(argv, env))
-        }
+        "command" => Some(builtin_command(argv, env)),
 
         // ── read ─────────────────────────────────────────────────────
-        "read" => {
-            Some(builtin_read(argv, env, stdin_file))
-        }
+        "read" => Some(builtin_read(argv, env, stdin_file)),
 
         // ── printf ───────────────────────────────────────────────────
-        "printf" => {
-            Some(builtin_printf(argv))
-        }
+        "printf" => Some(builtin_printf(argv)),
 
         // ── alias ────────────────────────────────────────────────────
-        "alias" => {
-            Some(builtin_alias(argv, env))
-        }
+        "alias" => Some(builtin_alias(argv, env)),
 
         // ── unalias ──────────────────────────────────────────────────
-        "unalias" => {
-            Some(builtin_unalias(argv, env))
-        }
+        "unalias" => Some(builtin_unalias(argv, env)),
 
         // ── getopts ─────────────────────────────────────────────────
-        "getopts" => {
-            Some(builtin_getopts(argv, env))
-        }
+        "getopts" => Some(builtin_getopts(argv, env)),
 
         // ── umask ────────────────────────────────────────────────────
-        "umask" => {
-            Some(builtin_umask(argv))
-        }
+        "umask" => Some(builtin_umask(argv)),
 
         _ => None,
     }
@@ -1356,8 +1659,8 @@ fn test_eval_primary(args: &[String], pos: &mut usize, end: usize) -> Result<boo
     if arg.starts_with('-') && arg.len() == 2 {
         let op = arg.as_str();
         match op {
-            "-z" | "-n" | "-e" | "-f" | "-d" | "-r" | "-w" | "-x" | "-s" | "-L" | "-h"
-            | "-b" | "-c" | "-p" | "-S" | "-g" | "-u" | "-k" | "-t" => {
+            "-z" | "-n" | "-e" | "-f" | "-d" | "-r" | "-w" | "-x" | "-s" | "-L" | "-h" | "-b"
+            | "-c" | "-p" | "-S" | "-g" | "-u" | "-k" | "-t" => {
                 if *pos + 1 >= end {
                     // Single-arg form: `-z` with no operand? Treat the operator as a non-empty string.
                     *pos += 1;
@@ -1411,15 +1714,15 @@ fn test_unary(op: &str, operand: &str) -> Result<bool, String> {
             // Approximate: exists implies readable on most platforms
             Ok(path.exists())
         }
-        "-w" => {
-            Ok(path.metadata().map(|m| !m.permissions().readonly()).unwrap_or(false))
-        }
-        "-x" => {
-            Ok(malt_platform::io::is_executable(path))
-        }
-        "-L" | "-h" => {
-            Ok(path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false))
-        }
+        "-w" => Ok(path
+            .metadata()
+            .map(|m| !m.permissions().readonly())
+            .unwrap_or(false)),
+        "-x" => Ok(malt_platform::io::is_executable(path)),
+        "-L" | "-h" => Ok(path
+            .symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)),
         "-b" | "-c" | "-p" | "-S" | "-g" | "-u" | "-k" => {
             // Block/char device, pipe, socket, setgid, setuid, sticky —
             // not commonly available on all platforms; return false.
@@ -1442,8 +1745,12 @@ fn test_binary(left: &str, op: &str, right: &str) -> Result<bool, String> {
         "=" => Ok(left == right),
         "!=" => Ok(left != right),
         "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" => {
-            let l: i64 = left.parse().map_err(|_| format!("integer expression expected: `{left}'"))?;
-            let r: i64 = right.parse().map_err(|_| format!("integer expression expected: `{right}'"))?;
+            let l: i64 = left
+                .parse()
+                .map_err(|_| format!("integer expression expected: `{left}'"))?;
+            let r: i64 = right
+                .parse()
+                .map_err(|_| format!("integer expression expected: `{right}'"))?;
             let result = match op {
                 "-eq" => l == r,
                 "-ne" => l != r,
@@ -1463,10 +1770,9 @@ fn test_binary(left: &str, op: &str, right: &str) -> Result<bool, String> {
 
 /// Known POSIX signal names.
 const SIGNAL_NAMES: &[&str] = &[
-    "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS", "FPE",
-    "KILL", "USR1", "SEGV", "USR2", "PIPE", "ALRM", "TERM",
-    "STKFLT", "CHLD", "CONT", "STOP", "TSTP", "TTIN", "TTOU",
-    "URG", "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "IO", "PWR", "SYS",
+    "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS", "FPE", "KILL", "USR1", "SEGV", "USR2",
+    "PIPE", "ALRM", "TERM", "STKFLT", "CHLD", "CONT", "STOP", "TSTP", "TTIN", "TTOU", "URG",
+    "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "IO", "PWR", "SYS",
 ];
 
 /// Special (pseudo-)signals recognized by POSIX shells.
@@ -1475,7 +1781,9 @@ const SPECIAL_TRAPS: &[&str] = &["EXIT", "ERR", "DEBUG", "RETURN"];
 fn is_valid_signal(name: &str) -> bool {
     // Accept with or without "SIG" prefix, and special traps.
     let normalized = name.strip_prefix("SIG").unwrap_or(name);
-    SIGNAL_NAMES.iter().any(|s| s.eq_ignore_ascii_case(normalized))
+    SIGNAL_NAMES
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(normalized))
         || SPECIAL_TRAPS.iter().any(|s| s.eq_ignore_ascii_case(name))
         || name.parse::<u32>().is_ok() // numeric signal
 }
@@ -1491,7 +1799,8 @@ fn builtin_trap(argv: &[String], env: &mut Env) -> ExecResult {
     // trap (no args): list all traps
     if argv.is_empty() {
         let traps = env.traps();
-        let mut lines: Vec<String> = traps.iter()
+        let mut lines: Vec<String> = traps
+            .iter()
             .map(|(sig, trap)| format!("trap -- '{}' {}\n", trap.action, sig))
             .collect();
         lines.sort_unstable();
@@ -1547,17 +1856,23 @@ fn builtin_trap(argv: &[String], env: &mut Env) -> ExecResult {
     for sig in signals {
         let norm = normalize_signal(sig);
         if !is_valid_signal(sig) {
-            return ExecResult::failure(1, format!("mash: trap: {sig}: invalid signal specification\n"));
+            return ExecResult::failure(
+                1,
+                format!("mash: trap: {sig}: invalid signal specification\n"),
+            );
         }
 
         if action == "-" {
             // Reset to default
             env.clear_trap(&norm);
         } else {
-            env.set_trap(norm, TrapAction {
-                action: action.clone(),
-                inherited: false,
-            });
+            env.set_trap(
+                norm,
+                TrapAction {
+                    action: action.clone(),
+                    inherited: false,
+                },
+            );
         }
     }
 
@@ -1568,25 +1883,96 @@ fn builtin_trap(argv: &[String], env: &mut Env) -> ExecResult {
 
 /// Shell reserved words / keywords.
 const SHELL_KEYWORDS: &[&str] = &[
-    "if", "then", "else", "elif", "fi",
-    "for", "while", "until", "do", "done",
-    "case", "esac", "in",
-    "function", "select", "time",
-    "coproc",
-    "{", "}", "[[", "]]", "!",
+    "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac",
+    "in", "function", "select", "time", "coproc", "{", "}", "[[", "]]", "!",
 ];
 
 /// Names recognized as builtins by this shell.
 const BUILTIN_NAMES: &[&str] = &[
-    "break", "continue", "return", "exit",
-    "true", ":", "false",
-    "echo", "local", "eval", "set", "shift",
-    "source", ".", "export", "unset", "readonly",
-    "cd", "pwd",
-    "test", "[",
-    "trap", "type", "hash", "command",
-    "read", "printf", "alias", "unalias", "getopts", "umask",
+    "break", "continue", "return", "exit", "true", ":", "false", "echo", "local", "eval", "set",
+    "shift", "source", ".", "export", "unset", "readonly", "cd", "pwd", "test", "[", "trap",
+    "type", "hash", "command", "read", "printf", "alias", "unalias", "getopts", "umask", "times",
+    "exec", "shopt",
 ];
+
+fn builtin_shopt(argv: &[String], env: &mut Env) -> ExecResult {
+    let mut show_all = false;
+    let mut set_opt: Option<(String, bool)> = None;
+    let mut opt_names: Vec<&str> = Vec::new();
+
+    let mut i = 0;
+    while i < argv.len() {
+        let arg = &argv[i];
+        match arg.as_str() {
+            "-s" => {
+                // Set option
+                i += 1;
+                if i < argv.len() {
+                    set_opt = Some((argv[i].clone(), true));
+                    opt_names.push(&argv[i]);
+                }
+            }
+            "-u" => {
+                // Unset option
+                i += 1;
+                if i < argv.len() {
+                    set_opt = Some((argv[i].clone(), false));
+                    opt_names.push(&argv[i]);
+                }
+            }
+            "-q" => {
+                // Quiet mode - suppress output, just return exit code
+                // For now, we just ignore this
+            }
+            _ => {
+                opt_names.push(arg);
+            }
+        }
+        i += 1;
+    }
+
+    // Handle set/unset operations
+    if let Some((name, value)) = set_opt {
+        match name.as_str() {
+            "nonlexicalctrl" => {
+                env.set_option_nonlexicalctrl(value);
+                return ExecResult::success();
+            }
+            _ => {
+                return ExecResult::failure(
+                    1,
+                    format!("mash: shopt: {name}: invalid shell option\n"),
+                );
+            }
+        }
+    }
+
+    // Show specific options or all
+    let mut stdout = String::new();
+    let show_names: Vec<&str> = if opt_names.is_empty() || show_all {
+        vec!["nonlexicalctrl"]
+    } else {
+        opt_names.iter().map(|s| *s).collect()
+    };
+
+    for name in show_names {
+        let is_set = match name {
+            "nonlexicalctrl" => env.options().nonlexicalctrl,
+            _ => false,
+        };
+        stdout.push_str(&format!(
+            "{}\t{}\n",
+            if is_set { "on" } else { "off" },
+            name
+        ));
+    }
+
+    ExecResult {
+        exit_code: 0,
+        stdout: stdout.into_bytes(),
+        stderr: Vec::new(),
+    }
+}
 
 fn builtin_type(argv: &[String], env: &Env) -> ExecResult {
     let mut type_only = false;
@@ -1681,7 +2067,8 @@ fn builtin_hash(argv: &[String], env: &mut Env) -> ExecResult {
                 stderr: Vec::new(),
             };
         }
-        let mut lines: Vec<String> = table.iter()
+        let mut lines: Vec<String> = table
+            .iter()
             .map(|(name, path)| format!("{}\t{}\n", name, path))
             .collect();
         lines.sort_unstable();
@@ -1853,11 +2240,15 @@ fn builtin_read(argv: &[String], env: &mut Env, stdin_file: Option<std::fs::File
     };
 
     // Strip trailing newline.
-    let mut line = line.trim_end_matches('\n').trim_end_matches('\r').to_string();
+    let mut line = line
+        .trim_end_matches('\n')
+        .trim_end_matches('\r')
+        .to_string();
 
     // Process backslash continuation if not in raw mode.
     if !raw_mode {
-        line = line.replace("\\n", "\n")
+        line = line
+            .replace("\\n", "\n")
             .replace("\\t", "\t")
             .replace("\\\\", "\\");
     }
@@ -2012,10 +2403,22 @@ fn builtin_printf(argv: &[String]) -> ExecResult {
             } else if ch == '\\' {
                 // Interpret backslash escapes in the format string.
                 match chars.peek() {
-                    Some('n') => { chars.next(); output.push('\n'); }
-                    Some('t') => { chars.next(); output.push('\t'); }
-                    Some('r') => { chars.next(); output.push('\r'); }
-                    Some('\\') => { chars.next(); output.push('\\'); }
+                    Some('n') => {
+                        chars.next();
+                        output.push('\n');
+                    }
+                    Some('t') => {
+                        chars.next();
+                        output.push('\t');
+                    }
+                    Some('r') => {
+                        chars.next();
+                        output.push('\r');
+                    }
+                    Some('\\') => {
+                        chars.next();
+                        output.push('\\');
+                    }
                     Some('0') => {
                         chars.next();
                         // Read up to 3 octal digits.
@@ -2081,14 +2484,38 @@ fn interpret_backslash_escapes(s: &str) -> String {
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             match chars.peek() {
-                Some('n') => { chars.next(); result.push('\n'); }
-                Some('t') => { chars.next(); result.push('\t'); }
-                Some('r') => { chars.next(); result.push('\r'); }
-                Some('\\') => { chars.next(); result.push('\\'); }
-                Some('a') => { chars.next(); result.push('\x07'); }
-                Some('b') => { chars.next(); result.push('\x08'); }
-                Some('f') => { chars.next(); result.push('\x0C'); }
-                Some('v') => { chars.next(); result.push('\x0B'); }
+                Some('n') => {
+                    chars.next();
+                    result.push('\n');
+                }
+                Some('t') => {
+                    chars.next();
+                    result.push('\t');
+                }
+                Some('r') => {
+                    chars.next();
+                    result.push('\r');
+                }
+                Some('\\') => {
+                    chars.next();
+                    result.push('\\');
+                }
+                Some('a') => {
+                    chars.next();
+                    result.push('\x07');
+                }
+                Some('b') => {
+                    chars.next();
+                    result.push('\x08');
+                }
+                Some('f') => {
+                    chars.next();
+                    result.push('\x0C');
+                }
+                Some('v') => {
+                    chars.next();
+                    result.push('\x0B');
+                }
                 Some('0') => {
                     chars.next();
                     let mut octal = String::new();
@@ -2122,7 +2549,8 @@ fn builtin_alias(argv: &[String], env: &mut Env) -> ExecResult {
     // No args: list all aliases.
     if argv.is_empty() {
         let aliases = env.aliases();
-        let mut lines: Vec<String> = aliases.iter()
+        let mut lines: Vec<String> = aliases
+            .iter()
             .map(|(k, v)| format!("alias {}='{}'\n", k, v))
             .collect();
         lines.sort_unstable();
@@ -2148,9 +2576,8 @@ fn builtin_alias(argv: &[String], env: &mut Env) -> ExecResult {
                     stdout.push_str(&format!("alias {}='{}'\n", arg, val));
                 }
                 None => {
-                    stderr.extend_from_slice(
-                        format!("mash: alias: {}: not found\n", arg).as_bytes(),
-                    );
+                    stderr
+                        .extend_from_slice(format!("mash: alias: {}: not found\n", arg).as_bytes());
                     exit_code = 1;
                 }
             }
@@ -2182,9 +2609,7 @@ fn builtin_unalias(argv: &[String], env: &mut Env) -> ExecResult {
 
     for name in argv {
         if !env.unset_alias(name) {
-            stderr.extend_from_slice(
-                format!("mash: unalias: {}: not found\n", name).as_bytes(),
-            );
+            stderr.extend_from_slice(format!("mash: unalias: {}: not found\n", name).as_bytes());
             exit_code = 1;
         }
     }
@@ -2201,7 +2626,10 @@ fn builtin_unalias(argv: &[String], env: &mut Env) -> ExecResult {
 fn builtin_getopts(argv: &[String], env: &mut Env) -> ExecResult {
     // getopts OPTSTRING VAR [ARGS...]
     if argv.len() < 2 {
-        return ExecResult::failure(1, "mash: getopts: usage: getopts optstring name [arg ...]\n");
+        return ExecResult::failure(
+            1,
+            "mash: getopts: usage: getopts optstring name [arg ...]\n",
+        );
     }
 
     let optstring = &argv[0];
@@ -2212,11 +2640,17 @@ fn builtin_getopts(argv: &[String], env: &mut Env) -> ExecResult {
         argv[2..].to_vec()
     } else {
         let count: usize = env.get_str("#").parse().unwrap_or(0);
-        (1..=count).map(|i| env.get_str(&i.to_string()).to_string()).collect()
+        (1..=count)
+            .map(|i| env.get_str(&i.to_string()).to_string())
+            .collect()
     };
 
     let silent = optstring.starts_with(':');
-    let opts = if silent { &optstring[1..] } else { optstring.as_str() };
+    let opts = if silent {
+        &optstring[1..]
+    } else {
+        optstring.as_str()
+    };
 
     // Get current OPTIND (1-based index into args).
     let optind: usize = env.get_str("OPTIND").parse().unwrap_or(1);
@@ -2276,8 +2710,10 @@ fn builtin_getopts(argv: &[String], env: &mut Env) -> ExecResult {
                         let _ = env.set("OPTARG", Variable::string(opt_char.to_string()));
                     } else {
                         let _ = env.set(varname, Variable::string("?"));
-                        return ExecResult::failure(0,
-                            format!("mash: getopts: option requires an argument -- {opt_char}\n"));
+                        return ExecResult::failure(
+                            0,
+                            format!("mash: getopts: option requires an argument -- {opt_char}\n"),
+                        );
                     }
                     let _ = env.set("OPTIND", Variable::string((optind + 1).to_string()));
                     return ExecResult::success();
@@ -2338,8 +2774,10 @@ fn builtin_umask(argv: &[String]) -> ExecResult {
     if let Some(val_str) = argv.last() {
         if val_str != "-S" {
             if u32::from_str_radix(val_str, 8).is_err() {
-                return ExecResult::failure(1,
-                    format!("mash: umask: {val_str}: invalid octal number\n"));
+                return ExecResult::failure(
+                    1,
+                    format!("mash: umask: {val_str}: invalid octal number\n"),
+                );
             }
         }
     }
@@ -2399,7 +2837,11 @@ fn execute_if(
         return body_result;
     }
 
-    ExecResult { exit_code: 0, stdout: all_stdout, stderr: all_stderr }
+    ExecResult {
+        exit_code: 0,
+        stdout: all_stdout,
+        stderr: all_stderr,
+    }
 }
 
 // ── While / Until ─────────────────────────────────────────────────────
@@ -2471,7 +2913,11 @@ fn execute_while_until(
     }
 
     env.set_loop_depth(prev_depth);
-    ExecResult { exit_code: last_code, stdout: all_stdout, stderr: all_stderr }
+    ExecResult {
+        exit_code: last_code,
+        stdout: all_stdout,
+        stderr: all_stderr,
+    }
 }
 
 // ── For loop ──────────────────────────────────────────────────────────
@@ -2542,7 +2988,11 @@ fn execute_for(
     }
 
     env.set_loop_depth(prev_depth);
-    ExecResult { exit_code: last_code, stdout: all_stdout, stderr: all_stderr }
+    ExecResult {
+        exit_code: last_code,
+        stdout: all_stdout,
+        stderr: all_stderr,
+    }
 }
 
 // ── For arithmetic ────────────────────────────────────────────────────
@@ -2628,7 +3078,11 @@ fn execute_for_arith(
     }
 
     env.set_loop_depth(prev_depth);
-    ExecResult { exit_code: last_code, stdout: all_stdout, stderr: all_stderr }
+    ExecResult {
+        exit_code: last_code,
+        stdout: all_stdout,
+        stderr: all_stderr,
+    }
 }
 
 // ── Case ──────────────────────────────────────────────────────────────
@@ -2688,7 +3142,11 @@ fn execute_conditional(expr: &Span, source: &str, env: &mut Env) -> ExecResult {
     let tokens: Vec<&str> = shell_tokenize_conditional(expr_text);
 
     let result = eval_conditional_tokens(&tokens, env);
-    if result { ExecResult::success() } else { ExecResult::with_code(1) }
+    if result {
+        ExecResult::success()
+    } else {
+        ExecResult::with_code(1)
+    }
 }
 
 /// Tokenize a conditional expression, respecting quotes.
@@ -2744,19 +3202,19 @@ fn eval_conditional_tokens(tokens: &[&str], env: &Env) -> bool {
     for i in (0..tokens.len()).rev() {
         if tokens[i] == "&&" {
             let left = eval_conditional_tokens(&tokens[..i], env);
-            let right = eval_conditional_tokens(&tokens[i+1..], env);
+            let right = eval_conditional_tokens(&tokens[i + 1..], env);
             return left && right;
         }
         if tokens[i] == "||" {
             let left = eval_conditional_tokens(&tokens[..i], env);
-            let right = eval_conditional_tokens(&tokens[i+1..], env);
+            let right = eval_conditional_tokens(&tokens[i + 1..], env);
             return left || right;
         }
     }
 
     // Handle parenthesized expressions.
     if tokens.first() == Some(&"(") && tokens.last() == Some(&")") {
-        return eval_conditional_tokens(&tokens[1..tokens.len()-1], env);
+        return eval_conditional_tokens(&tokens[1..tokens.len() - 1], env);
     }
 
     // Unary operators.
@@ -2833,7 +3291,7 @@ fn eval_conditional_tokens(tokens: &[&str], env: &Env) -> bool {
 /// Remove surrounding quotes from a conditional operand.
 fn unquote_conditional(s: &str) -> String {
     if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
-        s[1..s.len()-1].to_string()
+        s[1..s.len() - 1].to_string()
     } else {
         s.to_string()
     }
@@ -2841,11 +3299,7 @@ fn unquote_conditional(s: &str) -> String {
 
 // ── Env assignment ─────────────────────────────────────────────────────
 
-fn execute_env_assign(
-    assigns: &[(Span, Span)],
-    source: &str,
-    env: &mut Env,
-) -> ExecResult {
+fn execute_env_assign(assigns: &[(Span, Span)], source: &str, env: &mut Env) -> ExecResult {
     for (key_span, val_span) in assigns {
         let key = key_span.text(source);
         let val_text = val_span.text(source);
@@ -2924,6 +3378,39 @@ fn execute_list_node(
     result
 }
 
+/// Convert a redirect back to text form for alias substitution.
+fn redirect_to_text(r: &Spanned<Redirect>, source: &str) -> String {
+    let redirect = &r.node;
+    let fd_prefix = redirect.fd.map(|f| format!("{}", f)).unwrap_or_default();
+    let op = match redirect.kind {
+        RedirectKind::Input => "<",
+        RedirectKind::Output => ">",
+        RedirectKind::Append => ">>",
+        RedirectKind::Clobber => ">|",
+        RedirectKind::InputOutput => "<>",
+        RedirectKind::DupInput => "<&",
+        RedirectKind::DupOutput => ">&",
+        RedirectKind::Both => "&>",
+        RedirectKind::HereString => "<<<",
+        RedirectKind::HereDoc => "<<",
+        RedirectKind::HereDocStrip => "<<-",
+        _ => "",
+    };
+    format!("{}{} {}", fd_prefix, op, redirect.target.text(source))
+}
+
+/// Convert a redirect target path to a platform-native path.
+/// Handles `/dev/null` on Windows by mapping it to `NUL`.
+fn platformize_path(target: &str) -> String {
+    if target == "/dev/null" {
+        #[cfg(windows)]
+        return "NUL".to_string();
+        #[cfg(not(windows))]
+        return target.to_string();
+    }
+    target.to_string()
+}
+
 // ── Redirect resolution ────────────────────────────────────────────────
 
 /// Resolved I/O targets from redirect processing.
@@ -2984,12 +3471,14 @@ fn resolve_redirects(
         let raw_target = redirect.target.text(source);
 
         // For heredoc kinds, expand the body if not quoted.
+        // Use heredoc_body field if present (new style), otherwise fall back to span text.
         let target: String = match redirect.kind {
             RedirectKind::HereDoc | RedirectKind::HereDocStrip => {
+                let body_text = redirect.heredoc_body.as_deref().unwrap_or(raw_target);
                 if redirect.quoted {
-                    raw_target.to_string()
+                    body_text.to_string()
                 } else {
-                    match expander::expand_heredoc_body(raw_target, env) {
+                    match expander::expand_heredoc_body(body_text, env) {
                         Ok(s) => s,
                         Err(e) => {
                             let msg = format!("mash: heredoc expansion: {e}\n");
@@ -3020,6 +3509,8 @@ fn resolve_redirects(
             }
         };
         let target: &str = &target;
+        let platform_target = platformize_path(target);
+        let target: &str = &platform_target;
 
         let mut assign_fd = |fd: u8, file: std::fs::File| match fd {
             0 => io.stdin = Some(file),
@@ -3047,9 +3538,8 @@ fn resolve_redirects(
                         return Err(ExecResult::failure(1, msg));
                     }
                 }
-                let file = std::fs::File::create(target).map_err(|e| {
-                    ExecResult::failure(1, format!("mash: {target}: {e}\n"))
-                })?;
+                let file = std::fs::File::create(target)
+                    .map_err(|e| ExecResult::failure(1, format!("mash: {target}: {e}\n")))?;
                 assign_fd(fd, file);
             }
             RedirectKind::Append => {
@@ -3058,24 +3548,20 @@ fn resolve_redirects(
                     .create(true)
                     .write(true)
                     .open(target)
-                    .map_err(|e| {
-                        ExecResult::failure(1, format!("mash: {target}: {e}\n"))
-                    })?;
+                    .map_err(|e| ExecResult::failure(1, format!("mash: {target}: {e}\n")))?;
                 // Seek to end so writes append. Using write+seek instead of
                 // append mode avoids issues with MSYS2 binaries on Windows.
                 let _ = file.seek(std::io::SeekFrom::End(0));
                 assign_fd(fd, file);
             }
             RedirectKind::Input => {
-                let file = std::fs::File::open(target).map_err(|e| {
-                    ExecResult::failure(1, format!("mash: {target}: {e}\n"))
-                })?;
+                let file = std::fs::File::open(target)
+                    .map_err(|e| ExecResult::failure(1, format!("mash: {target}: {e}\n")))?;
                 assign_fd(fd, file);
             }
             RedirectKind::HereDoc | RedirectKind::HereDocStrip | RedirectKind::HereString => {
-                let (read, mut write) = malt_platform::io::create_pipe().map_err(|e| {
-                    ExecResult::failure(1, format!("mash: pipe: {e}\n"))
-                })?;
+                let (read, mut write) = malt_platform::io::create_pipe()
+                    .map_err(|e| ExecResult::failure(1, format!("mash: pipe: {e}\n")))?;
                 let data = if redirect.kind == RedirectKind::HereString {
                     format!("{target}\n")
                 } else {
@@ -3089,12 +3575,11 @@ fn resolve_redirects(
             }
             RedirectKind::Both => {
                 // &> file — redirect both stdout and stderr.
-                let file = std::fs::File::create(target).map_err(|e| {
-                    ExecResult::failure(1, format!("mash: {target}: {e}\n"))
-                })?;
-                let file2 = file.try_clone().map_err(|e| {
-                    ExecResult::failure(1, format!("mash: {target}: clone: {e}\n"))
-                })?;
+                let file = std::fs::File::create(target)
+                    .map_err(|e| ExecResult::failure(1, format!("mash: {target}: {e}\n")))?;
+                let file2 = file
+                    .try_clone()
+                    .map_err(|e| ExecResult::failure(1, format!("mash: {target}: clone: {e}\n")))?;
                 io.stdout = Some(file);
                 io.stderr = Some(file2);
                 io.stdout_to_stderr = false;
@@ -3108,9 +3593,7 @@ fn resolve_redirects(
                     .create(true)
                     .truncate(false)
                     .open(target)
-                    .map_err(|e| {
-                        ExecResult::failure(1, format!("mash: {target}: {e}\n"))
-                    })?;
+                    .map_err(|e| ExecResult::failure(1, format!("mash: {target}: {e}\n")))?;
                 assign_fd(fd, file);
             }
             RedirectKind::DupInput | RedirectKind::DupOutput => {
@@ -3124,7 +3607,11 @@ fn resolve_redirects(
                     }
                 } else {
                     let src: u8 = target.parse::<u8>().unwrap_or(
-                        if redirect.kind == RedirectKind::DupInput { 0 } else { 1 },
+                        if redirect.kind == RedirectKind::DupInput {
+                            0
+                        } else {
+                            1
+                        },
                     );
                     let cloned_file = match src {
                         0 => io.stdin.as_ref().and_then(|f| f.try_clone().ok()),

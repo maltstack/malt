@@ -89,10 +89,7 @@ pub enum Token {
     /// A redirect operator.
     Redirect(RedirectKind),
     /// Heredoc body — constructed string (only token that allocates).
-    HereDocBody {
-        body: String,
-        quoted: bool,
-    },
+    HereDocBody { body: String, quoted: bool },
     /// Newline (significant in shell grammar).
     Newline,
     /// End of input.
@@ -187,10 +184,7 @@ pub enum Command {
         body: Vec<Spanned<Command>>,
     },
     /// `case word in pattern) body;; ... esac`
-    Case {
-        word: Span,
-        items: Vec<CaseItem>,
-    },
+    Case { word: Span, items: Vec<CaseItem> },
     /// `select var in words; do body; done`
     Select {
         var: Span,
@@ -203,27 +197,17 @@ pub enum Command {
         body: Box<Spanned<Command>>,
     },
     /// `{ body; }`
-    BraceGroup {
-        body: Vec<Spanned<Command>>,
-    },
+    BraceGroup { body: Vec<Spanned<Command>> },
     /// `( body )`
-    Subshell {
-        body: Vec<Spanned<Command>>,
-    },
+    Subshell { body: Vec<Spanned<Command>> },
     /// `(( expr ))`
-    Arithmetic {
-        expr: Span,
-    },
+    Arithmetic { expr: Span },
     /// `[[ expr ]]`
-    Conditional {
-        expr: Span,
-    },
+    Conditional { expr: Span },
     /// `command &`
     Background(Box<Spanned<Command>>),
     /// Bare environment assignments with no command: `FOO=bar BAZ=qux`
-    EnvAssign {
-        assigns: Vec<(Span, Span)>,
-    },
+    EnvAssign { assigns: Vec<(Span, Span)> },
     /// Empty command (e.g., bare newline or trailing `;`).
     Empty,
     /// `coproc [name] command`
@@ -255,6 +239,9 @@ pub struct Redirect {
     pub fd: Option<i32>,
     /// Whether the heredoc delimiter was quoted.
     pub quoted: bool,
+    /// Heredoc body content (only used for HereDoc/HereDocStrip kinds).
+    /// When present, this takes precedence over extracting text from target span.
+    pub heredoc_body: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -66,10 +66,7 @@ impl<'a> Parser<'a> {
 
     /// Consume current token and read the next one from the lexer.
     fn advance(&mut self) -> Result<Spanned<Token>, ParseError> {
-        let tok = self
-            .current
-            .take()
-            .unwrap_or_else(eof_sentinel);
+        let tok = self.current.take().unwrap_or_else(eof_sentinel);
         self.current = Self::read_next(&mut self.lexer)?;
         Ok(tok)
     }
@@ -358,7 +355,9 @@ impl<'a> Parser<'a> {
         if trailing.is_empty() {
             Ok(cmd)
         } else {
-            let span = cmd.span.merge(trailing.last().map(|r| r.span).unwrap_or(cmd.span));
+            let span = cmd
+                .span
+                .merge(trailing.last().map(|r| r.span).unwrap_or(cmd.span));
             Ok(Spanned {
                 node: Command::Redirected {
                     cmd: Box::new(cmd),
@@ -376,9 +375,9 @@ impl<'a> Parser<'a> {
         let start = self.expect_keyword("if")?;
         self.skip_newlines()?;
 
-        let condition = self.parse_command_list_as_one(|t| {
-            matches!(t, Token::Word(s) if s.text(self.input) == "then")
-        })?;
+        let condition = self.parse_command_list_as_one(
+            |t| matches!(t, Token::Word(s) if s.text(self.input) == "then"),
+        )?;
         self.expect_keyword("then")?;
         self.skip_newlines()?;
 
@@ -388,9 +387,9 @@ impl<'a> Parser<'a> {
         while self.peek_keyword("elif") {
             self.advance()?;
             self.skip_newlines()?;
-            let elif_cond = self.parse_command_list_as_one(|t| {
-                matches!(t, Token::Word(s) if s.text(self.input) == "then")
-            })?;
+            let elif_cond = self.parse_command_list_as_one(
+                |t| matches!(t, Token::Word(s) if s.text(self.input) == "then"),
+            )?;
             self.expect_keyword("then")?;
             self.skip_newlines()?;
             let elif_body = self.parse_body_until(&["elif", "else", "fi"])?;
@@ -423,9 +422,9 @@ impl<'a> Parser<'a> {
         let start = self.expect_keyword("while")?;
         self.skip_newlines()?;
 
-        let condition = self.parse_command_list_as_one(|t| {
-            matches!(t, Token::Word(s) if s.text(self.input) == "do")
-        })?;
+        let condition = self.parse_command_list_as_one(
+            |t| matches!(t, Token::Word(s) if s.text(self.input) == "do"),
+        )?;
         self.expect_keyword("do")?;
         self.skip_newlines()?;
 
@@ -446,9 +445,9 @@ impl<'a> Parser<'a> {
         let start = self.expect_keyword("until")?;
         self.skip_newlines()?;
 
-        let condition = self.parse_command_list_as_one(|t| {
-            matches!(t, Token::Word(s) if s.text(self.input) == "do")
-        })?;
+        let condition = self.parse_command_list_as_one(
+            |t| matches!(t, Token::Word(s) if s.text(self.input) == "do"),
+        )?;
         self.expect_keyword("do")?;
         self.skip_newlines()?;
 
@@ -737,8 +736,7 @@ impl<'a> Parser<'a> {
                     // let the current word become part of the command.
                     let c = self.parse_command()?;
                     (None, c)
-                }
-                else {
+                } else {
                     let c = self.parse_command()?;
                     (None, c)
                 }
@@ -888,13 +886,10 @@ impl<'a> Parser<'a> {
 
     /// Parse a command list until one of the given keywords is found.
     /// Returns the list of commands (body).
-    fn parse_body_until(
-        &mut self,
-        keywords: &[&str],
-    ) -> Result<Vec<Spanned<Command>>, ParseError> {
-        self.parse_command_list_until(|t| {
-            matches!(t, Token::Word(s) if keywords.iter().any(|kw| s.text(self.input) == *kw))
-        })
+    fn parse_body_until(&mut self, keywords: &[&str]) -> Result<Vec<Spanned<Command>>, ParseError> {
+        self.parse_command_list_until(
+            |t| matches!(t, Token::Word(s) if keywords.iter().any(|kw| s.text(self.input) == *kw)),
+        )
     }
 
     /// Parse a command list and collapse it into a single `Spanned<Command>`.
@@ -978,8 +973,8 @@ impl<'a> Parser<'a> {
                         // For heredoc redirects, the target is the delimiter word.
                         let target_tok = self.expect_word()?;
                         end_span = target_tok.span;
-                        let target_span = Self::word_span(&target_tok.node)
-                            .unwrap_or(target_tok.span);
+                        let target_span =
+                            Self::word_span(&target_tok.node).unwrap_or(target_tok.span);
                         let redir_span = fd_tok.span.merge(target_tok.span);
                         redirects.push(Spanned {
                             node: Redirect {
@@ -987,6 +982,7 @@ impl<'a> Parser<'a> {
                                 target: target_span,
                                 fd: Some(fd_val),
                                 quoted: false,
+                                heredoc_body: None,
                             },
                             span: redir_span,
                         });
@@ -1003,8 +999,7 @@ impl<'a> Parser<'a> {
                     let redir_tok = self.advance()?;
                     let target_tok = self.expect_word()?;
                     end_span = target_tok.span;
-                    let target_span = Self::word_span(&target_tok.node)
-                        .unwrap_or(target_tok.span);
+                    let target_span = Self::word_span(&target_tok.node).unwrap_or(target_tok.span);
                     let redir_span = redir_tok.span.merge(target_tok.span);
                     redirects.push(Spanned {
                         node: Redirect {
@@ -1012,6 +1007,7 @@ impl<'a> Parser<'a> {
                             target: target_span,
                             fd: None,
                             quoted: false,
+                            heredoc_body: None,
                         },
                         span: redir_span,
                     });
@@ -1023,7 +1019,8 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
-                Token::HereDocBody { body: _, quoted } => {
+                Token::HereDocBody { body, quoted } => {
+                    let body_val = body.clone();
                     let quoted_val = *quoted;
                     let body_tok = self.advance()?;
                     end_span = body_tok.span;
@@ -1049,18 +1046,14 @@ impl<'a> Parser<'a> {
                             redirects.pop();
                         }
                     }
-                    // For heredoc body, the target span covers the body text.
-                    // We store the body string via a synthetic span. Since
-                    // HereDocBody owns its string and the AST Redirect uses Span,
-                    // we use the body_tok span as the target (the executor will
-                    // need to reconstruct the body from the token stream or we
-                    // store it differently). For now, use body_tok.span.
+                    // Store the heredoc body directly in the AST.
                     redirects.push(Spanned {
                         node: Redirect {
                             kind,
                             target: body_tok.span,
                             fd: None,
                             quoted: quoted_val,
+                            heredoc_body: Some(body_val),
                         },
                         span: body_tok.span,
                     });
@@ -1074,7 +1067,9 @@ impl<'a> Parser<'a> {
         // Classification.
         if words.is_empty() && !env_assigns.is_empty() && redirects.is_empty() {
             return Ok(Spanned {
-                node: Command::EnvAssign { assigns: env_assigns },
+                node: Command::EnvAssign {
+                    assigns: env_assigns,
+                },
                 span: full_span,
             });
         }
@@ -1125,8 +1120,8 @@ impl<'a> Parser<'a> {
                         let kind = *kind;
                         self.advance()?;
                         let target_tok = self.expect_word()?;
-                        let target_span = Self::word_span(&target_tok.node)
-                            .unwrap_or(target_tok.span);
+                        let target_span =
+                            Self::word_span(&target_tok.node).unwrap_or(target_tok.span);
                         let redir_span = fd_tok.span.merge(target_tok.span);
                         redirects.push(Spanned {
                             node: Redirect {
@@ -1134,6 +1129,7 @@ impl<'a> Parser<'a> {
                                 target: target_span,
                                 fd: Some(fd_val),
                                 quoted: false,
+                                heredoc_body: None,
                             },
                             span: redir_span,
                         });
@@ -1146,8 +1142,7 @@ impl<'a> Parser<'a> {
                     let kind = *kind;
                     let redir_tok = self.advance()?;
                     let target_tok = self.expect_word()?;
-                    let target_span = Self::word_span(&target_tok.node)
-                        .unwrap_or(target_tok.span);
+                    let target_span = Self::word_span(&target_tok.node).unwrap_or(target_tok.span);
                     let redir_span = redir_tok.span.merge(target_tok.span);
                     redirects.push(Spanned {
                         node: Redirect {
@@ -1155,6 +1150,7 @@ impl<'a> Parser<'a> {
                             target: target_span,
                             fd: None,
                             quoted: false,
+                            heredoc_body: None,
                         },
                         span: redir_span,
                     });
@@ -1217,12 +1213,13 @@ fn list_to_command(mut cmds: Vec<Spanned<Command>>) -> Spanned<Command> {
         },
         1 => cmds.remove(0),
         _ => {
-            let span = cmds[0].span.merge(cmds.last().map(|c| c.span).unwrap_or(cmds[0].span));
-            let last = cmds.pop().expect("checked len > 1");
-            let pairs = cmds
-                .into_iter()
-                .map(|c| (c, ListOp::Sequential))
-                .collect();
+            let span = cmds[0]
+                .span
+                .merge(cmds.last().map(|c| c.span).unwrap_or(cmds[0].span));
+            let Some(last) = cmds.pop() else {
+                unreachable!("len >= 2 checked by match arm")
+            };
+            let pairs = cmds.into_iter().map(|c| (c, ListOp::Sequential)).collect();
             Spanned {
                 node: Command::List {
                     pairs,

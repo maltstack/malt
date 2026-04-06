@@ -88,7 +88,15 @@ pub fn grep(args: &[String], stdin: &[u8]) -> BuiltinResult {
     };
 
     if file_args.is_empty() {
-        return grep_reader(stdin, &re, invert, count_only, line_numbers, files_only, None);
+        return grep_reader(
+            stdin,
+            &re,
+            invert,
+            count_only,
+            line_numbers,
+            files_only,
+            None,
+        );
     }
 
     let show_filename = file_args.len() > 1;
@@ -109,12 +117,16 @@ pub fn grep(args: &[String], stdin: &[u8]) -> BuiltinResult {
             }
         };
 
-        let label = if show_filename {
-            Some(*path_str)
-        } else {
-            None
-        };
-        let result = grep_reader(&data, &re, invert, count_only, line_numbers, files_only, label);
+        let label = if show_filename { Some(*path_str) } else { None };
+        let result = grep_reader(
+            &data,
+            &re,
+            invert,
+            count_only,
+            line_numbers,
+            files_only,
+            label,
+        );
 
         if result.exit_code == 0 {
             any_match = true;
@@ -215,10 +227,7 @@ mod tests {
 
     #[test]
     fn grep_basic_match() {
-        let r = grep(
-            &["hello".into()],
-            b"hello world\ngoodbye\nhello again\n",
-        );
+        let r = grep(&["hello".into()], b"hello world\ngoodbye\nhello again\n");
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("hello world"));
@@ -253,20 +262,14 @@ mod tests {
 
     #[test]
     fn grep_count() {
-        let r = grep(
-            &["-c".into(), "hello".into()],
-            b"hello\nhello\nworld\n",
-        );
+        let r = grep(&["-c".into(), "hello".into()], b"hello\nhello\nworld\n");
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "2");
     }
 
     #[test]
     fn grep_line_numbers() {
-        let r = grep(
-            &["-n".into(), "aaa".into()],
-            b"aaa\nbbb\naaa\n",
-        );
+        let r = grep(&["-n".into(), "aaa".into()], b"aaa\nbbb\naaa\n");
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("1:aaa"));

@@ -81,7 +81,10 @@ impl<'a> Lexer<'a> {
                     Some('<') => {
                         self.next_char();
                         let span = self.make_span(start, start + 3);
-                        Ok(Spanned { node: Token::Redirect(RedirectKind::HereString), span })
+                        Ok(Spanned {
+                            node: Token::Redirect(RedirectKind::HereString),
+                            span,
+                        })
                     }
                     Some('-') => {
                         self.next_char();
@@ -92,7 +95,10 @@ impl<'a> Lexer<'a> {
                         });
                         self.awaiting_heredoc_count += 1;
                         let span = self.make_span(start, start + 3);
-                        Ok(Spanned { node: Token::Redirect(RedirectKind::HereDocStrip), span })
+                        Ok(Spanned {
+                            node: Token::Redirect(RedirectKind::HereDocStrip),
+                            span,
+                        })
                     }
                     _ => {
                         self.pending_heredocs.push(PendingHeredoc {
@@ -102,23 +108,35 @@ impl<'a> Lexer<'a> {
                         });
                         self.awaiting_heredoc_count += 1;
                         let span = self.make_span(start, start + 2);
-                        Ok(Spanned { node: Token::Redirect(RedirectKind::HereDoc), span })
+                        Ok(Spanned {
+                            node: Token::Redirect(RedirectKind::HereDoc),
+                            span,
+                        })
                     }
                 }
             }
             Some('>') => {
                 self.next_char();
                 let span = self.make_span(start, start + 2);
-                Ok(Spanned { node: Token::Redirect(RedirectKind::InputOutput), span })
+                Ok(Spanned {
+                    node: Token::Redirect(RedirectKind::InputOutput),
+                    span,
+                })
             }
             Some('&') => {
                 self.next_char();
                 let span = self.make_span(start, start + 2);
-                Ok(Spanned { node: Token::Redirect(RedirectKind::DupInput), span })
+                Ok(Spanned {
+                    node: Token::Redirect(RedirectKind::DupInput),
+                    span,
+                })
             }
             _ => {
                 let span = self.make_span(start, start + 1);
-                Ok(Spanned { node: Token::Redirect(RedirectKind::Input), span })
+                Ok(Spanned {
+                    node: Token::Redirect(RedirectKind::Input),
+                    span,
+                })
             }
         }
     }
@@ -129,21 +147,33 @@ impl<'a> Lexer<'a> {
             Some('>') => {
                 self.next_char();
                 let span = self.make_span(start, start + 2);
-                Ok(Spanned { node: Token::Redirect(RedirectKind::Append), span })
+                Ok(Spanned {
+                    node: Token::Redirect(RedirectKind::Append),
+                    span,
+                })
             }
             Some('|') => {
                 self.next_char();
                 let span = self.make_span(start, start + 2);
-                Ok(Spanned { node: Token::Redirect(RedirectKind::Clobber), span })
+                Ok(Spanned {
+                    node: Token::Redirect(RedirectKind::Clobber),
+                    span,
+                })
             }
             Some('&') => {
                 self.next_char();
                 let span = self.make_span(start, start + 2);
-                Ok(Spanned { node: Token::Redirect(RedirectKind::DupOutput), span })
+                Ok(Spanned {
+                    node: Token::Redirect(RedirectKind::DupOutput),
+                    span,
+                })
             }
             _ => {
                 let span = self.make_span(start, start + 1);
-                Ok(Spanned { node: Token::Redirect(RedirectKind::Output), span })
+                Ok(Spanned {
+                    node: Token::Redirect(RedirectKind::Output),
+                    span,
+                })
             }
         }
     }
@@ -294,11 +324,17 @@ impl<'a> Lexer<'a> {
                 Some((_, '\\')) if ansi_c => {
                     // In ANSI-C quotes, backslash escapes: consume next char too.
                     if self.next_char().is_none() {
-                        return Err(LexError::UnterminatedString { pos: open_pos as u32 });
+                        return Err(LexError::UnterminatedString {
+                            pos: open_pos as u32,
+                        });
                     }
                 }
                 Some(_) => {}
-                None => return Err(LexError::UnterminatedString { pos: open_pos as u32 }),
+                None => {
+                    return Err(LexError::UnterminatedString {
+                        pos: open_pos as u32,
+                    })
+                }
             }
         }
     }
@@ -340,7 +376,11 @@ impl<'a> Lexer<'a> {
                     self.read_backtick(pos)?;
                 }
                 Some(_) => {}
-                None => return Err(LexError::UnterminatedString { pos: open_pos as u32 }),
+                None => {
+                    return Err(LexError::UnterminatedString {
+                        pos: open_pos as u32,
+                    })
+                }
             }
         }
     }
@@ -492,24 +532,22 @@ impl<'a> Lexer<'a> {
                 None => return Ok(self.input.len()), // unterminated
             };
             match c {
-                '$' => {
-                    match self.peek_char() {
-                        Some('(') => {
+                '$' => match self.peek_char() {
+                    Some('(') => {
+                        self.next_char();
+                        if self.peek_char() == Some('(') {
                             self.next_char();
-                            if self.peek_char() == Some('(') {
-                                self.next_char();
-                                self.read_balanced_arith(pos)?;
-                            } else {
-                                self.read_balanced_parens(pos)?;
-                            }
+                            self.read_balanced_arith(pos)?;
+                        } else {
+                            self.read_balanced_parens(pos)?;
                         }
-                        Some('{') => {
-                            self.next_char();
-                            self.read_balanced_braces(pos)?;
-                        }
-                        _ => {}
                     }
-                }
+                    Some('{') => {
+                        self.next_char();
+                        self.read_balanced_braces(pos)?;
+                    }
+                    _ => {}
+                },
                 '(' => {
                     depth += 1;
                 }
@@ -589,28 +627,28 @@ impl<'a> Lexer<'a> {
                 '\\' => {
                     let _ = self.next_char();
                 }
-                '$' => {
-                    match self.peek_char() {
-                        Some('(') => {
+                '$' => match self.peek_char() {
+                    Some('(') => {
+                        self.next_char();
+                        if self.peek_char() == Some('(') {
                             self.next_char();
-                            if self.peek_char() == Some('(') {
-                                self.next_char();
-                                self.read_balanced_arith(pos)?;
-                            } else {
-                                self.read_balanced_parens(pos)?;
-                            }
+                            self.read_balanced_arith(pos)?;
+                        } else {
+                            self.read_balanced_parens(pos)?;
                         }
-                        Some('{') => {
-                            self.next_char();
-                            self.read_balanced_braces(pos)?;
-                        }
-                        _ => {}
                     }
-                }
+                    Some('{') => {
+                        self.next_char();
+                        self.read_balanced_braces(pos)?;
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
-        Err(LexError::UnterminatedProcessSub { pos: open_pos as u32 })
+        Err(LexError::UnterminatedProcessSub {
+            pos: open_pos as u32,
+        })
     }
 
     /// Read content inside backtick substitution. The opening `` ` `` has been
@@ -624,7 +662,11 @@ impl<'a> Lexer<'a> {
                     let _ = self.next_char();
                 }
                 Some(_) => {}
-                None => return Err(LexError::UnterminatedString { pos: open_pos as u32 }),
+                None => {
+                    return Err(LexError::UnterminatedString {
+                        pos: open_pos as u32,
+                    })
+                }
             }
         }
     }
@@ -657,11 +699,7 @@ impl<'a> Lexer<'a> {
     /// from each line including the delimiter line.
     ///
     /// Returns the accumulated body string (without the delimiter line).
-    fn read_heredoc_body(
-        &mut self,
-        delimiter: &str,
-        strip_tabs: bool,
-    ) -> Result<String, LexError> {
+    fn read_heredoc_body(&mut self, delimiter: &str, strip_tabs: bool) -> Result<String, LexError> {
         let mut body = String::new();
         let mut line = String::new();
 
@@ -757,19 +795,7 @@ impl<'a> Lexer<'a> {
 fn is_word_break(ch: char) -> bool {
     matches!(
         ch,
-        ' ' | '\t'
-            | '\n'
-            | '\r'
-            | '|'
-            | '&'
-            | ';'
-            | '<'
-            | '>'
-            | '('
-            | ')'
-            | '{'
-            | '}'
-            | '#'
+        ' ' | '\t' | '\n' | '\r' | '|' | '&' | ';' | '<' | '>' | '(' | ')' | '{' | '}' | '#'
     )
 }
 
@@ -793,10 +819,48 @@ impl<'a> Iterator for Lexer<'a> {
         let (pos, ch) = match self.peek() {
             Some(pair) => pair,
             None => {
+                // Check for pending heredocs at EOF - resolve them now
+                if !self.pending_heredocs.is_empty() {
+                    let ready = self
+                        .pending_heredocs
+                        .iter()
+                        .all(|hd| !hd.delimiter.is_empty());
+                    if ready {
+                        let heredocs: Vec<PendingHeredoc> =
+                            self.pending_heredocs.drain(..).collect();
+                        let mut bodies = Vec::new();
+                        for hd in heredocs {
+                            match self.read_heredoc_body(&hd.delimiter, hd.strip_tabs) {
+                                Ok(body) => {
+                                    let eof_pos = self.input.len();
+                                    let span = self.make_span(eof_pos, eof_pos);
+                                    bodies.push(Spanned {
+                                        node: Token::HereDocBody {
+                                            body,
+                                            quoted: hd.quoted,
+                                        },
+                                        span,
+                                    });
+                                }
+                                Err(e) => return Some(Err(e)),
+                            }
+                        }
+                        // Reverse so that pop() yields them in order.
+                        bodies.reverse();
+                        self.buffered_tokens = bodies;
+                        // Return first buffered token (HereDocBody) instead of Eof
+                        if let Some(tok) = self.buffered_tokens.pop() {
+                            return Some(Ok(tok));
+                        }
+                    }
+                }
                 self.finished = true;
                 let eof_pos = self.input.len();
                 let span = self.make_span(eof_pos, eof_pos);
-                return Some(Ok(Spanned { node: Token::Eof, span }));
+                return Some(Ok(Spanned {
+                    node: Token::Eof,
+                    span,
+                }));
             }
         };
 
@@ -807,7 +871,10 @@ impl<'a> Iterator for Lexer<'a> {
             // Newline
             '\n' => {
                 let span = self.make_span(pos, pos + 1);
-                Ok(Spanned { node: Token::Newline, span })
+                Ok(Spanned {
+                    node: Token::Newline,
+                    span,
+                })
             }
 
             // CRLF -- treat \r\n as a single newline
@@ -815,11 +882,17 @@ impl<'a> Iterator for Lexer<'a> {
                 if self.peek_char() == Some('\n') {
                     self.next_char();
                     let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned { node: Token::Newline, span })
+                    Ok(Spanned {
+                        node: Token::Newline,
+                        span,
+                    })
                 } else {
                     // Bare \r treated as newline
                     let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned { node: Token::Newline, span })
+                    Ok(Spanned {
+                        node: Token::Newline,
+                        span,
+                    })
                 }
             }
 
@@ -836,10 +909,16 @@ impl<'a> Iterator for Lexer<'a> {
                 if self.peek_char() == Some('|') {
                     self.next_char();
                     let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned { node: Token::OrOr, span })
+                    Ok(Spanned {
+                        node: Token::OrOr,
+                        span,
+                    })
                 } else {
                     let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned { node: Token::Pipe, span })
+                    Ok(Spanned {
+                        node: Token::Pipe,
+                        span,
+                    })
                 }
             }
 
@@ -848,14 +927,23 @@ impl<'a> Iterator for Lexer<'a> {
                 if self.peek_char() == Some('&') {
                     self.next_char();
                     let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned { node: Token::AndAnd, span })
+                    Ok(Spanned {
+                        node: Token::AndAnd,
+                        span,
+                    })
                 } else if self.peek_char() == Some('>') {
                     self.next_char();
                     let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned { node: Token::Redirect(RedirectKind::Both), span })
+                    Ok(Spanned {
+                        node: Token::Redirect(RedirectKind::Both),
+                        span,
+                    })
                 } else {
                     let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned { node: Token::Ampersand, span })
+                    Ok(Spanned {
+                        node: Token::Ampersand,
+                        span,
+                    })
                 }
             }
 
@@ -864,10 +952,16 @@ impl<'a> Iterator for Lexer<'a> {
                 if self.peek_char() == Some(';') {
                     self.next_char();
                     let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned { node: Token::SemiSemi, span })
+                    Ok(Spanned {
+                        node: Token::SemiSemi,
+                        span,
+                    })
                 } else {
                     let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned { node: Token::Semicolon, span })
+                    Ok(Spanned {
+                        node: Token::Semicolon,
+                        span,
+                    })
                 }
             }
 
@@ -876,31 +970,49 @@ impl<'a> Iterator for Lexer<'a> {
                 if self.peek_char() == Some('(') {
                     self.next_char();
                     let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned { node: Token::LParenParen, span })
+                    Ok(Spanned {
+                        node: Token::LParenParen,
+                        span,
+                    })
                 } else {
                     let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned { node: Token::LParen, span })
+                    Ok(Spanned {
+                        node: Token::LParen,
+                        span,
+                    })
                 }
             }
             ')' => {
                 if self.peek_char() == Some(')') {
                     self.next_char();
                     let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned { node: Token::RParenParen, span })
+                    Ok(Spanned {
+                        node: Token::RParenParen,
+                        span,
+                    })
                 } else {
                     let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned { node: Token::RParen, span })
+                    Ok(Spanned {
+                        node: Token::RParen,
+                        span,
+                    })
                 }
             }
 
             // Braces
             '{' => {
                 let span = self.make_span(pos, pos + 1);
-                Ok(Spanned { node: Token::LBrace, span })
+                Ok(Spanned {
+                    node: Token::LBrace,
+                    span,
+                })
             }
             '}' => {
                 let span = self.make_span(pos, pos + 1);
-                Ok(Spanned { node: Token::RBrace, span })
+                Ok(Spanned {
+                    node: Token::RBrace,
+                    span,
+                })
             }
 
             // Redirects / process substitution
@@ -913,7 +1025,10 @@ impl<'a> Iterator for Lexer<'a> {
                         Err(e) => return Some(Err(e)),
                     };
                     let span = self.make_span(pos, end);
-                    Ok(Spanned { node: Token::Word(span), span })
+                    Ok(Spanned {
+                        node: Token::Word(span),
+                        span,
+                    })
                 } else {
                     self.lex_less_than(pos)
                 }
@@ -927,7 +1042,10 @@ impl<'a> Iterator for Lexer<'a> {
                         Err(e) => return Some(Err(e)),
                     };
                     let span = self.make_span(pos, end);
-                    Ok(Spanned { node: Token::Word(span), span })
+                    Ok(Spanned {
+                        node: Token::Word(span),
+                        span,
+                    })
                 } else {
                     self.lex_greater_than(pos)
                 }
@@ -947,7 +1065,10 @@ impl<'a> Iterator for Lexer<'a> {
                     if self.peek_char() == Some('[') {
                         self.next_char();
                         let span = self.make_span(pos, pos + 2);
-                        return Some(Ok(Spanned { node: Token::LBracketBracket, span }));
+                        return Some(Ok(Spanned {
+                            node: Token::LBracketBracket,
+                            span,
+                        }));
                     }
                     // Otherwise `[` starts a word -- fall through to word reading.
                 }
@@ -957,7 +1078,10 @@ impl<'a> Iterator for Lexer<'a> {
                     if self.peek_char() == Some(']') {
                         self.next_char();
                         let span = self.make_span(pos, pos + 2);
-                        return Some(Ok(Spanned { node: Token::RBracketBracket, span }));
+                        return Some(Ok(Spanned {
+                            node: Token::RBracketBracket,
+                            span,
+                        }));
                     }
                     // Bare `]` is a word.
                 }
@@ -970,9 +1094,7 @@ impl<'a> Iterator for Lexer<'a> {
 
                 // IoNumber detection: an all-digit word followed by `<` or `>`.
                 let word_text = word_span.text(self.input);
-                if !word_text.is_empty()
-                    && word_text.chars().all(|c| c.is_ascii_digit())
-                {
+                if !word_text.is_empty() && word_text.chars().all(|c| c.is_ascii_digit()) {
                     if let Some('<' | '>') = self.peek_char() {
                         if let Ok(num) = word_text.parse::<i32>() {
                             return Some(Ok(Spanned {
@@ -983,7 +1105,10 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
 
-                Ok(Spanned { node: Token::Word(word_span), span: word_span })
+                Ok(Spanned {
+                    node: Token::Word(word_span),
+                    span: word_span,
+                })
             }
         };
 
@@ -1018,8 +1143,7 @@ impl<'a> Iterator for Lexer<'a> {
                     .iter()
                     .all(|hd| !hd.delimiter.is_empty());
                 if ready && !self.pending_heredocs.is_empty() {
-                    let heredocs: Vec<PendingHeredoc> =
-                        self.pending_heredocs.drain(..).collect();
+                    let heredocs: Vec<PendingHeredoc> = self.pending_heredocs.drain(..).collect();
                     let mut bodies = Vec::new();
                     for hd in heredocs {
                         match self.read_heredoc_body(&hd.delimiter, hd.strip_tabs) {

@@ -1,8 +1,8 @@
 //! Shell environment — variable scope stack, special parameters, options, persistence.
 
-use std::collections::{HashMap, HashSet};
-use crate::ast::{Spanned, Command};
+use crate::ast::{Command, Spanned};
 use crate::parser;
+use std::collections::{HashMap, HashSet};
 
 // ── Variable storage ──
 
@@ -25,11 +25,21 @@ pub enum VarValue {
 
 impl Variable {
     pub fn string(s: impl Into<String>) -> Self {
-        Self { value: VarValue::String(s.into()), exported: false, readonly: false, integer: false }
+        Self {
+            value: VarValue::String(s.into()),
+            exported: false,
+            readonly: false,
+            integer: false,
+        }
     }
 
     pub fn exported_string(s: impl Into<String>) -> Self {
-        Self { value: VarValue::String(s.into()), exported: true, readonly: false, integer: false }
+        Self {
+            value: VarValue::String(s.into()),
+            exported: true,
+            readonly: false,
+            integer: false,
+        }
     }
 
     pub fn as_str(&self) -> &str {
@@ -43,7 +53,7 @@ impl Variable {
 
 // ── Shell options ──
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellOptions {
     pub errexit: bool,
     pub nounset: bool,
@@ -55,24 +65,66 @@ pub struct ShellOptions {
     pub monitor: bool,
     pub noclobber: bool,
     pub noexec: bool,
-    pub nonlexicalctrl: bool,
+    pub nonlexicalctrl: bool, // Default: false (POSIX default - lexical scoping)
     pub hash_cmds: bool,
     pub nolog: bool,
+    pub sourcepath: bool, // Search PATH for source command
+}
+
+impl Default for ShellOptions {
+    fn default() -> Self {
+        Self {
+            errexit: false,
+            nounset: false,
+            pipefail: false,
+            xtrace: false,
+            verbose: false,
+            noglob: false,
+            notify: false,
+            monitor: false,
+            noclobber: false,
+            noexec: false,
+            nonlexicalctrl: false, // POSIX default: break/continue are scoped to function (lexical)
+            hash_cmds: false,
+            nolog: false,
+            sourcepath: true, // POSIX: search PATH for source command
+        }
+    }
 }
 
 impl ShellOptions {
     pub fn flags_string(&self) -> String {
         let mut s = String::new();
-        if self.errexit   { s.push('e'); }
-        if self.nounset   { s.push('u'); }
-        if self.xtrace    { s.push('x'); }
-        if self.verbose   { s.push('v'); }
-        if self.noglob    { s.push('f'); }
-        if self.notify    { s.push('b'); }
-        if self.monitor   { s.push('m'); }
-        if self.noclobber { s.push('C'); }
-        if self.noexec    { s.push('n'); }
-        if self.hash_cmds { s.push('h'); }
+        if self.errexit {
+            s.push('e');
+        }
+        if self.nounset {
+            s.push('u');
+        }
+        if self.xtrace {
+            s.push('x');
+        }
+        if self.verbose {
+            s.push('v');
+        }
+        if self.noglob {
+            s.push('f');
+        }
+        if self.notify {
+            s.push('b');
+        }
+        if self.monitor {
+            s.push('m');
+        }
+        if self.noclobber {
+            s.push('C');
+        }
+        if self.noexec {
+            s.push('n');
+        }
+        if self.hash_cmds {
+            s.push('h');
+        }
         s
     }
 }
@@ -100,7 +152,9 @@ pub enum LoopControl {
 }
 
 impl Default for LoopControl {
-    fn default() -> Self { Self::None }
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +179,8 @@ pub enum EnvError {
 pub struct Env {
     scopes: Vec<HashMap<String, Variable>>,
     unset_masks: Vec<HashSet<String>>,
+    /// Track which variables are local in each scope (for proper scope cleanup).
+    local_vars: Vec<HashSet<String>>,
     special: HashMap<String, String>,
     options: ShellOptions,
     functions: HashMap<String, FunctionDef>,
@@ -140,6 +196,9 @@ pub struct Env {
     hash_table: HashMap<String, String>,
     disabled_builtins: HashSet<String>,
     suppress_errexit: bool,
+    /// Opaque isolation context token passed through from daemon.
+    /// MASH does not interpret this; it's passed to platform spawn traits.
+    isolation_context: Option<malt_platform::isolation::IsolationContext>,
 }
 
 impl Env {
@@ -147,6 +206,7 @@ impl Env {
         let mut env = Self {
             scopes: vec![HashMap::new()],
             unset_masks: vec![HashSet::new()],
+            local_vars: vec![HashSet::new()],
             special: HashMap::new(),
             options: ShellOptions::default(),
             functions: HashMap::new(),
@@ -162,8 +222,10 @@ impl Env {
             hash_table: HashMap::new(),
             disabled_builtins: HashSet::new(),
             suppress_errexit: false,
+            isolation_context: None,
         };
-        env.special.insert("$".to_string(), std::process::id().to_string());
+        env.special
+            .insert("$".to_string(), std::process::id().to_string());
         env.special.insert("?".to_string(), "0".to_string());
         env
     }
@@ -213,9 +275,12 @@ impl Env {
                 return Err(EnvError::ReadonlyVariable(name.to_string()));
             }
         }
-        let top = self.scopes.last_mut().unwrap();
+        let top = self.scopes.last_mut().ok_or(EnvError::EmptyScopes)?;
         top.insert(name.to_string(), var);
-        self.unset_masks.last_mut().unwrap().remove(name);
+        self.unset_masks
+            .last_mut()
+            .ok_or(EnvError::EmptyScopes)?
+            .remove(name);
         Ok(())
     }
 
@@ -240,6 +305,22 @@ impl Env {
         self.scopes[top_idx].remove(name);
         self.unset_masks[top_idx].insert(name.to_string());
         Ok(true)
+    }
+
+    /// Mark a variable as local to the current scope.
+    /// This ensures the variable is removed when the scope is popped.
+    pub fn mark_local(&mut self, name: &str) {
+        if let Some(locals) = self.local_vars.last_mut() {
+            locals.insert(name.to_string());
+        }
+    }
+
+    /// Check if a variable is local to the current scope.
+    pub fn is_local(&self, name: &str) -> bool {
+        self.local_vars
+            .last()
+            .map(|locals| locals.contains(name))
+            .unwrap_or(false)
     }
 
     pub fn mark_readonly(&mut self, name: &str) {
@@ -283,6 +364,7 @@ impl Env {
     pub fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
         self.unset_masks.push(HashSet::new());
+        self.local_vars.push(HashSet::new());
     }
 
     pub fn pop_scope(&mut self) -> Result<(), EnvError> {
@@ -291,6 +373,7 @@ impl Env {
         }
         self.scopes.pop();
         self.unset_masks.pop();
+        self.local_vars.pop();
         Ok(())
     }
 
@@ -321,10 +404,10 @@ impl Env {
     // ── Special parameters ──
 
     pub fn set_positional_params(&mut self, command_name: &str, args: &[String]) {
-        self.special.retain(|k, _| {
-            k.parse::<usize>().is_err() && k != "#" && k != "@" && k != "*"
-        });
-        self.special.insert("0".to_string(), command_name.to_string());
+        self.special
+            .retain(|k, _| k.parse::<usize>().is_err() && k != "#" && k != "@" && k != "*");
+        self.special
+            .insert("0".to_string(), command_name.to_string());
         for (i, arg) in args.iter().enumerate() {
             self.special.insert((i + 1).to_string(), arg.clone());
         }
@@ -334,7 +417,8 @@ impl Env {
     }
 
     pub fn replace_positional_args(&mut self, args: &[String]) {
-        self.special.retain(|k, _| k.parse::<usize>().map_or(true, |n| n == 0));
+        self.special
+            .retain(|k, _| k.parse::<usize>().map_or(true, |n| n == 0));
         for (i, arg) in args.iter().enumerate() {
             self.special.insert((i + 1).to_string(), arg.clone());
         }
@@ -344,16 +428,16 @@ impl Env {
     }
 
     pub fn save_positional(&self) -> HashMap<String, String> {
-        self.special.iter()
+        self.special
+            .iter()
             .filter(|(k, _)| k.parse::<usize>().is_ok() || ["#", "@", "*"].contains(&k.as_str()))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     }
 
     pub fn restore_positional(&mut self, saved: HashMap<String, String>) {
-        self.special.retain(|k, _| {
-            k.parse::<usize>().is_err() && k != "#" && k != "@" && k != "*"
-        });
+        self.special
+            .retain(|k, _| k.parse::<usize>().is_err() && k != "#" && k != "@" && k != "*");
         self.special.extend(saved);
     }
 
@@ -362,7 +446,10 @@ impl Env {
     }
 
     pub fn exit_code(&self) -> i32 {
-        self.special.get("?").and_then(|s| s.parse().ok()).unwrap_or(0)
+        self.special
+            .get("?")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
     }
 
     pub fn set_last_bg_pid(&mut self, pid: u32) {
@@ -371,19 +458,49 @@ impl Env {
 
     // ── Options + runtime state ──
 
-    pub fn options(&self) -> &ShellOptions { &self.options }
-    pub fn options_mut(&mut self) -> &mut ShellOptions { &mut self.options }
-    pub fn is_interactive(&self) -> bool { self.is_interactive }
-    pub fn set_interactive(&mut self, v: bool) { self.is_interactive = v; }
-    pub fn loop_control(&self) -> &LoopControl { &self.loop_control }
-    pub fn set_loop_control(&mut self, ctrl: LoopControl) { self.loop_control = ctrl; }
-    pub fn suppress_errexit(&self) -> bool { self.suppress_errexit }
-    pub fn set_suppress_errexit(&mut self, v: bool) { self.suppress_errexit = v; }
-    pub fn call_depth(&self) -> usize { self.call_depth }
-    pub fn loop_depth(&self) -> usize { self.loop_depth }
-    pub fn set_loop_depth(&mut self, depth: usize) { self.loop_depth = depth; }
-    pub fn request_exit(&mut self, code: i32) { self.exit_requested = Some(code); }
-    pub fn exit_requested(&self) -> Option<i32> { self.exit_requested }
+    pub fn options(&self) -> &ShellOptions {
+        &self.options
+    }
+    pub fn options_mut(&mut self) -> &mut ShellOptions {
+        &mut self.options
+    }
+    pub fn is_interactive(&self) -> bool {
+        self.is_interactive
+    }
+    pub fn set_interactive(&mut self, v: bool) {
+        self.is_interactive = v;
+    }
+    pub fn loop_control(&self) -> &LoopControl {
+        &self.loop_control
+    }
+    pub fn set_loop_control(&mut self, ctrl: LoopControl) {
+        self.loop_control = ctrl;
+    }
+    pub fn suppress_errexit(&self) -> bool {
+        self.suppress_errexit
+    }
+    pub fn set_suppress_errexit(&mut self, v: bool) {
+        self.suppress_errexit = v;
+    }
+    pub fn call_depth(&self) -> usize {
+        self.call_depth
+    }
+    pub fn loop_depth(&self) -> usize {
+        self.loop_depth
+    }
+    pub fn set_loop_depth(&mut self, depth: usize) {
+        self.loop_depth = depth;
+    }
+    pub fn request_exit(&mut self, code: i32) {
+        self.exit_requested = Some(code);
+    }
+    pub fn exit_requested(&self) -> Option<i32> {
+        self.exit_requested
+    }
+
+    pub fn set_option_nonlexicalctrl(&mut self, value: bool) {
+        self.options.nonlexicalctrl = value;
+    }
 
     pub fn push_call(&mut self, frame: CallFrame) {
         self.call_stack.push(frame);
@@ -395,9 +512,15 @@ impl Env {
         self.call_depth = self.call_depth.saturating_sub(1);
     }
 
-    pub fn dir_stack(&self) -> &[String] { &self.dir_stack }
-    pub fn push_dir(&mut self, dir: String) { self.dir_stack.push(dir); }
-    pub fn pop_dir(&mut self) -> Option<String> { self.dir_stack.pop() }
+    pub fn dir_stack(&self) -> &[String] {
+        &self.dir_stack
+    }
+    pub fn push_dir(&mut self, dir: String) {
+        self.dir_stack.push(dir);
+    }
+    pub fn pop_dir(&mut self) -> Option<String> {
+        self.dir_stack.pop()
+    }
 
     // ── Functions ──
 
@@ -471,6 +594,30 @@ impl Env {
         self.hash_table.clear();
     }
 
+    // ── Disabled builtins (for `enable` builtin) ──
+
+    /// Check if a builtin is disabled.
+    pub fn is_builtin_disabled(&self, name: &str) -> bool {
+        self.disabled_builtins.contains(name)
+    }
+
+    /// Disable a builtin.
+    pub fn disable_builtin(&mut self, name: &str) {
+        self.disabled_builtins.insert(name.to_string());
+    }
+
+    /// Enable a previously disabled builtin.
+    pub fn enable_builtin(&mut self, name: &str) -> bool {
+        self.disabled_builtins.remove(name)
+    }
+
+    /// All disabled builtin names.
+    pub fn disabled_builtins(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.disabled_builtins.iter().map(|s| s.as_str()).collect();
+        names.sort_unstable();
+        names
+    }
+
     // ── Functions (read-only access to map) ──
 
     pub fn functions(&self) -> &HashMap<String, FunctionDef> {
@@ -482,10 +629,14 @@ impl Env {
     pub fn to_snapshot(&self) -> EnvSnapshot {
         // Flatten scope stack — only global scope variables persist
         let variables = self.scopes[0].clone();
-        let functions = self.functions.iter()
+        let functions = self
+            .functions
+            .iter()
             .map(|(name, def)| (name.clone(), def.source.clone()))
             .collect();
-        let traps = self.traps.iter()
+        let traps = self
+            .traps
+            .iter()
             .map(|(sig, trap)| (sig.clone(), trap.action.clone()))
             .collect();
         let cwd = std::env::current_dir()
@@ -517,10 +668,13 @@ impl Env {
             match parser::parse(source) {
                 Ok(mut cmds) if !cmds.is_empty() => {
                     let body = cmds.remove(0);
-                    self.functions.insert(name.clone(), FunctionDef {
-                        source: source.clone(),
-                        body,
-                    });
+                    self.functions.insert(
+                        name.clone(),
+                        FunctionDef {
+                            source: source.clone(),
+                            body,
+                        },
+                    );
                 }
                 _ => {
                     // Log warning but don't fail — invalid function source is non-fatal
@@ -531,11 +685,35 @@ impl Env {
 
         // Restore traps
         for (signal, action) in &snapshot.traps {
-            self.traps.insert(signal.clone(), TrapAction {
-                action: action.clone(),
-                inherited: false,
-            });
+            self.traps.insert(
+                signal.clone(),
+                TrapAction {
+                    action: action.clone(),
+                    inherited: false,
+                },
+            );
         }
+    }
+
+    // ── Isolation context ──
+
+    /// Set the isolation context token for this shell environment.
+    ///
+    /// This is called by the daemon when creating the MASH instance.
+    /// MASH never inspects this token; it is passed through to platform
+    /// spawn traits when spawning child processes.
+    pub fn set_isolation_context(&mut self, ctx: malt_platform::isolation::IsolationContext) {
+        self.isolation_context = Some(ctx);
+    }
+
+    /// Get a reference to the isolation context token, if any.
+    pub fn isolation_context(&self) -> Option<&malt_platform::isolation::IsolationContext> {
+        self.isolation_context.as_ref()
+    }
+
+    /// Take the isolation context token (used when spawning processes).
+    pub fn take_isolation_context(&mut self) -> Option<malt_platform::isolation::IsolationContext> {
+        self.isolation_context.take()
     }
 }
 
