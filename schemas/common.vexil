@@ -233,6 +233,8 @@ message ResolvedStyle {
     strikethrough @6 : bool
     reverse       @7 : bool
     blink         @8 : bool
+    @doc("Theme token name for token-based color resolution. Omit to keep existing colors.")
+    token_name    @9 : optional<string>
 }
 
 @doc("Client capability declaration for capability-based rendering adaptation.")

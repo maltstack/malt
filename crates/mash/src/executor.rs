@@ -6,7 +6,8 @@
 
 use std::io::Read as IoRead;
 use std::io::Write as IoWrite;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::{collections::HashMap, fs::File};
 
 use crate::ast::{Command, ListOp, Redirect, RedirectKind, Span, Spanned};
 use crate::env::{CallFrame, Env, LoopControl, Variable};
@@ -76,6 +77,10 @@ pub fn execute_list(commands: &[Spanned<Command>], source: &str, env: &mut Env) 
             break;
         }
 
+        if env.is_interactive() && !env.options().nolog {
+            env.push_history_entry(cmd.span.text(source).to_string());
+        }
+
         let result = execute(cmd, source, env);
         last_code = result.exit_code;
         all_stdout.extend_from_slice(&result.stdout);
@@ -87,6 +92,16 @@ pub fn execute_list(commands: &[Spanned<Command>], source: &str, env: &mut Env) 
             break;
         }
     }
+
+    if let Some(trap) = env.get_trap("EXIT").cloned() {
+        let trap_result = execute_trap_action(&trap.action, env);
+        all_stdout.extend_from_slice(&trap_result.stdout);
+        all_stderr.extend_from_slice(&trap_result.stderr);
+        if let Some(requested) = env.exit_requested() {
+            last_code = requested;
+        }
+    }
+
     ExecResult {
         exit_code: last_code,
         stdout: all_stdout,
@@ -109,6 +124,7 @@ pub fn capture_command(
         }
     };
     let mut sub_env = env.clone();
+    sub_env.clear_noninherited_traps();
     let result = execute_list(&cmds, cmd_str, &mut sub_env);
     env.set_exit_code(result.exit_code);
     let mut output = String::from_utf8_lossy(&result.stdout).to_string();
@@ -144,6 +160,7 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
         Command::Subshell { body } => {
             // Clone env so changes in the subshell don't affect the parent.
             let mut sub_env = env.clone();
+            sub_env.clear_noninherited_traps();
             let result = execute_list(body, source, &mut sub_env);
             // Propagate exit code to parent env (for return to capture).
             env.set_exit_code(result.exit_code);
@@ -161,8 +178,10 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
             let mut bg_env = env.clone();
             let bg_source = source.to_string();
             let bg_cmd = inner.as_ref().clone();
+            env.register_job(bg_id, inner.span.text(source).trim().to_string());
             std::thread::spawn(move || {
                 execute(&bg_cmd, &bg_source, &mut bg_env);
+                bg_env.mark_job_done(bg_id);
             });
             env.set_last_bg_pid(bg_id);
             ExecResult::success()
@@ -258,6 +277,12 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
             let msg = format!("mash: not yet implemented: {:?}\n", variant_name(&cmd.node));
             ExecResult::failure(127, msg)
         }
+    }
+}
+
+fn record_hashed_command(env: &mut Env, name: &str, resolved: &str) {
+    if env.options().hash_cmds {
+        env.hash_insert(name.to_string(), resolved.to_string());
     }
 }
 
@@ -462,6 +487,51 @@ fn execute_with_io(
             stdin_file,
             stdout_file,
         ),
+        Command::Redirected {
+            cmd: inner,
+            redirects,
+        } => {
+            if let Command::Simple {
+                name,
+                args,
+                redirects: inner_redirects,
+                env_assigns,
+            } = &inner.node
+            {
+                let mut combined_redirects = inner_redirects.clone();
+                combined_redirects.extend_from_slice(redirects);
+                return execute_simple_with_io(
+                    name,
+                    args,
+                    &combined_redirects,
+                    env_assigns,
+                    source,
+                    env,
+                    stdin_file,
+                    stdout_file,
+                );
+            }
+
+            let resolved_io = match resolve_redirects(redirects, source, env) {
+                Ok(io) => io,
+                Err(err_result) => return err_result,
+            };
+
+            let mut result = execute(inner, source, env);
+
+            if let Some(mut pipe_out) = resolved_io.stdout.or(stdout_file) {
+                let _ = pipe_out.write_all(&result.stdout);
+                result.stdout = Vec::new();
+            }
+            if let Some(mut pipe_in) = resolved_io.stdin.or(stdin_file) {
+                drop(pipe_in);
+            }
+            if let Some(mut stderr_file) = resolved_io.stderr {
+                let _ = stderr_file.write_all(&result.stderr);
+                result.stderr = Vec::new();
+            }
+            result
+        }
         _ => {
             // For non-simple commands (brace groups, subshells, etc.),
             // execute normally and then write captured stdout to the pipe.
@@ -515,64 +585,7 @@ fn execute_simple_with_io(
         }
     }
 
-    // 3. Handle builtins in pipeline context.
-    // Only take stdin_file if this IS a builtin (otherwise we need it for the external process).
-    let builtin_stdin = if BUILTIN_NAMES.contains(&cmd_name.as_str()) {
-        stdin_file.take()
-    } else {
-        None
-    };
-    if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env, builtin_stdin) {
-        if let Some(mut pipe_out) = stdout_file {
-            if let Err(e) = pipe_out.write_all(&result.stdout) {
-                return ExecResult::failure(1, format!("mash: pipeline write failed: {e}\n"));
-            }
-            result.stdout = Vec::new();
-        }
-        return result;
-    }
-
-    // 3b. Handle malt-tools (in-process POSIX utilities like grep, cat, wc).
-    // These are separate from shell builtins and run with captured I/O.
-    let tools_registry = malt_tools::Registry::new();
-    if tools_registry.contains(&cmd_name) {
-        // Read stdin from file if provided (pipeline input).
-        let stdin_bytes: Vec<u8> = if let Some(mut file) = stdin_file.take() {
-            let mut buf = Vec::new();
-            if let Err(e) = std::io::Read::read_to_end(&mut file, &mut buf) {
-                return ExecResult::failure(
-                    1,
-                    format!("mash: {cmd_name}: read stdin failed: {e}\n"),
-                );
-            }
-            buf
-        } else {
-            Vec::new()
-        };
-
-        // Execute the tool.
-        let tool_fn = tools_registry.get(&cmd_name).unwrap();
-        let tool_result = tool_fn(&argv, &stdin_bytes);
-
-        // Convert tool result to ExecResult.
-        let mut result = ExecResult {
-            exit_code: tool_result.exit_code,
-            stdout: tool_result.stdout,
-            stderr: tool_result.stderr,
-        };
-
-        // Write to pipeline if stdout_file is provided.
-        if let Some(mut pipe_out) = stdout_file {
-            if let Err(e) = pipe_out.write_all(&result.stdout) {
-                return ExecResult::failure(1, format!("mash: pipeline write failed: {e}\n"));
-            }
-            result.stdout = Vec::new();
-        }
-
-        return result;
-    }
-
-    // 4. Temporary env assignments.
+    // 3. Temporary env assignments.
     let mut child_env: Vec<(String, String)> = Vec::new();
     for (key_span, val_span) in env_assigns {
         let key = key_span.text(source).to_string();
@@ -585,12 +598,64 @@ fn execute_simple_with_io(
     }
 
     // 4. Resolve explicit redirects (these override pipeline I/O).
-    let resolved_io = match resolve_redirects(redirects, source, env) {
+    let mut resolved_io = match resolve_redirects(redirects, source, env) {
         Ok(io) => io,
         Err(err_result) => return err_result,
     };
 
-    // 5. Check for shell functions (in pipeline context).
+    // 5. Handle builtins in pipeline context.
+    let builtin_stdin = if BUILTIN_NAMES.contains(&cmd_name.as_str()) {
+        resolved_io.stdin.take().or(stdin_file.take())
+    } else {
+        None
+    };
+    if let Some(mut result) = try_execute_builtin(&cmd_name, &argv, env, builtin_stdin) {
+        apply_output_redirects(&mut result, resolved_io);
+        if let Some(mut pipe_out) = stdout_file {
+            if let Err(e) = pipe_out.write_all(&result.stdout) {
+                return ExecResult::failure(1, format!("mash: pipeline write failed: {e}\n"));
+            }
+            result.stdout = Vec::new();
+        }
+        return result;
+    }
+
+    // 5b. Handle malt-tools (in-process POSIX utilities like grep, cat, wc).
+    let tools_registry = malt_tools::Registry::new();
+    if tools_registry.contains(&cmd_name) {
+        record_hashed_command(env, &cmd_name, &cmd_name);
+        let stdin_bytes: Vec<u8> =
+            if let Some(mut file) = resolved_io.stdin.take().or(stdin_file.take()) {
+                let mut buf = Vec::new();
+                if let Err(e) = std::io::Read::read_to_end(&mut file, &mut buf) {
+                    return ExecResult::failure(
+                        1,
+                        format!("mash: {cmd_name}: read stdin failed: {e}\n"),
+                    );
+                }
+                buf
+            } else {
+                Vec::new()
+            };
+
+        let tool_fn = tools_registry.get(&cmd_name).unwrap();
+        let tool_result = tool_fn(&argv, &stdin_bytes);
+        let mut result = ExecResult {
+            exit_code: tool_result.exit_code,
+            stdout: tool_result.stdout,
+            stderr: tool_result.stderr,
+        };
+        apply_output_redirects(&mut result, resolved_io);
+        if let Some(mut pipe_out) = stdout_file {
+            if let Err(e) = pipe_out.write_all(&result.stdout) {
+                return ExecResult::failure(1, format!("mash: pipeline write failed: {e}\n"));
+            }
+            result.stdout = Vec::new();
+        }
+        return result;
+    }
+
+    // 6. Check for shell functions (in pipeline context).
     if let Some(func_def) = env.get_function(&cmd_name).cloned() {
         if env.call_depth() >= 50 {
             let msg = format!("mash: {cmd_name}: maximum function nesting level exceeded\n");
@@ -617,8 +682,7 @@ fn execute_simple_with_io(
         env.pop_call();
         env.restore_positional(saved);
         let _ = env.pop_scope();
-        // Write captured stdout to pipeline.
-        drop(stdin_file);
+        apply_output_redirects(&mut result, resolved_io);
         if let Some(mut pipe_out) = stdout_file {
             let _ = pipe_out.write_all(&result.stdout);
             result.stdout = Vec::new();
@@ -626,7 +690,7 @@ fn execute_simple_with_io(
         return result;
     }
 
-    // 6. Resolve executable path.
+    // 7. Resolve executable path.
     let program = match find_in_path(&cmd_name, env) {
         Some(p) => p,
         None => {
@@ -634,6 +698,7 @@ fn execute_simple_with_io(
             return ExecResult::failure(127, msg);
         }
     };
+    record_hashed_command(env, &cmd_name, &program.to_string_lossy());
 
     // 7. Build SpawnConfig with pipeline I/O + redirect overrides.
     let mut config = malt_platform::process::SpawnConfig::new(&program);
@@ -810,7 +875,12 @@ fn execute_simple(
     // 4. Resolve redirects.
     let mut resolved_io = match resolve_redirects(redirects, source, env) {
         Ok(io) => io,
-        Err(err_result) => return err_result,
+        Err(err_result) => {
+            if !env.is_interactive() && is_special_builtin_name(&cmd_name) {
+                env.request_exit(err_result.exit_code);
+            }
+            return err_result;
+        }
     };
 
     // 5. Handle special builtins (break, continue, return, true, false, exit, :, echo).
@@ -819,14 +889,25 @@ fn execute_simple(
         if let Some(mut result) =
             try_execute_builtin(&cmd_name, &argv, env, resolved_io.stdin.take())
         {
+            if is_exec_no_args_command(&cmd_name, &argv) {
+                apply_exec_redirects(env, &mut resolved_io);
+            }
             apply_output_redirects(&mut result, resolved_io);
             return result;
         }
     }
 
+    if cmd_name == "exec" && !argv.is_empty() {
+        let mut result =
+            execute_expanded_command(&argv[0], &argv[1..], child_env.as_slice(), resolved_io, env);
+        env.request_exit(result.exit_code);
+        return result;
+    }
+
     // 5b. Handle malt-tools (in-process POSIX utilities like grep, cat, wc, env, which).
     let tools_registry = malt_tools::Registry::new();
     if tools_registry.contains(&cmd_name) {
+        record_hashed_command(env, &cmd_name, &cmd_name);
         // Read stdin if redirected.
         let stdin_bytes: Vec<u8> = if let Some(mut file) = resolved_io.stdin.take() {
             let mut buf = Vec::new();
@@ -924,6 +1005,7 @@ fn execute_simple(
             return ExecResult::failure(127, msg);
         }
     };
+    record_hashed_command(env, &cmd_name, &program.to_string_lossy());
 
     // 7. Build SpawnConfig and execute.
     let mut config = malt_platform::process::SpawnConfig::new(&program);
@@ -954,6 +1036,7 @@ fn execute_simple(
     }
     // Clear the child's inherited env so we control exactly what's passed.
     config.env_clear = true;
+    add_runtime_spawn_env(&mut config, env);
 
     // Spawn the process.
     let mut child = match malt_platform::process::spawn(config) {
@@ -1192,6 +1275,7 @@ fn try_execute_builtin(
                                         "verbose" => env.options_mut().verbose = true,
                                         "noglob" => env.options_mut().noglob = true,
                                         "pipefail" => env.options_mut().pipefail = true,
+                                        "nolog" => env.options_mut().nolog = true,
                                         "noclobber" => env.options_mut().noclobber = true,
                                         "noexec" => env.options_mut().noexec = true,
                                         "nonlexicalctrl" => env.options_mut().nonlexicalctrl = true,
@@ -1225,6 +1309,7 @@ fn try_execute_builtin(
                                         "verbose" => env.options_mut().verbose = false,
                                         "noglob" => env.options_mut().noglob = false,
                                         "pipefail" => env.options_mut().pipefail = false,
+                                        "nolog" => env.options_mut().nolog = false,
                                         "noclobber" => env.options_mut().noclobber = false,
                                         "noexec" => env.options_mut().noexec = false,
                                         "nonlexicalctrl" => {
@@ -1264,13 +1349,39 @@ fn try_execute_builtin(
                 Some(f) => f,
                 None => return Some(ExecResult::with_code(2)),
             };
-            let contents = match std::fs::read_to_string(file) {
-                Ok(c) => c,
-                Err(e) => {
+            let path = match resolve_source_path(file, env) {
+                Some(path) => path,
+                None => {
+                    if !env.is_interactive() {
+                        env.request_exit(1);
+                    }
                     return Some(ExecResult {
                         exit_code: 1,
                         stdout: Vec::new(),
-                        stderr: format!("source: {}: {}\n", file, e).into_bytes(),
+                        stderr: format!("source: {}: not found\n", file).into_bytes(),
+                    });
+                }
+            };
+            if !malt_platform::fs::is_readable(&path) {
+                if !env.is_interactive() {
+                    env.request_exit(1);
+                }
+                return Some(ExecResult {
+                    exit_code: 1,
+                    stdout: Vec::new(),
+                    stderr: format!("source: {}: permission denied\n", path.display()).into_bytes(),
+                });
+            }
+            let contents = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    if !env.is_interactive() {
+                        env.request_exit(1);
+                    }
+                    return Some(ExecResult {
+                        exit_code: 1,
+                        stdout: Vec::new(),
+                        stderr: format!("source: {}: {}\n", path.display(), e).into_bytes(),
                     });
                 }
             };
@@ -1296,7 +1407,12 @@ fn try_execute_builtin(
                     Some(result)
                 }
                 Err(e) => Some(ExecResult {
-                    exit_code: 1,
+                    exit_code: {
+                        if !env.is_interactive() {
+                            env.request_exit(1);
+                        }
+                        1
+                    },
                     stdout: Vec::new(),
                     stderr: format!("source: parse error: {}\n", e).into_bytes(),
                 }),
@@ -1336,6 +1452,9 @@ fn try_execute_builtin(
                         errors.extend_from_slice(
                             format!("mash: export: {}: readonly variable\n", name).as_bytes(),
                         );
+                        if !env.is_interactive() {
+                            env.request_exit(1);
+                        }
                         exit_code = 1;
                         continue;
                     }
@@ -1382,6 +1501,9 @@ fn try_execute_builtin(
                         Ok(_) => {}
                         Err(e) => {
                             errors.extend_from_slice(format!("mash: unset: {}\n", e).as_bytes());
+                            if !env.is_interactive() {
+                                env.request_exit(1);
+                            }
                             exit_code = 1;
                         }
                     }
@@ -1414,14 +1536,17 @@ fn try_execute_builtin(
             let mut exit_code = 0;
             let mut errors = Vec::new();
             for arg in argv {
-                if arg == "-p" {
+                if arg == "-p" || arg == "--" {
                     continue;
                 }
                 if let Some((name, val)) = arg.split_once('=') {
                     if env.get(name).is_some_and(|v| v.readonly) {
                         errors.extend_from_slice(
-                            format!("mash: readonly: {}: readonly variable\n", name).as_bytes(),
+                            format!("readonly: {}: is read only\n", name).as_bytes(),
                         );
+                        if !env.is_interactive() {
+                            env.request_exit(1);
+                        }
                         exit_code = 1;
                         continue;
                     }
@@ -1557,6 +1682,11 @@ fn try_execute_builtin(
         // ── trap ─────────────────────────────────────────────────────
         "trap" => Some(builtin_trap(argv, env)),
 
+        // ── history / jobs / kill ───────────────────────────────────
+        "history" => Some(builtin_history(argv, env)),
+        "jobs" => Some(builtin_jobs(argv, env)),
+        "kill" => Some(builtin_kill(argv, env)),
+
         // ── type ─────────────────────────────────────────────────────
         "type" => Some(builtin_type(argv, env)),
 
@@ -1564,7 +1694,7 @@ fn try_execute_builtin(
         "hash" => Some(builtin_hash(argv, env)),
 
         // ── command ──────────────────────────────────────────────────
-        "command" => Some(builtin_command(argv, env)),
+        "command" => Some(builtin_command(argv, env, stdin_file)),
 
         // ── read ─────────────────────────────────────────────────────
         "read" => Some(builtin_read(argv, env, stdin_file)),
@@ -1604,7 +1734,12 @@ fn builtin_test(args: &[String], _bracket: bool) -> ExecResult {
 
 /// Top-level evaluation: handles -o (OR) at lowest precedence.
 fn test_evaluate(args: &[String]) -> Result<bool, String> {
-    test_eval_or(args, &mut 0, args.len())
+    let mut pos = 0;
+    let result = test_eval_or(args, &mut pos, args.len())?;
+    if pos != args.len() {
+        return Err(format!("unexpected argument: `{}`", args[pos]));
+    }
+    Ok(result)
 }
 
 fn test_eval_or(args: &[String], pos: &mut usize, end: usize) -> Result<bool, String> {
@@ -1680,7 +1815,8 @@ fn test_eval_primary(args: &[String], pos: &mut usize, end: usize) -> Result<boo
         if *pos + 1 < end {
             let maybe_op = args[*pos + 1].as_str();
             match maybe_op {
-                "=" | "!=" | "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" => {
+                "=" | "!=" | "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" | "-ef" | "-nt"
+                | "-ot" => {
                     let left = &args[*pos];
                     *pos += 2; // skip left and operator
                     if *pos >= end {
@@ -1710,14 +1846,8 @@ fn test_unary(op: &str, operand: &str) -> Result<bool, String> {
         "-f" => Ok(path.is_file()),
         "-d" => Ok(path.is_dir()),
         "-s" => Ok(path.metadata().map(|m| m.len() > 0).unwrap_or(false)),
-        "-r" => {
-            // Approximate: exists implies readable on most platforms
-            Ok(path.exists())
-        }
-        "-w" => Ok(path
-            .metadata()
-            .map(|m| !m.permissions().readonly())
-            .unwrap_or(false)),
+        "-r" => Ok(malt_platform::fs::is_readable(path)),
+        "-w" => Ok(malt_platform::fs::is_writable(path)),
         "-x" => Ok(malt_platform::io::is_executable(path)),
         "-L" | "-h" => Ok(path
             .symlink_metadata()
@@ -1744,11 +1874,44 @@ fn test_binary(left: &str, op: &str, right: &str) -> Result<bool, String> {
     match op {
         "=" => Ok(left == right),
         "!=" => Ok(left != right),
+        "-ef" => {
+            let left = std::path::Path::new(left)
+                .canonicalize()
+                .map_err(|e| format!("{left}: {e}"))?;
+            let right = std::path::Path::new(right)
+                .canonicalize()
+                .map_err(|e| format!("{right}: {e}"))?;
+            Ok(left == right)
+        }
+        "-nt" | "-ot" => {
+            let left_meta = std::fs::metadata(left).ok();
+            let right_meta = std::fs::metadata(right).ok();
+            Ok(match (left_meta, right_meta, op) {
+                (Some(_), None, "-nt") => true,
+                (None, Some(_), "-ot") => true,
+                (None, None, _) => false,
+                (None, Some(_), "-nt") => false,
+                (Some(_), None, "-ot") => false,
+                (Some(left_meta), Some(right_meta), "-nt") => {
+                    let left_time = left_meta.modified().map_err(|e| format!("{left}: {e}"))?;
+                    let right_time = right_meta.modified().map_err(|e| format!("{right}: {e}"))?;
+                    left_time > right_time
+                }
+                (Some(left_meta), Some(right_meta), "-ot") => {
+                    let left_time = left_meta.modified().map_err(|e| format!("{left}: {e}"))?;
+                    let right_time = right_meta.modified().map_err(|e| format!("{right}: {e}"))?;
+                    left_time < right_time
+                }
+                _ => false,
+            })
+        }
         "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" => {
             let l: i64 = left
+                .trim()
                 .parse()
                 .map_err(|_| format!("integer expression expected: `{left}'"))?;
             let r: i64 = right
+                .trim()
                 .parse()
                 .map_err(|_| format!("integer expression expected: `{right}'"))?;
             let result = match op {
@@ -1879,6 +2042,186 @@ fn builtin_trap(argv: &[String], env: &mut Env) -> ExecResult {
     ExecResult::success()
 }
 
+fn builtin_history(argv: &[String], env: &mut Env) -> ExecResult {
+    if argv.len() == 1 && argv[0] == "-c" {
+        env.clear_history();
+        return ExecResult::success();
+    }
+
+    if !argv.is_empty() {
+        return ExecResult::failure(1, "mash: history: unsupported option\n");
+    }
+
+    let mut stdout = String::new();
+    for (index, entry) in env.history_entries().iter().enumerate() {
+        stdout.push_str(&format!("{:>5}  {}\n", index + 1, entry));
+    }
+
+    ExecResult {
+        exit_code: 0,
+        stdout: stdout.into_bytes(),
+        stderr: Vec::new(),
+    }
+}
+
+fn builtin_jobs(argv: &[String], env: &mut Env) -> ExecResult {
+    let long_format = argv.iter().any(|arg| arg == "-l");
+    let mut stdout = String::new();
+
+    for job in env.jobs() {
+        let status = match &job.status {
+            crate::env::JobStatus::Running => "Running",
+            crate::env::JobStatus::Done => "Done",
+            crate::env::JobStatus::Signaled(_) => "Terminated",
+        };
+        if long_format {
+            stdout.push_str(&format!(
+                "[{}] {} {} {}\n",
+                job.job_id, job.pid, status, job.command
+            ));
+        } else {
+            stdout.push_str(&format!("[{}] {} {}\n", job.job_id, status, job.command));
+        }
+    }
+
+    ExecResult {
+        exit_code: 0,
+        stdout: stdout.into_bytes(),
+        stderr: Vec::new(),
+    }
+}
+
+fn builtin_kill(argv: &[String], env: &mut Env) -> ExecResult {
+    if argv.is_empty() {
+        return ExecResult::failure(1, "mash: kill: usage: kill [-s signal | -signal] pid ...\n");
+    }
+
+    let mut signal_spec = "TERM";
+    let mut target_start = 0usize;
+    if argv.first().map(|s| s.as_str()) == Some("-s") {
+        if argv.len() < 3 {
+            return ExecResult::failure(
+                1,
+                "mash: kill: usage: kill [-s signal | -signal] pid ...\n",
+            );
+        }
+        signal_spec = &argv[1];
+        target_start = 2;
+    } else if argv[0].starts_with('-') && argv[0].len() > 1 {
+        signal_spec = &argv[0][1..];
+        target_start = 1;
+    }
+
+    let Some((signal_name, signal_number)) = resolve_signal_spec(signal_spec) else {
+        return ExecResult::failure(
+            1,
+            format!(
+                "mash: kill: {}: invalid signal specification\n",
+                signal_spec
+            ),
+        );
+    };
+    if target_start >= argv.len() {
+        return ExecResult::failure(1, "mash: kill: usage: kill [-s signal | -signal] pid ...\n");
+    }
+
+    let shell_pid = env.get_str("$").parse::<u32>().unwrap_or_default();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_code = 0;
+
+    for target in &argv[target_start..] {
+        let Ok(pid) = target.parse::<u32>() else {
+            stderr.extend_from_slice(format!("mash: kill: {}: invalid pid\n", target).as_bytes());
+            exit_code = 1;
+            continue;
+        };
+
+        if pid == shell_pid {
+            if signal_number == 0 {
+                continue;
+            }
+            if let Some(trap) = env.get_trap(&signal_name).cloned() {
+                let trap_result = execute_trap_action(&trap.action, env);
+                stdout.extend_from_slice(&trap_result.stdout);
+                stderr.extend_from_slice(&trap_result.stderr);
+            } else {
+                env.request_exit(128 + signal_number);
+            }
+            continue;
+        }
+
+        if signal_number == 0 {
+            if !env.jobs().iter().any(|job| job.pid == pid) {
+                stderr.extend_from_slice(
+                    format!("mash: kill: {}: no such process\n", pid).as_bytes(),
+                );
+                exit_code = 1;
+            }
+            continue;
+        }
+
+        if env.signal_job(pid, signal_name.clone()) {
+            let _ = env.remove_job(pid);
+        } else {
+            stderr.extend_from_slice(format!("mash: kill: {}: no such process\n", pid).as_bytes());
+            exit_code = 1;
+        }
+    }
+
+    ExecResult {
+        exit_code,
+        stdout,
+        stderr,
+    }
+}
+
+fn resolve_signal_spec(spec: &str) -> Option<(String, i32)> {
+    if spec == "0" {
+        return Some(("0".to_string(), 0));
+    }
+
+    if let Ok(number) = spec.parse::<usize>() {
+        let index = number.checked_sub(1)?;
+        let name = SIGNAL_NAMES.get(index)?;
+        return Some(((*name).to_string(), number as i32));
+    }
+
+    let normalized = normalize_signal(spec);
+    let number = SIGNAL_NAMES
+        .iter()
+        .position(|name| *name == normalized)
+        .map(|index| index as i32 + 1)?;
+    Some((normalized, number))
+}
+
+fn execute_trap_action(action: &str, env: &mut Env) -> ExecResult {
+    match crate::parser::parse(action) {
+        Ok(cmds) => {
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let mut exit_code = 0;
+            for cmd in &cmds {
+                if env.exit_requested().is_some()
+                    || !matches!(env.loop_control(), LoopControl::None)
+                {
+                    break;
+                }
+                let result = execute(cmd, action, env);
+                exit_code = result.exit_code;
+                stdout.extend_from_slice(&result.stdout);
+                stderr.extend_from_slice(&result.stderr);
+            }
+            ExecResult {
+                exit_code,
+                stdout,
+                stderr,
+            }
+        }
+        Err(e) => ExecResult::failure(1, format!("mash: trap: {e}\n")),
+    }
+}
+
 // ── type implementation ──────────────────────────────────────────────
 
 /// Shell reserved words / keywords.
@@ -1891,9 +2234,29 @@ const SHELL_KEYWORDS: &[&str] = &[
 const BUILTIN_NAMES: &[&str] = &[
     "break", "continue", "return", "exit", "true", ":", "false", "echo", "local", "eval", "set",
     "shift", "source", ".", "export", "unset", "readonly", "cd", "pwd", "test", "[", "trap",
-    "type", "hash", "command", "read", "printf", "alias", "unalias", "getopts", "umask", "times",
-    "exec", "shopt",
+    "history", "jobs", "kill", "type", "hash", "command", "read", "printf", "alias", "unalias",
+    "getopts", "umask", "times", "exec", "shopt",
 ];
+
+fn is_special_builtin_name(name: &str) -> bool {
+    matches!(
+        name,
+        "." | ":"
+            | "break"
+            | "continue"
+            | "eval"
+            | "exec"
+            | "exit"
+            | "export"
+            | "readonly"
+            | "return"
+            | "set"
+            | "shift"
+            | "times"
+            | "trap"
+            | "unset"
+    )
+}
 
 fn builtin_shopt(argv: &[String], env: &mut Env) -> ExecResult {
     let mut show_all = false;
@@ -2101,7 +2464,11 @@ fn builtin_hash(argv: &[String], env: &mut Env) -> ExecResult {
 
 // ── command implementation ───────────────────────────────────────────
 
-fn builtin_command(argv: &[String], env: &mut Env) -> ExecResult {
+fn builtin_command(
+    argv: &[String],
+    env: &mut Env,
+    stdin_file: Option<std::fs::File>,
+) -> ExecResult {
     if argv.is_empty() {
         return ExecResult::success();
     }
@@ -2149,7 +2516,11 @@ fn builtin_command(argv: &[String], env: &mut Env) -> ExecResult {
 
     // Try builtins (but not `command` itself to avoid infinite recursion).
     if cmd_name != "command" {
-        if let Some(result) = try_execute_builtin(cmd_name, cmd_argv, env, None) {
+        let prior_exit_request = env.exit_requested();
+        if let Some(result) = try_execute_builtin(cmd_name, cmd_argv, env, stdin_file) {
+            if is_special_builtin_name(cmd_name) {
+                env.set_exit_requested(prior_exit_request);
+            }
             return result;
         }
     }
@@ -3427,6 +3798,12 @@ struct ResolvedIo {
     stdout_to_stderr: bool,
     /// Set when `2>&1` was used and stdout has no explicit file.
     stderr_to_stdout: bool,
+    /// Extra shell-managed file descriptors opened by redirects like `8<file`.
+    extra_fds: HashMap<u8, File>,
+    /// Extra shell-managed descriptors that alias one of the shell stdio fds.
+    extra_fd_aliases: HashMap<u8, u8>,
+    /// Extra descriptors explicitly closed by redirects like `8<&-`.
+    closed_fds: Vec<u8>,
 }
 
 impl ResolvedIo {
@@ -3437,6 +3814,51 @@ impl ResolvedIo {
             stderr: None,
             stdout_to_stderr: false,
             stderr_to_stdout: false,
+            extra_fds: HashMap::new(),
+            extra_fd_aliases: HashMap::new(),
+            closed_fds: Vec::new(),
+        }
+    }
+}
+
+fn assign_resolved_fd(io: &mut ResolvedIo, fd: u8, file: std::fs::File) {
+    match fd {
+        0 => io.stdin = Some(file),
+        1 => {
+            io.stdout = Some(file);
+            io.stdout_to_stderr = false;
+        }
+        2 => {
+            io.stderr = Some(file);
+            io.stderr_to_stdout = false;
+        }
+        _ => {
+            io.extra_fds.insert(fd, file);
+            io.extra_fd_aliases.remove(&fd);
+            io.closed_fds.retain(|closed_fd| *closed_fd != fd);
+        }
+    }
+}
+
+fn assign_resolved_fd_alias(io: &mut ResolvedIo, fd: u8, target_fd: u8) {
+    match fd {
+        0 => {}
+        1 => {
+            if target_fd == 2 {
+                io.stdout_to_stderr = true;
+                io.stdout = None;
+            }
+        }
+        2 => {
+            if target_fd == 1 {
+                io.stderr_to_stdout = true;
+                io.stderr = None;
+            }
+        }
+        _ => {
+            io.extra_fds.remove(&fd);
+            io.extra_fd_aliases.insert(fd, target_fd);
+            io.closed_fds.retain(|closed_fd| *closed_fd != fd);
         }
     }
 }
@@ -3512,21 +3934,6 @@ fn resolve_redirects(
         let platform_target = platformize_path(target);
         let target: &str = &platform_target;
 
-        let mut assign_fd = |fd: u8, file: std::fs::File| match fd {
-            0 => io.stdin = Some(file),
-            1 => {
-                io.stdout = Some(file);
-                io.stdout_to_stderr = false;
-            }
-            2 => {
-                io.stderr = Some(file);
-                io.stderr_to_stdout = false;
-            }
-            _ => {
-                // Extra fds not yet supported; drop.
-            }
-        };
-
         match redirect.kind {
             RedirectKind::Output | RedirectKind::Clobber => {
                 // Check noclobber for Output (not Clobber).
@@ -3538,26 +3945,24 @@ fn resolve_redirects(
                         return Err(ExecResult::failure(1, msg));
                     }
                 }
-                let file = std::fs::File::create(target)
+                let file = open_redirect_file(target, malt_platform::DevOpenMode::Write, env)
                     .map_err(|e| ExecResult::failure(1, format!("mash: {target}: {e}\n")))?;
-                assign_fd(fd, file);
+                assign_resolved_fd(&mut io, fd, file);
             }
             RedirectKind::Append => {
                 use std::io::Seek;
-                let mut file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .open(target)
-                    .map_err(|e| ExecResult::failure(1, format!("mash: {target}: {e}\n")))?;
+                let mut file =
+                    open_redirect_file(target, malt_platform::DevOpenMode::Write, env)
+                        .map_err(|e| ExecResult::failure(1, format!("mash: {target}: {e}\n")))?;
                 // Seek to end so writes append. Using write+seek instead of
                 // append mode avoids issues with MSYS2 binaries on Windows.
                 let _ = file.seek(std::io::SeekFrom::End(0));
-                assign_fd(fd, file);
+                assign_resolved_fd(&mut io, fd, file);
             }
             RedirectKind::Input => {
-                let file = std::fs::File::open(target)
+                let file = open_redirect_file(target, malt_platform::DevOpenMode::Read, env)
                     .map_err(|e| ExecResult::failure(1, format!("mash: {target}: {e}\n")))?;
-                assign_fd(fd, file);
+                assign_resolved_fd(&mut io, fd, file);
             }
             RedirectKind::HereDoc | RedirectKind::HereDocStrip | RedirectKind::HereString => {
                 let (read, mut write) = malt_platform::io::create_pipe()
@@ -3567,11 +3972,36 @@ fn resolve_redirects(
                 } else {
                     target.to_string()
                 };
-                // Write in a thread to avoid blocking if pipe buffer fills.
-                std::thread::spawn(move || {
-                    let _ = write.write_all(data.as_bytes());
-                });
-                assign_fd(fd, read);
+                // For small heredocs, wait until the writer has populated the pipe.
+                // This avoids a Windows race where the reader can observe EOF before
+                // the background writer runs.
+                if data.len() <= 8192 {
+                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                    std::thread::spawn(move || {
+                        let result = write.write_all(data.as_bytes());
+                        let _ = tx.send(result);
+                    });
+                    match rx.recv() {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            return Err(ExecResult::failure(
+                                1,
+                                format!("mash: heredoc write failed: {e}\n"),
+                            ));
+                        }
+                        Err(e) => {
+                            return Err(ExecResult::failure(
+                                1,
+                                format!("mash: heredoc writer failed: {e}\n"),
+                            ));
+                        }
+                    }
+                } else {
+                    std::thread::spawn(move || {
+                        let _ = write.write_all(data.as_bytes());
+                    });
+                }
+                assign_resolved_fd(&mut io, fd, read);
             }
             RedirectKind::Both => {
                 // &> file — redirect both stdout and stderr.
@@ -3587,14 +4017,9 @@ fn resolve_redirects(
             }
             RedirectKind::InputOutput => {
                 // <> file — open for reading and writing.
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .open(target)
+                let file = open_redirect_file(target, malt_platform::DevOpenMode::ReadWrite, env)
                     .map_err(|e| ExecResult::failure(1, format!("mash: {target}: {e}\n")))?;
-                assign_fd(fd, file);
+                assign_resolved_fd(&mut io, fd, file);
             }
             RedirectKind::DupInput | RedirectKind::DupOutput => {
                 if target == "-" {
@@ -3603,47 +4028,74 @@ fn resolve_redirects(
                         0 => io.stdin = None,
                         1 => io.stdout = None,
                         2 => io.stderr = None,
-                        _ => {}
+                        _ => {
+                            io.extra_fds.remove(&fd);
+                            io.extra_fd_aliases.remove(&fd);
+                            io.closed_fds.push(fd);
+                        }
                     }
                 } else {
-                    let src: u8 = target.parse::<u8>().unwrap_or(
-                        if redirect.kind == RedirectKind::DupInput {
-                            0
-                        } else {
-                            1
-                        },
-                    );
+                    let src: u8 = target.parse::<u8>().map_err(|_| {
+                        ExecResult::failure(1, format!("mash: {target}: bad file descriptor\n"))
+                    })?;
+                    let alias_target = if src > 2 {
+                        io.extra_fd_aliases
+                            .get(&src)
+                            .copied()
+                            .or_else(|| env.fd_alias_target(src as u32).map(|fd| fd as u8))
+                    } else {
+                        None
+                    };
                     let cloned_file = match src {
                         0 => io.stdin.as_ref().and_then(|f| f.try_clone().ok()),
                         1 => io.stdout.as_ref().and_then(|f| f.try_clone().ok()),
                         2 => io.stderr.as_ref().and_then(|f| f.try_clone().ok()),
-                        _ => None,
+                        _ => io
+                            .extra_fds
+                            .get(&src)
+                            .and_then(|f| f.try_clone().ok())
+                            .or_else(|| {
+                                if redirect.kind == RedirectKind::DupInput {
+                                    env.open_fd_read(src as u32).ok()
+                                } else {
+                                    env.open_fd_write(src as u32).ok()
+                                }
+                            }),
                     };
-                    match fd {
-                        0 => io.stdin = cloned_file,
-                        1 => {
-                            if cloned_file.is_none() && src == 2 {
-                                io.stdout_to_stderr = true;
-                                io.stdout = None;
-                            } else {
-                                io.stdout = cloned_file;
-                                if io.stdout.is_some() {
-                                    io.stdout_to_stderr = false;
-                                }
+                    let allows_merge =
+                        (fd == 1 && src == 2) || (fd == 2 && src == 1) || (fd > 2 && src == fd);
+                    let allows_stdio_alias = src <= 2;
+                    if cloned_file.is_none()
+                        && alias_target.is_none()
+                        && !allows_merge
+                        && !allows_stdio_alias
+                    {
+                        return Err(ExecResult::failure(
+                            1,
+                            format!("mash: {src}: bad file descriptor\n"),
+                        ));
+                    }
+                    if let Some(file) = cloned_file {
+                        match fd {
+                            0 => io.stdin = Some(file),
+                            1 => {
+                                io.stdout = Some(file);
+                                io.stdout_to_stderr = false;
+                            }
+                            2 => {
+                                io.stderr = Some(file);
+                                io.stderr_to_stdout = false;
+                            }
+                            _ => {
+                                io.extra_fds.insert(fd, file);
+                                io.extra_fd_aliases.remove(&fd);
+                                io.closed_fds.retain(|closed_fd| *closed_fd != fd);
                             }
                         }
-                        2 => {
-                            if cloned_file.is_none() && src == 1 {
-                                io.stderr_to_stdout = true;
-                                io.stderr = None;
-                            } else {
-                                io.stderr = cloned_file;
-                                if io.stderr.is_some() {
-                                    io.stderr_to_stdout = false;
-                                }
-                            }
-                        }
-                        _ => {}
+                    } else if let Some(target_fd) = alias_target {
+                        assign_resolved_fd_alias(&mut io, fd, target_fd);
+                    } else {
+                        assign_resolved_fd_alias(&mut io, fd, src);
                     }
                 }
             }
@@ -3651,6 +4103,238 @@ fn resolve_redirects(
     }
 
     Ok(io)
+}
+
+fn open_redirect_file(
+    target: &str,
+    mode: malt_platform::DevOpenMode,
+    env: &Env,
+) -> std::io::Result<std::fs::File> {
+    if let Some(fd_text) = target.strip_prefix("/dev/fd/") {
+        let fd = fd_text.parse::<u32>().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid /dev/fd path: {target}"),
+            )
+        })?;
+        return match mode {
+            malt_platform::DevOpenMode::Read => env.open_fd_read(fd),
+            malt_platform::DevOpenMode::Write => env.open_fd_write(fd),
+            malt_platform::DevOpenMode::ReadWrite => env.open_fd(fd),
+        };
+    }
+
+    let path = std::path::Path::new(target);
+    if let Some(result) = malt_platform::try_open_virtual_dev(path, mode) {
+        return result;
+    }
+
+    match mode {
+        malt_platform::DevOpenMode::Read => std::fs::File::open(path),
+        malt_platform::DevOpenMode::Write => std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path),
+        malt_platform::DevOpenMode::ReadWrite => std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path),
+    }
+}
+
+fn apply_exec_redirects(env: &Env, io: &mut ResolvedIo) {
+    for fd in io.closed_fds.drain(..) {
+        let _ = env.close_fd(fd as u32);
+    }
+
+    for (fd, file) in io.extra_fds.drain() {
+        env.register_fd(fd as u32, file);
+    }
+
+    for (fd, target_fd) in io.extra_fd_aliases.drain() {
+        env.register_fd_alias(fd as u32, target_fd as u32);
+    }
+}
+
+fn add_runtime_spawn_env(config: &mut malt_platform::process::SpawnConfig, env: &Env) {
+    if let Some(fd_aliases) = env.fd_alias_env_spec() {
+        config
+            .env
+            .push(("MASH_FD_ALIASES".into(), fd_aliases.into()));
+    }
+}
+
+fn execute_expanded_command(
+    cmd_name: &str,
+    argv: &[String],
+    child_env: &[(String, String)],
+    mut resolved_io: ResolvedIo,
+    env: &mut Env,
+) -> ExecResult {
+    if let Some(mut result) = try_execute_builtin(cmd_name, argv, env, resolved_io.stdin.take()) {
+        apply_output_redirects(&mut result, resolved_io);
+        return result;
+    }
+
+    let tools_registry = malt_tools::Registry::new();
+    if tools_registry.contains(cmd_name) {
+        let stdin_bytes: Vec<u8> = if let Some(mut file) = resolved_io.stdin.take() {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut file, &mut buf);
+            buf
+        } else {
+            Vec::new()
+        };
+
+        let tool_fn = tools_registry.get(cmd_name).unwrap();
+        let tool_result = tool_fn(argv, &stdin_bytes);
+        let mut result = ExecResult {
+            exit_code: tool_result.exit_code,
+            stdout: tool_result.stdout,
+            stderr: tool_result.stderr,
+        };
+        apply_output_redirects(&mut result, resolved_io);
+        return result;
+    }
+
+    if let Some(func_def) = env.get_function(cmd_name).cloned() {
+        if env.call_depth() >= 50 {
+            let msg = format!("mash: {cmd_name}: maximum function nesting level exceeded\n");
+            return ExecResult::failure(1, msg);
+        }
+
+        env.push_scope();
+        let saved = env.save_positional();
+        env.replace_positional_args(argv);
+        env.push_call(CallFrame {
+            name: cmd_name.to_string(),
+            file: String::new(),
+            line: 0,
+        });
+
+        let saved_loop_depth = if env.options().nonlexicalctrl {
+            env.loop_depth()
+        } else {
+            let prev = env.loop_depth();
+            env.set_loop_depth(0);
+            prev
+        };
+
+        for (k, v) in child_env {
+            let _ = env.set(k, Variable::string(v.clone()));
+        }
+
+        let stored_source = func_def.source.clone();
+        let func_body = func_def.body.clone();
+        let mut result = execute(&func_body, &stored_source, env);
+
+        match env.loop_control().clone() {
+            LoopControl::Return(code) => {
+                result.exit_code = code;
+                env.set_loop_control(LoopControl::None);
+            }
+            LoopControl::Break(_) | LoopControl::Continue(_) => {
+                if !env.options().nonlexicalctrl {
+                    env.set_loop_control(LoopControl::None);
+                }
+            }
+            LoopControl::None => {}
+        }
+
+        env.set_loop_depth(saved_loop_depth);
+        env.pop_call();
+        env.restore_positional(saved);
+        let _ = env.pop_scope();
+
+        apply_output_redirects(&mut result, resolved_io);
+        return result;
+    }
+
+    let program = match find_in_path(cmd_name, env) {
+        Some(p) => p,
+        None => {
+            let msg = format!("mash: {cmd_name}: command not found\n");
+            return ExecResult::failure(127, msg);
+        }
+    };
+
+    let mut config = malt_platform::process::SpawnConfig::new(&program);
+    config.args = argv.iter().map(|a| a.into()).collect();
+    config.stdin = match resolved_io.stdin {
+        Some(f) => malt_platform::process::Io::File(f),
+        None => malt_platform::process::Io::Inherit,
+    };
+    config.stdout = match resolved_io.stdout {
+        Some(f) => malt_platform::process::Io::File(f),
+        None => malt_platform::process::Io::Pipe,
+    };
+    config.stderr = match resolved_io.stderr {
+        Some(f) => malt_platform::process::Io::File(f),
+        None => malt_platform::process::Io::Pipe,
+    };
+
+    let exported = env.exported_vars();
+    for (k, v) in &exported {
+        config.env.push((k.into(), v.into()));
+    }
+    for (k, v) in child_env {
+        config.env.push((k.into(), v.into()));
+    }
+    config.env_clear = true;
+    add_runtime_spawn_env(&mut config, env);
+
+    let mut child = match malt_platform::process::spawn(config) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("mash: {cmd_name}: {e}\n");
+            let code = match &e {
+                malt_platform::process::SpawnError::NotFound { .. } => 127,
+                malt_platform::process::SpawnError::PermissionDenied { .. } => 126,
+                _ => 1,
+            };
+            return ExecResult::failure(code, msg);
+        }
+    };
+
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    if let Some(mut out) = child.take_stdout() {
+        if let Err(e) = out.read_to_end(&mut stdout_bytes) {
+            stderr_bytes.extend_from_slice(
+                format!("mash: {cmd_name}: stdout read failed: {e}\n").as_bytes(),
+            );
+        }
+    }
+    if let Some(mut err) = child.take_stderr() {
+        if let Err(e) = err.read_to_end(&mut stderr_bytes) {
+            stderr_bytes.extend_from_slice(
+                format!("mash: {cmd_name}: stderr read failed: {e}\n").as_bytes(),
+            );
+        }
+    }
+
+    let exit_code = match child.wait() {
+        Ok(status) => status.code(),
+        Err(e) => {
+            let msg = format!("mash: {cmd_name}: wait failed: {e}\n");
+            stderr_bytes.extend_from_slice(msg.as_bytes());
+            1
+        }
+    };
+
+    ExecResult {
+        exit_code,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+    }
+}
+
+fn is_exec_no_args_command(cmd_name: &str, argv: &[String]) -> bool {
+    (cmd_name == "exec" && argv.is_empty())
+        || (cmd_name == "command" && argv.len() == 1 && argv[0] == "exec")
 }
 
 /// Apply resolved redirects to an ExecResult: write stdout/stderr to files.
@@ -3688,15 +4372,12 @@ fn find_in_path(name: &str, env: &Env) -> Option<PathBuf> {
         return Some(PathBuf::from(name));
     }
 
-    let path_var = env.get_str("PATH");
-    let separator = if cfg!(windows) { ';' } else { ':' };
-
-    for dir in path_var.split(separator) {
+    for dir in shell_path_entries(env.get_str("PATH")) {
         if dir.is_empty() {
             continue;
         }
         let candidate = PathBuf::from(dir).join(name);
-        if candidate.exists() {
+        if is_path_search_match(&candidate) {
             return Some(candidate);
         }
         // On Windows, also check common executable extensions.
@@ -3704,11 +4385,140 @@ fn find_in_path(name: &str, env: &Env) -> Option<PathBuf> {
         {
             for ext in &["exe", "cmd", "bat", "com"] {
                 let with_ext = candidate.with_extension(ext);
-                if with_ext.exists() {
+                if is_path_search_match(&with_ext) {
                     return Some(with_ext);
                 }
             }
         }
     }
     None
+}
+
+fn resolve_source_path(name: &str, env: &Env) -> Option<PathBuf> {
+    if name.contains('/') || name.contains('\\') {
+        let path = PathBuf::from(name);
+        return path.is_file().then_some(path);
+    }
+
+    if !env.options().sourcepath {
+        let path = PathBuf::from(name);
+        return path.is_file().then_some(path);
+    }
+
+    for dir in shell_path_entries(env.get_str("PATH")) {
+        if dir.is_empty() {
+            continue;
+        }
+        let candidate = PathBuf::from(dir).join(name);
+        if candidate.is_file() && malt_platform::fs::is_readable(&candidate) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn shell_path_entries(path_var: &str) -> Vec<&str> {
+    #[cfg(not(windows))]
+    {
+        path_var.split(':').collect()
+    }
+
+    #[cfg(windows)]
+    {
+        let bytes = path_var.as_bytes();
+        let mut entries = Vec::new();
+        let mut start = 0usize;
+
+        for i in 0..bytes.len() {
+            let byte = bytes[i];
+            let is_separator = match byte {
+                b';' => true,
+                b':' => {
+                    let prev = i.checked_sub(1).and_then(|idx| bytes.get(idx));
+                    let next = bytes.get(i + 1);
+                    !(matches!(prev, Some(b'a'..=b'z' | b'A'..=b'Z'))
+                        && matches!(next, Some(b'/' | b'\\')))
+                }
+                _ => false,
+            };
+
+            if is_separator {
+                entries.push(&path_var[start..i]);
+                start = i + 1;
+            }
+        }
+
+        entries.push(&path_var[start..]);
+        entries
+    }
+}
+
+fn is_path_search_match(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        path.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "exe" | "cmd" | "bat" | "com"
+                    )
+                })
+    }
+
+    #[cfg(not(windows))]
+    {
+        path.is_file() && malt_platform::io::is_executable(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_in_path;
+    use crate::env::{Env, Variable};
+
+    #[test]
+    #[cfg(windows)]
+    fn find_in_path_prefers_executable_extension_over_bare_existing_file() {
+        let temp = tempfile::tempdir().expect("create tempdir");
+        let dir = temp.path();
+        let bare = dir.join("scr");
+        let cmd = dir.join("scr.cmd");
+
+        std::fs::write(&bare, "not executable").expect("write bare file");
+        std::fs::write(&cmd, "@echo off\r\necho hi\r\n").expect("write cmd file");
+
+        let mut env = Env::empty();
+        env.set(
+            "PATH",
+            Variable::exported_string(dir.to_string_lossy().to_string()),
+        )
+        .expect("set PATH");
+
+        let resolved = find_in_path("scr", &env).expect("resolve executable");
+        assert_eq!(resolved, cmd);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn find_in_path_accepts_colon_separated_shell_path_entries() {
+        let temp = tempfile::tempdir().expect("create tempdir");
+        let dir = temp.path().join("bin");
+        std::fs::create_dir_all(&dir).expect("create bin dir");
+        let cmd = dir.join("scr.cmd");
+        std::fs::write(&cmd, "@echo off\r\necho hi\r\n").expect("write cmd file");
+
+        let mut env = Env::empty();
+        env.set(
+            "PATH",
+            Variable::exported_string(format!("{}:C:/Windows/System32", dir.to_string_lossy())),
+        )
+        .expect("set PATH");
+
+        let resolved = find_in_path("scr", &env).expect("resolve executable");
+        assert_eq!(resolved, cmd);
+    }
 }

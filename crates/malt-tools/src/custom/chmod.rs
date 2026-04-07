@@ -7,6 +7,7 @@
 //! Note: On Windows, this has limited effect - primarily for compatibility.
 
 use crate::BuiltinResult;
+use malt_platform::fs;
 use std::path::Path;
 
 /// Change file mode bits.
@@ -24,9 +25,7 @@ pub fn chmod(args: &[String], _stdin: &[u8]) -> BuiltinResult {
             "-f" | "--force" => { /* ignore errors */ }
             "-v" | "--verbose" => { /* ignored */ }
             _ => {
-                if args[i].starts_with('-') {
-                    // Unknown flag
-                } else if mode_str.is_none() {
+                if mode_str.is_none() {
                     mode_str = Some(&args[i]);
                 } else {
                     paths.push(&args[i]);
@@ -44,7 +43,7 @@ pub fn chmod(args: &[String], _stdin: &[u8]) -> BuiltinResult {
         return BuiltinResult::failure(1, "chmod: missing file operand\n".into());
     }
 
-    let _mode = mode_str.unwrap();
+    let mode_str = mode_str.unwrap();
     let mut stderr = Vec::new();
     let mut exit_code = 0;
 
@@ -62,39 +61,31 @@ pub fn chmod(args: &[String], _stdin: &[u8]) -> BuiltinResult {
             continue;
         }
 
-        // On Windows, we can't really set Unix permissions
-        // We just verify the file exists and return success for compatibility
-        // Real permission changes would require platform-specific code
-        #[cfg(not(windows))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mode_val = if let Ok(octal) = u32::from_str_radix(_mode, 8) {
-                octal
-            } else {
-                // Try to parse symbolic mode (very basic)
-                0o644 // default
-            };
-
-            let meta = match std::fs::metadata(p) {
-                Ok(m) => m,
-                Err(e) => {
-                    stderr.extend_from_slice(
-                        format!("chmod: cannot access '{}': {}\n", path, e).as_bytes(),
-                    );
-                    exit_code = 1;
-                    continue;
-                }
-            };
-
-            let mut perms = meta.permissions();
-            perms.set_mode(mode_val);
-            if let Err(e) = std::fs::set_permissions(p, perms) {
+        let current_mode = match fs::get_mode(p) {
+            Ok(mode) => mode,
+            Err(e) => {
                 stderr.extend_from_slice(
-                    format!("chmod: changing permissions of '{}': {}\n", path, e).as_bytes(),
+                    format!("chmod: cannot access '{}': {}\n", path, e).as_bytes(),
                 );
                 exit_code = 1;
+                continue;
             }
+        };
+
+        let mode_val = match parse_mode(mode_str, current_mode) {
+            Ok(mode) => mode,
+            Err(message) => {
+                stderr.extend_from_slice(format!("chmod: {message}\n").as_bytes());
+                exit_code = 1;
+                continue;
+            }
+        };
+
+        if let Err(e) = fs::set_mode(p, mode_val) {
+            stderr.extend_from_slice(
+                format!("chmod: changing permissions of '{}': {}\n", path, e).as_bytes(),
+            );
+            exit_code = 1;
         }
     }
 
@@ -103,6 +94,76 @@ pub fn chmod(args: &[String], _stdin: &[u8]) -> BuiltinResult {
         stdout: Vec::new(),
         stderr,
     }
+}
+
+fn parse_mode(mode: &str, current: u32) -> Result<u32, String> {
+    if let Ok(octal) = u32::from_str_radix(mode, 8) {
+        return Ok(octal & 0o777);
+    }
+
+    apply_symbolic_mode(mode, current)
+}
+
+fn apply_symbolic_mode(mode: &str, current: u32) -> Result<u32, String> {
+    let mut chars = mode.chars().peekable();
+    let mut who_bits = 0u32;
+
+    while let Some(ch) = chars.peek().copied() {
+        match ch {
+            'u' => {
+                who_bits |= 0o700;
+                chars.next();
+            }
+            'g' => {
+                who_bits |= 0o070;
+                chars.next();
+            }
+            'o' => {
+                who_bits |= 0o007;
+                chars.next();
+            }
+            'a' => {
+                who_bits |= 0o777;
+                chars.next();
+            }
+            '+' | '-' | '=' => break,
+            _ => return Err(format!("invalid mode: {mode}")),
+        }
+    }
+
+    if who_bits == 0 {
+        who_bits = 0o777;
+    }
+
+    let op = chars
+        .next()
+        .ok_or_else(|| format!("invalid mode: {mode}"))?;
+    if !matches!(op, '+' | '-' | '=') {
+        return Err(format!("invalid mode: {mode}"));
+    }
+
+    let mut perm_mask = 0u32;
+    for ch in chars {
+        perm_mask |= match ch {
+            'r' => mask_for(who_bits, 0o444),
+            'w' => mask_for(who_bits, 0o222),
+            'x' => mask_for(who_bits, 0o111),
+            _ => return Err(format!("invalid mode: {mode}")),
+        };
+    }
+
+    let next = match op {
+        '+' => current | perm_mask,
+        '-' => current & !perm_mask,
+        '=' => (current & !mask_for(who_bits, 0o777)) | perm_mask,
+        _ => unreachable!(),
+    };
+
+    Ok(next & 0o777)
+}
+
+fn mask_for(who_bits: u32, perm_bits: u32) -> u32 {
+    who_bits & perm_bits
 }
 
 #[cfg(test)]

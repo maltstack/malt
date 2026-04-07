@@ -3,6 +3,10 @@
 use crate::ast::{Command, Spanned};
 use crate::parser;
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+const MASH_FD_ALIASES_ENV: &str = "MASH_FD_ALIASES";
 
 // ── Variable storage ──
 
@@ -85,7 +89,7 @@ impl Default for ShellOptions {
             noclobber: false,
             noexec: false,
             nonlexicalctrl: false, // POSIX default: break/continue are scoped to function (lexical)
-            hash_cmds: false,
+            hash_cmds: true,
             nolog: false,
             sourcepath: true, // POSIX: search PATH for source command
         }
@@ -144,6 +148,21 @@ pub struct TrapAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobStatus {
+    Running,
+    Done,
+    Signaled(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobEntry {
+    pub job_id: u32,
+    pub pid: u32,
+    pub command: String,
+    pub status: JobStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoopControl {
     None,
     Break(usize),
@@ -196,9 +215,13 @@ pub struct Env {
     hash_table: HashMap<String, String>,
     disabled_builtins: HashSet<String>,
     suppress_errexit: bool,
+    history: Arc<Mutex<Vec<String>>>,
+    jobs: Arc<Mutex<Vec<JobEntry>>>,
     /// Opaque isolation context token passed through from daemon.
     /// MASH does not interpret this; it's passed to platform spawn traits.
     isolation_context: Option<malt_platform::isolation::IsolationContext>,
+    fd_registry: malt_platform::vfs::SharedFdRegistry,
+    fd_aliases: Arc<Mutex<HashMap<u32, u32>>>,
 }
 
 impl Env {
@@ -222,7 +245,11 @@ impl Env {
             hash_table: HashMap::new(),
             disabled_builtins: HashSet::new(),
             suppress_errexit: false,
+            history: Arc::new(Mutex::new(Vec::new())),
+            jobs: Arc::new(Mutex::new(Vec::new())),
             isolation_context: None,
+            fd_registry: malt_platform::vfs::SharedFdRegistry::new(),
+            fd_aliases: Arc::new(Mutex::new(HashMap::new())),
         };
         env.special
             .insert("$".to_string(), std::process::id().to_string());
@@ -235,8 +262,29 @@ impl Env {
         for (key, value) in std::env::vars() {
             env.scopes[0].insert(key, Variable::exported_string(value));
         }
+        if let Ok(alias_spec) = std::env::var(MASH_FD_ALIASES_ENV) {
+            for entry in alias_spec.split(',').filter(|entry| !entry.is_empty()) {
+                if let Some((fd_text, target_text)) = entry.split_once(':') {
+                    if let (Ok(fd), Ok(target_fd)) =
+                        (fd_text.parse::<u32>(), target_text.parse::<u32>())
+                    {
+                        env.register_fd_alias(fd, target_fd);
+                    }
+                }
+            }
+        }
         if let Ok(cwd) = std::env::current_dir() {
-            let pwd_str = cwd.to_string_lossy().to_string();
+            let pwd_str = {
+                let s = cwd.to_string_lossy().to_string();
+                #[cfg(windows)]
+                {
+                    s.replace('\\', "/")
+                }
+                #[cfg(not(windows))]
+                {
+                    s
+                }
+            };
             // PWD is a regular exported variable, not a special parameter.
             // Store it in scopes so `set()` / `get()` work correctly for cd.
             env.scopes[0].insert("PWD".to_string(), Variable::exported_string(pwd_str));
@@ -494,6 +542,9 @@ impl Env {
     pub fn request_exit(&mut self, code: i32) {
         self.exit_requested = Some(code);
     }
+    pub fn set_exit_requested(&mut self, code: Option<i32>) {
+        self.exit_requested = code;
+    }
     pub fn exit_requested(&self) -> Option<i32> {
         self.exit_requested
     }
@@ -574,6 +625,65 @@ impl Env {
 
     pub fn traps(&self) -> &HashMap<String, TrapAction> {
         &self.traps
+    }
+
+    pub fn clear_noninherited_traps(&mut self) {
+        self.traps.retain(|_, trap| trap.inherited);
+    }
+
+    // ── History ──
+
+    pub fn push_history_entry(&self, entry: String) {
+        let entry = entry.trim().to_string();
+        if entry.is_empty() {
+            return;
+        }
+        self.history_lock().push(entry);
+    }
+
+    pub fn clear_history(&self) {
+        self.history_lock().clear();
+    }
+
+    pub fn history_entries(&self) -> Vec<String> {
+        self.history_lock().clone()
+    }
+
+    // ── Jobs ──
+
+    pub fn register_job(&self, job_id: u32, command: String) {
+        let mut jobs = self.jobs_lock();
+        jobs.push(JobEntry {
+            job_id,
+            pid: job_id,
+            command,
+            status: JobStatus::Running,
+        });
+    }
+
+    pub fn mark_job_done(&self, job_id: u32) {
+        if let Some(job) = self.jobs_lock().iter_mut().find(|job| job.job_id == job_id) {
+            job.status = JobStatus::Done;
+        }
+    }
+
+    pub fn signal_job(&self, pid: u32, signal: String) -> bool {
+        if let Some(job) = self.jobs_lock().iter_mut().find(|job| job.pid == pid) {
+            job.status = JobStatus::Signaled(signal);
+            return true;
+        }
+        false
+    }
+
+    pub fn remove_job(&self, pid: u32) -> bool {
+        let mut jobs = self.jobs_lock();
+        let len_before = jobs.len();
+        jobs.retain(|job| job.pid != pid);
+        len_before != jobs.len()
+    }
+
+    pub fn jobs(&self) -> Vec<JobEntry> {
+        self.jobs_lock().clone()
     }
 
     // ── Hash table (PATH cache) ──
@@ -714,6 +824,83 @@ impl Env {
     /// Take the isolation context token (used when spawning processes).
     pub fn take_isolation_context(&mut self) -> Option<malt_platform::isolation::IsolationContext> {
         self.isolation_context.take()
+    }
+
+    pub fn register_fd(&self, fd: u32, file: File) {
+        self.clear_fd_alias(fd);
+        self.fd_registry.register_file_at(fd, file);
+    }
+
+    pub fn register_fd_alias(&self, fd: u32, target_fd: u32) {
+        let _ = self.fd_registry.close(fd);
+        self.fd_aliases_lock().insert(fd, target_fd);
+    }
+
+    pub fn fd_alias_target(&self, fd: u32) -> Option<u32> {
+        self.fd_aliases_lock().get(&fd).copied()
+    }
+
+    pub fn fd_alias_env_spec(&self) -> Option<String> {
+        let aliases = self.fd_aliases_lock();
+        if aliases.is_empty() {
+            return None;
+        }
+        let mut entries: Vec<(u32, u32)> =
+            aliases.iter().map(|(fd, target)| (*fd, *target)).collect();
+        entries.sort_unstable_by_key(|(fd, _)| *fd);
+        Some(
+            entries
+                .into_iter()
+                .map(|(fd, target)| format!("{fd}:{target}"))
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    }
+
+    pub fn open_fd(&self, fd: u32) -> std::io::Result<File> {
+        self.fd_registry.open(fd)
+    }
+
+    pub fn open_fd_read(&self, fd: u32) -> std::io::Result<File> {
+        self.fd_registry.open_read(fd)
+    }
+
+    pub fn open_fd_write(&self, fd: u32) -> std::io::Result<File> {
+        self.fd_registry.open_write(fd)
+    }
+
+    pub fn close_fd(&self, fd: u32) -> std::io::Result<()> {
+        self.clear_fd_alias(fd);
+        self.fd_registry.close(fd)
+    }
+
+    pub fn has_fd(&self, fd: u32) -> bool {
+        self.fd_registry.is_registered(fd) || self.fd_aliases_lock().contains_key(&fd)
+    }
+
+    fn history_lock(&self) -> MutexGuard<'_, Vec<String>> {
+        match self.history.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn jobs_lock(&self) -> MutexGuard<'_, Vec<JobEntry>> {
+        match self.jobs.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn fd_aliases_lock(&self) -> MutexGuard<'_, HashMap<u32, u32>> {
+        match self.fd_aliases.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn clear_fd_alias(&self, fd: u32) {
+        self.fd_aliases_lock().remove(&fd);
     }
 }
 

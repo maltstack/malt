@@ -121,6 +121,14 @@ fn redirect_with_fd() {
 }
 
 #[test]
+fn invalid_ampersand_less_redirect_is_rejected() {
+    assert!(
+        parse("exec 9&<-").is_err(),
+        "parser accepted invalid '&<' redirect form"
+    );
+}
+
+#[test]
 fn empty_input() {
     let cmds = parse("").unwrap();
     assert!(cmds.is_empty());
@@ -146,8 +154,47 @@ fn heredoc_in_simple_command() {
         Command::Simple { redirects, .. } => {
             assert_eq!(redirects.len(), 1);
             assert!(matches!(redirects[0].node.kind, RedirectKind::HereDoc));
+            assert_eq!(redirects[0].node.heredoc_body.as_deref(), Some("hello\n"));
         }
         other => panic!("expected Simple, got {:?}", other),
+    }
+}
+
+#[test]
+fn heredoc_and_output_redirect_stay_on_same_command() {
+    let input = "cat >scr <<EOF\nhello\nEOF\n";
+    let cmds = parse(input).unwrap();
+    match &cmds[0].node {
+        Command::Simple {
+            name,
+            args,
+            redirects,
+            ..
+        } => {
+            assert_eq!(name.text(input), "cat");
+            assert!(args.is_empty());
+            assert_eq!(redirects.len(), 2);
+            assert!(matches!(redirects[0].node.kind, RedirectKind::Output));
+            assert_eq!(redirects[0].node.target.text(input), "scr");
+            assert!(matches!(redirects[1].node.kind, RedirectKind::HereDoc));
+            assert_eq!(redirects[1].node.heredoc_body.as_deref(), Some("hello\n"));
+        }
+        other => panic!("expected Simple, got {:?}", other),
+    }
+}
+
+#[test]
+fn heredoc_script_preserves_following_command() {
+    let input = "cat >scr <<EOF\nhello\nEOF\ncat scr\n";
+    let cmds = parse(input).unwrap();
+    assert_eq!(cmds.len(), 2);
+    match &cmds[1].node {
+        Command::Simple { name, args, .. } => {
+            assert_eq!(name.text(input), "cat");
+            assert_eq!(args.len(), 1);
+            assert_eq!(args[0].text(input), "scr");
+        }
+        other => panic!("expected second Simple, got {:?}", other),
     }
 }
 

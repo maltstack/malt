@@ -1057,6 +1057,9 @@ impl<'a> Parser<'a> {
                         },
                         span: body_tok.span,
                     });
+                    if !matches!(self.peek().node, Token::HereDocBody { .. }) {
+                        break;
+                    }
                 }
                 _ => break,
             }

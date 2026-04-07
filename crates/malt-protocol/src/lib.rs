@@ -4,6 +4,7 @@
 //! Message types are generated from `.vexil` schemas by `vexilc` at build time.
 
 pub mod framing;
+pub mod identity;
 pub mod priority;
 
 // Envelope: hand-written helpers wrapping the generated type

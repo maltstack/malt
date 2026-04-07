@@ -9,54 +9,48 @@ use std::process::exit;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // Handle -c flag (execute command string)
-    if args.len() >= 3 && args[1] == "-c" {
-        let command = &args[2];
-        run_command(command);
-        return;
-    }
-
-    // Handle --version
     if args.len() == 2 && (args[1] == "--version" || args[1] == "-v") {
         println!("MASH (MALT Shell) 0.1.0-phase-c");
         println!("POSIX-compliant shell for MALT");
         exit(0);
     }
 
-    // Handle script file
-    if args.len() == 2 {
-        let script_path = &args[1];
-        // On Windows, try common extensions if file doesn't exist
-        #[cfg(windows)]
-        let script_path = if !std::path::Path::new(script_path).exists() {
-            let mut found = script_path.clone();
-            for ext in [".sh", ".msh", ".bash", ".cmd", ".bat"] {
-                let with_ext = format!("{}{}", script_path, ext);
-                if std::path::Path::new(&with_ext).exists() {
-                    found = with_ext;
-                    break;
-                }
+    let mut interactive = false;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-i" => {
+                interactive = true;
+                i += 1;
             }
-            found
-        } else {
-            script_path.clone()
-        };
-        #[cfg(not(windows))]
-        let script_path = script_path.clone();
-        run_script_file(&script_path);
-        return;
+            "-c" => {
+                let Some(command) = args.get(i + 1) else {
+                    eprintln!("mash: -c: option requires an argument");
+                    exit(2);
+                };
+                run_command(command, interactive);
+                return;
+            }
+            arg if !arg.starts_with('-') || arg == "-" => {
+                run_script_file(arg, interactive);
+                return;
+            }
+            unknown => {
+                eprintln!("mash: unsupported option: {unknown}");
+                exit(2);
+            }
+        }
     }
 
-    // Interactive mode
     run_interactive();
 }
 
-fn run_command(command: &str) {
+fn run_command(command: &str, interactive: bool) {
     use mash::env::Env;
     use mash::executor::execute_list;
 
     let mut env = Env::from_os();
-    env.set_interactive(false);
+    env.set_interactive(interactive);
 
     match mash::parser::parse(command) {
         Ok(commands) => {
@@ -81,11 +75,12 @@ fn run_command(command: &str) {
     }
 }
 
-fn run_script_file(path: &str) {
+fn run_script_file(path: &str, interactive: bool) {
     use mash::env::Env;
     use mash::executor::execute_list;
 
-    let contents = match std::fs::read_to_string(path) {
+    let path = resolve_script_path(path);
+    let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("mash: {}: {}", path, e);
@@ -94,10 +89,10 @@ fn run_script_file(path: &str) {
     };
 
     let mut env = Env::from_os();
-    env.set_interactive(false);
+    env.set_interactive(interactive);
 
     // Set $0 to script name
-    let _ = env.set("0", mash::env::Variable::string(path));
+    let _ = env.set("0", mash::env::Variable::string(&path));
 
     match mash::parser::parse(&contents) {
         Ok(commands) => {
@@ -118,6 +113,24 @@ fn run_script_file(path: &str) {
             exit(1);
         }
     }
+}
+
+fn resolve_script_path(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        if std::path::Path::new(path).exists() {
+            return path.to_string();
+        }
+
+        for ext in [".sh", ".msh", ".bash", ".cmd", ".bat"] {
+            let with_ext = format!("{path}{ext}");
+            if std::path::Path::new(&with_ext).exists() {
+                return with_ext;
+            }
+        }
+    }
+
+    path.to_string()
 }
 
 fn run_interactive() {

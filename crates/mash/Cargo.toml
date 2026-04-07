@@ -10,7 +10,14 @@ description = "MASH — POSIX shell for MALT"
 glob = "0.3"
 thiserror = "2"
 tracing = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 malt-platform = { path = "../malt-platform" }
+malt-protocol = { path = "../malt-protocol" }
+malt-tools = { path = "../malt-tools" }
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bin]]
+name = "mash"
+path = "src/main.rs"

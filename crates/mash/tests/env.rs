@@ -33,6 +33,14 @@ fn from_os_vars_are_exported() {
     }
 }
 
+#[test]
+#[cfg(windows)]
+fn from_os_normalizes_pwd_separators() {
+    let env = Env::from_os();
+    let pwd = env.get_str("PWD");
+    assert!(!pwd.contains('\\'), "PWD should use forward slashes: {pwd}");
+}
+
 // ── Task 2: Variable access + scope stack ──
 
 #[test]
@@ -220,7 +228,11 @@ fn dir_stack_push_pop() {
 fn call_depth_tracking() {
     let mut env = Env::empty();
     assert_eq!(env.call_depth(), 0);
-    env.push_call(CallFrame { name: "f".into(), file: "test".into(), line: 1 });
+    env.push_call(CallFrame {
+        name: "f".into(),
+        file: "test".into(),
+        line: 1,
+    });
     assert_eq!(env.call_depth(), 1);
     env.pop_call();
     assert_eq!(env.call_depth(), 0);
@@ -252,7 +264,13 @@ fn function_define_get_unset() {
 #[test]
 fn trap_set_get_clear() {
     let mut env = Env::empty();
-    env.set_trap("INT".into(), TrapAction { action: "echo caught".into(), inherited: false });
+    env.set_trap(
+        "INT".into(),
+        TrapAction {
+            action: "echo caught".into(),
+            inherited: false,
+        },
+    );
     assert!(env.get_trap("INT").is_some());
     assert_eq!(env.get_trap("INT").unwrap().action, "echo caught");
     env.clear_trap("INT");
@@ -312,7 +330,13 @@ fn snapshot_only_global_scope() {
 #[test]
 fn snapshot_traps_roundtrip() {
     let mut env = Env::empty();
-    env.set_trap("EXIT".into(), TrapAction { action: "echo bye".into(), inherited: false });
+    env.set_trap(
+        "EXIT".into(),
+        TrapAction {
+            action: "echo bye".into(),
+            inherited: false,
+        },
+    );
 
     let snapshot = env.to_snapshot();
     let mut restored = Env::empty();

@@ -9,3 +9,4 @@ description = "VNP message types, wire framing, and protocol primitives for MALT
 [dependencies]
 vexil-runtime = { git = "https://github.com/vexil-lang/vexil", branch = "main" }
 thiserror = "2"
+blake3 = "1"

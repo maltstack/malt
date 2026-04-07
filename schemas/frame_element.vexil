@@ -1,7 +1,39 @@
 @version("0.1.0")
 namespace malt.frame_element
-
 import malt.common
+
+# ─── Supporting Types ───
+
+message DiffLine {
+    kind  @0 : DiffKind
+    text  @1 : string
+}
+
+enum DiffKind {
+    Context  @0
+    Added    @1
+    Removed  @2
+}
+
+enum BadgeSeverity {
+    Info     @0
+    Success  @1
+    Warning  @2
+    Error    @3
+}
+
+message KeyValuePair {
+    key   @0 : string
+    value @1 : string
+}
+
+message TreeNode {
+    label    @0 : string
+    children @1 : array<string>
+    expanded @2 : bool
+}
+
+# ─── FrameElement Union ───
 
 @non_exhaustive
 @doc("Semantic UI primitive. Internal to daemon — clients never see this.")
@@ -30,5 +62,60 @@ union FrameElement {
         type_id  @0 : string
         data     @1 : bytes
         fallback @2 : optional<FrameElement>
+    }
+    Table         @10 {
+        headers    @0 : array<string>
+        row_count  @1 : u16
+        col_count  @2 : u16
+        cells      @3 : array<string>
+        col_widths @4 : array<u16>
+        style      @5 : ResolvedStyle
+    }
+    List          @11 {
+        items      @0 : array<string>
+        ordered    @1 : bool
+        style      @2 : ResolvedStyle
+    }
+    Tree          @12 {
+        nodes      @0 : array<TreeNode>
+        style      @1 : ResolvedStyle
+    }
+    Diff          @13 {
+        lines      @0 : array<DiffLine>
+        style      @1 : ResolvedStyle
+    }
+    ProgressBar   @14 {
+        percent    @0 : u8
+        label      @1 : string
+        style      @2 : ResolvedStyle
+    }
+    Sparkline     @15 {
+        values     @0 : array<u16>
+        min        @1 : u16
+        max        @2 : u16
+        style      @3 : ResolvedStyle
+    }
+    Badge         @16 {
+        text       @0 : string
+        severity   @1 : BadgeSeverity
+        style      @2 : ResolvedStyle
+    }
+    KeyValue      @17 {
+        pairs      @0 : array<KeyValuePair>
+        style      @1 : ResolvedStyle
+    }
+    Tabs          @18 {
+        labels     @0 : array<string>
+        active     @1 : u16
+        style      @2 : ResolvedStyle
+    }
+    Modal         @19 {
+        title      @0 : string
+        content    @1 : FrameElement
+        style      @2 : ResolvedStyle
+    }
+    StatusBar     @20 {
+        segments   @0 : array<string>
+        style      @1 : ResolvedStyle
     }
 }

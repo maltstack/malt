@@ -924,7 +924,15 @@ impl<'a> Iterator for Lexer<'a> {
 
             // Ampersand / AndAnd / &>
             '&' => {
-                if self.peek_char() == Some('&') {
+                if pos > 0
+                    && self.input.as_bytes()[pos - 1].is_ascii_digit()
+                    && self.peek_char() == Some('<')
+                {
+                    Err(LexError::Unexpected {
+                        ch: '&',
+                        pos: pos as u32,
+                    })
+                } else if self.peek_char() == Some('&') {
                     self.next_char();
                     let span = self.make_span(pos, pos + 2);
                     Ok(Spanned {

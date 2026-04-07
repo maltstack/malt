@@ -22,6 +22,20 @@ fn run_stdout(input: &str) -> String {
     String::from_utf8_lossy(&result.stdout).to_string()
 }
 
+#[cfg(windows)]
+fn windows_symlink_creation_available() -> bool {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target.txt");
+    let link = dir.path().join("link.txt");
+    std::fs::write(&target, "hello").unwrap();
+
+    match malt_platform::fs::create_symlink(&target, &link) {
+        Ok(()) => true,
+        Err(err) if err.raw_os_error() == Some(1314) => false,
+        Err(err) => panic!("unexpected symlink probe error: {err}"),
+    }
+}
+
 #[test]
 fn echo_hello() {
     let output = run_stdout("echo hello");
@@ -47,6 +61,48 @@ fn nonexistent_command() {
 }
 
 #[test]
+fn special_builtin_error_aborts_noninteractive_script() {
+    let input = "readonly a=b\nexport a=c\necho egad\n";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(result.exit_code, 1);
+    assert!(
+        String::from_utf8_lossy(&result.stdout).is_empty(),
+        "script should stop before echo: {}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    assert_eq!(env.exit_requested(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("readonly variable"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn source_missing_file_aborts_noninteractive_script() {
+    let input = "source not_a_thing\necho hi\n";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(result.exit_code, 1);
+    assert!(
+        String::from_utf8_lossy(&result.stdout).is_empty(),
+        "script should stop before echo: {}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    assert_eq!(env.exit_requested(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("not found"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 fn sequential_commands() {
     let output = run_stdout("echo first; echo second");
     assert!(output.contains("first"), "got: {output}");
@@ -56,7 +112,8 @@ fn sequential_commands() {
 #[test]
 fn variable_expansion_in_args() {
     let mut env = Env::from_os();
-    env.set("GREETING", Variable::string("hi")).expect("set failed");
+    env.set("GREETING", Variable::string("hi"))
+        .expect("set failed");
     let input = "echo $GREETING";
     let cmds = parse(input).expect("parse failed");
     let result = execute_list(&cmds, input, &mut env);
@@ -123,9 +180,26 @@ fn redirect_output_to_file() {
     let path_str = path.to_string_lossy().replace('\\', "/");
     let cmd = format!("echo hello > {path_str}");
     let (result, _) = run(&cmd);
-    assert_eq!(result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(contents.trim().contains("hello"), "got: {contents}");
+}
+
+#[test]
+fn exec_can_duplicate_shell_stdout_to_extra_fd() {
+    let (result, _) = run("exec 3>&1; echo hello >&3");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "hello\n");
 }
 
 /// Helper: convert a path to a forward-slash string for shell commands.
@@ -140,7 +214,12 @@ fn redirect_append() {
     std::fs::write(&path, "first\n").unwrap();
     let cmd = format!("echo second >> {}", shell_path(&path));
     let (result, _) = run(&cmd);
-    assert_eq!(result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(contents.contains("first"), "got: {contents}");
     assert!(contents.contains("second"), "got: {contents}");
@@ -153,10 +232,68 @@ fn redirect_clobber() {
     std::fs::write(&path, "old content\n").unwrap();
     let cmd = format!("echo new >| {}", shell_path(&path));
     let (result, _) = run(&cmd);
-    assert_eq!(result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(contents.contains("new"), "got: {contents}");
     assert!(!contents.contains("old"), "got: {contents}");
+}
+
+#[test]
+fn ln_symbolic_links_satisfy_test_predicates() {
+    let _guard = CWD_LOCK.lock().unwrap();
+    #[cfg(windows)]
+    if !windows_symlink_creation_available() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let cmd = format!(
+        "cd '{}'; echo hi >file; mkdir dir; ln -s file link_file; ln -s dir link_dir; \
+         [ -e file ] && [ -e link_file ] && [ -f file ] && [ -f link_file ] && \
+         [ -e dir ] && [ -e link_dir ] && [ -d dir ] && [ -d link_dir ] && \
+         [ -L link_file ] && [ -L link_dir ]",
+        shell_path(dir.path())
+    );
+
+    let (result, _) = run(&cmd);
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn hash_tracks_executed_commands_and_clears() {
+    let (result, _) = run("ls >/dev/null; hash");
+    let output = String::from_utf8_lossy(&result.stdout);
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(output.contains("ls"), "hash output: {output}");
+
+    let (cleared, _) = run("ls >/dev/null; hash -r; hash");
+    let cleared_output = String::from_utf8_lossy(&cleared.stdout);
+    assert_eq!(
+        cleared.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&cleared.stderr)
+    );
+    assert!(
+        !cleared_output.contains("ls"),
+        "hash output after clear: {cleared_output}"
+    );
 }
 
 #[test]
@@ -167,7 +304,11 @@ fn redirect_output_captures_nothing_in_result() {
     let path = dir.path().join("out.txt");
     let cmd = format!("echo hello > {}", shell_path(&path));
     let (result, _) = run(&cmd);
-    assert!(result.stdout.is_empty(), "expected empty stdout in result, got: {:?}", result.stdout);
+    assert!(
+        result.stdout.is_empty(),
+        "expected empty stdout in result, got: {:?}",
+        result.stdout
+    );
     // But the file should have the data.
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(contents.trim().contains("hello"), "file: {contents}");
@@ -180,7 +321,12 @@ fn redirect_both_stdout_and_stderr() {
     let path = dir.path().join("both.txt");
     let cmd = format!("echo combined &> {}", shell_path(&path));
     let (result, _) = run(&cmd);
-    assert_eq!(result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(contents.contains("combined"), "got: {contents}");
 }
@@ -216,7 +362,10 @@ fn negated_pipeline_true() {
 fn pipeline_exit_code_is_last_stage() {
     // The last command determines the exit code (without pipefail).
     let (result, _) = run("echo hello | nonexistent_cmd_xyz_99");
-    assert_ne!(result.exit_code, 0, "last stage failed, pipeline should fail");
+    assert_ne!(
+        result.exit_code, 0,
+        "last stage failed, pipeline should fail"
+    );
 }
 
 #[test]
@@ -258,7 +407,8 @@ fn for_loop_words() {
 
 #[test]
 fn while_loop_with_break() {
-    let output = run_stdout("x=0; while true; do x=$((x+1)); echo $x; if true; then break; fi; done");
+    let output =
+        run_stdout("x=0; while true; do x=$((x+1)); echo $x; if true; then break; fi; done");
     assert!(output.contains("1"), "got: {output}");
 }
 
@@ -464,7 +614,8 @@ fn set_e_stops_execution() {
 
 #[test]
 fn set_e_suppressed_in_if() {
-    let output = run_stdout("set -e; if nonexistent_xyz; then echo no; else echo yes; fi; echo after");
+    let output =
+        run_stdout("set -e; if nonexistent_xyz; then echo no; else echo yes; fi; echo after");
     assert!(output.contains("yes"));
     assert!(output.contains("after"));
 }
@@ -566,6 +717,134 @@ fn builtin_cd_updates_oldpwd() {
 fn builtin_pwd_output() {
     let output = run_stdout("pwd");
     assert!(!output.trim().is_empty());
+}
+
+#[test]
+fn builtin_source_searches_path_when_sourcepath_enabled() {
+    let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let p1 = dir.path().join("p1");
+    let p2 = dir.path().join("p2");
+    std::fs::create_dir_all(&p1).unwrap();
+    std::fs::create_dir_all(&p2).unwrap();
+    std::fs::write(p1.join("scr2"), "echo nope\n").unwrap();
+    std::fs::write(p2.join("scr2"), "echo yep\n").unwrap();
+
+    let cmd = format!(
+        "PATH=\"{}:{}:$PATH\"; . scr2",
+        shell_path(&p1),
+        shell_path(&p2)
+    );
+    let output = run_stdout(&cmd);
+    assert!(
+        output.contains("nope") || output.contains("yep"),
+        "got: {output}"
+    );
+}
+
+#[test]
+fn builtin_source_skips_unreadable_path_entry() {
+    let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let p1 = dir.path().join("p1");
+    let p2 = dir.path().join("p2");
+    std::fs::create_dir_all(&p1).unwrap();
+    std::fs::create_dir_all(&p2).unwrap();
+
+    let scr1 = p1.join("scr2");
+    let scr2 = p2.join("scr2");
+    std::fs::write(&scr1, "echo nope\n").unwrap();
+    std::fs::write(&scr2, "echo yep\n").unwrap();
+    malt_platform::fs::set_mode(&scr1, 0o333).unwrap();
+    malt_platform::fs::set_mode(&scr2, 0o444).unwrap();
+
+    let cmd = format!(
+        "PATH=\"{}:{}:$PATH\"; . scr2",
+        shell_path(&p1),
+        shell_path(&p2)
+    );
+    let output = run_stdout(&cmd);
+    assert_eq!(output, "yep\n", "got: {output}");
+}
+
+#[test]
+fn builtin_source_direct_unreadable_file_fails() {
+    let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("weird");
+    std::fs::write(&script, "echo nope\n").unwrap();
+    malt_platform::fs::set_mode(&script, 0o333).unwrap();
+
+    let input = format!(". {}", shell_path(&script));
+    let cmds = parse(&input).expect("parse");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, &input, &mut env);
+
+    assert_eq!(result.exit_code, 1);
+    assert!(result.stdout.is_empty(), "stdout: {:?}", result.stdout);
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("permission denied"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn builtin_command_exec_preserves_redirected_fd() {
+    let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("file.txt");
+    std::fs::write(&file, "hi\n").unwrap();
+    let cmd = format!(
+        "command exec 8<{}; read msg <&8; echo $msg",
+        shell_path(&file)
+    );
+    let output = run_stdout(&cmd);
+    assert!(output.contains("hi"), "got: {output}");
+}
+
+#[test]
+fn builtin_exec_runs_target_command_and_stops_shell() {
+    let (result, _) = run("exec true; false");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn bad_fd_redirect_on_special_builtin_aborts_command() {
+    let (result, _) = run(": 2>&9; echo oh no");
+    assert_eq!(result.exit_code, 1);
+    assert!(result.stdout.is_empty(), "stdout: {:?}", result.stdout);
+}
+
+#[test]
+fn bad_fd_redirect_on_exec_fails() {
+    let (result, _) = run("exec 9>&bogus");
+    assert_eq!(result.exit_code, 1);
+}
+
+#[test]
+fn bad_fd_redirect_on_exec_aborts_noninteractive_script() {
+    let (result, env) = run("exec 9>&bogus; echo oh no");
+    assert_eq!(result.exit_code, 1);
+    assert!(result.stdout.is_empty(), "stdout: {:?}", result.stdout);
+    assert_eq!(env.exit_requested(), Some(1));
+}
+
+#[test]
+fn heredoc_redirect_feeds_stdin_to_cat() {
+    let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let script = "cat >scr <<EOF\nhello\nEOF\ncat scr\n";
+    let previous = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let output = run_stdout(script);
+    std::env::set_current_dir(previous).unwrap();
+    assert_eq!(output, "hello\n", "got: {output}");
 }
 
 // ── test / [ builtin ────────────────────────────────────────────────
@@ -774,6 +1053,210 @@ fn hash_not_found() {
     assert_ne!(result.exit_code, 0);
 }
 
+#[test]
+fn redirected_last_pipeline_stage_consumes_pipeline_stdout() {
+    let output = run_stdout("printf 'hello\\n' | cat >/dev/null; echo after");
+    assert_eq!(output, "after\n");
+}
+
+#[test]
+fn hash_output_can_be_redirected_in_pipeline() {
+    let output = run_stdout("ls >/dev/null; hash | cat >/dev/null; echo after");
+    assert_eq!(output, "after\n");
+}
+
+#[test]
+fn interactive_history_records_commands_and_respects_nolog() {
+    let input = "\
+history | grep history >/dev/null || exit 1
+echo hi >/dev/null
+history | grep echo >/dev/null || exit 2
+history -c
+history >hist
+grep echo >/dev/null hist && exit 3
+set -o nolog
+history -c
+echo hello >/dev/null
+history >hist2
+grep echo >/dev/null hist2 && exit 4
+echo ok
+";
+    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let saved = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    env.set_interactive(true);
+    let result = execute_list(&cmds, input, &mut env);
+
+    std::env::set_current_dir(saved).unwrap();
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "ok\n");
+}
+
+#[test]
+fn jobs_builtin_lists_background_job_with_long_format() {
+    let input = "\
+echo hi & pid=$!
+jobs -l >job_info
+grep \"echo hi\" job_info >/dev/null || exit 1
+grep \"$pid\" job_info >/dev/null || exit 2
+kill $pid
+echo ok
+";
+    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let saved = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    std::env::set_current_dir(saved).unwrap();
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "ok\n");
+}
+
+#[test]
+fn kill_builtin_runs_term_trap_for_shell_and_signal_zero_succeeds() {
+    let input = "\
+trap 'echo bye' TERM
+kill -s 0 $$
+kill -TERM $$
+echo ok
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "bye\nok\n");
+}
+
+#[test]
+fn signal_trap_failure_does_not_fail_kill() {
+    let input = "\
+trap '(false) && echo BUG' INT
+kill -s INT $$
+echo ok
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "ok\n");
+}
+
+#[test]
+fn signal_trap_exit_status_does_not_become_kill_status() {
+    let input = "\
+trap '(exit 3) && echo BUG' INT
+kill -s INT $$
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stdout).is_empty());
+}
+
+#[test]
+fn exit_trap_runs_at_shell_exit_not_in_subshell_or_command_substitution() {
+    let input = "\
+trap 'echo bye' EXIT
+(echo hi)
+echo $(echo hi)
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "hi\nhi\nbye\n");
+}
+
+#[test]
+fn readonly_ignores_double_dash_and_assignment_error_does_not_stop_interactive_script() {
+    let input = "\
+foo=bar
+readonly -- foo
+readonly -- baz=quux
+echo $foo $baz
+foo=nope
+unset baz
+echo $foo $baz
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    env.set_interactive(true);
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout),
+        "bar quux\nbar quux\n"
+    );
+}
+
+#[test]
+fn test_newer_older_with_absent_file_is_boolean_not_error() {
+    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let saved = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+    std::fs::write("present", "x").unwrap();
+
+    let (result, _) = run("[ present -nt absent ] && [ absent -ot present ]");
+
+    std::env::set_current_dir(saved).unwrap();
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
 // ── command builtin ─────────────────────────────────────────────────
 
 #[test]
@@ -799,6 +1282,19 @@ fn command_bypasses_function() {
     // `command echo` should run the builtin echo, not a function named echo.
     let output = run_stdout("echo() { :; }; command echo hello");
     assert!(output.contains("hello"), "got: {output}");
+}
+
+#[test]
+fn command_neutralizes_special_builtin_exit_semantics() {
+    let (result, env) = run("command readonly x=foo; command readonly x=bar; echo ?=$?");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "?=1\n");
+    assert_eq!(env.exit_requested(), None);
 }
 
 #[test]
@@ -828,7 +1324,10 @@ fn builtin_read_eof_returns_1() {
     let (result, _) = run("read VAR < /dev/null");
     // On Windows this may fail differently, but we test the concept.
     // The exit code should be non-zero (1) on EOF.
-    assert!(result.exit_code != 0 || cfg!(windows), "expected non-zero on EOF");
+    assert!(
+        result.exit_code != 0 || cfg!(windows),
+        "expected non-zero on EOF"
+    );
 }
 
 // ── printf builtin ──────────────────────────────────────────────────
@@ -837,6 +1336,55 @@ fn builtin_read_eof_returns_1() {
 fn builtin_printf_string() {
     let output = run_stdout("printf '%s world' hello");
     assert_eq!(output, "hello world");
+}
+
+#[test]
+fn builtin_echo_reports_redirect_write_failure() {
+    let (result, _) = run("echo >/dev/full || echo OK");
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "OK\n");
+}
+
+#[test]
+fn test_numeric_comparison_trims_spaces() {
+    let (result, _) = run("test ' 5' -eq ' 5 '");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn test_file_time_and_identity_operators() {
+    let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let previous = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    std::fs::write("first", b"one").unwrap();
+    let (same_file, _) = run("test first -ef first");
+    assert_eq!(same_file.exit_code, 0);
+
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    std::fs::write("second", b"two").unwrap();
+
+    let (different_file, _) = run("test first -ef second");
+    assert_eq!(different_file.exit_code, 1);
+
+    let (newer, _) = run("test second -nt first");
+    assert_eq!(newer.exit_code, 0);
+
+    let (older, _) = run("test first -ot second");
+    assert_eq!(older.exit_code, 0);
+
+    std::env::set_current_dir(previous).unwrap();
+}
+
+#[test]
+fn test_rejects_unparsed_trailing_operands() {
+    let (result, _) = run("test first -ef second");
+    assert_ne!(result.exit_code, 0);
 }
 
 #[test]

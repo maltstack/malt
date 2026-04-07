@@ -70,8 +70,10 @@ impl Registry {
         tools.insert("chmod".to_string(), custom::chmod::chmod as ToolFn);
         tools.insert("cp".to_string(), custom::cp::cp as ToolFn);
         tools.insert("env".to_string(), custom::env::env_cmd as ToolFn);
+        tools.insert("fds".to_string(), custom::fds::FDS);
         tools.insert("grep".to_string(), custom::grep::grep as ToolFn);
         tools.insert("head".to_string(), custom::head::head as ToolFn);
+        tools.insert("ln".to_string(), custom::ln::ln as ToolFn);
         tools.insert("ls".to_string(), custom::ls::ls as ToolFn);
         tools.insert("mkdir".to_string(), custom::mkdir::mkdir as ToolFn);
         tools.insert("mv".to_string(), custom::mv::mv as ToolFn);

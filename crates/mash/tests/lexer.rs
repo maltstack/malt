@@ -189,6 +189,14 @@ fn redirect_both() {
 }
 
 #[test]
+fn invalid_digit_ampersand_less_sequence_is_lex_error() {
+    let err = mash::lexer::Lexer::new("exec 9&<-")
+        .collect::<Result<Vec<_>, _>>()
+        .expect_err("expected lex error for malformed '&<' redirect");
+    assert!(matches!(err, LexError::Unexpected { ch: '&', pos: 6 }));
+}
+
+#[test]
 fn redirect_here_string() {
     let toks = nodes("<<< word");
     assert_eq!(toks, vec![Token::Redirect(RedirectKind::HereString), word_span(4, 8), Token::Eof]);
