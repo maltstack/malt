@@ -40,6 +40,7 @@ pub fn default_style() -> ResolvedStyle {
         fg: DEFAULT_FG, bg: DEFAULT_BG,
         bold: false, italic: false, underline: false,
         dim: false, strikethrough: false, reverse: false, blink: false,
+        token_name: None,
         _unknown: Vec::new(),
     }
 }

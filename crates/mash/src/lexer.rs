@@ -840,7 +840,7 @@ impl<'a> Lexer<'a> {
 fn is_word_break(ch: char) -> bool {
     matches!(
         ch,
-        ' ' | '\t' | '\n' | '\r' | '|' | '&' | ';' | '<' | '>' | '(' | ')' | '{' | '}' | '#'
+        ' ' | '\t' | '\n' | '\r' | '|' | '&' | ';' | '<' | '>' | '(' | ')' | '#'
     )
 }
 
@@ -1054,18 +1054,48 @@ impl<'a> Iterator for Lexer<'a> {
 
             // Braces
             '{' => {
-                let span = self.make_span(pos, pos + 1);
-                Ok(Spanned {
-                    node: Token::LBrace,
-                    span,
-                })
+                let standalone = match self.peek_char() {
+                    None => true,
+                    Some(next) => is_word_break(next),
+                };
+                if standalone {
+                    let span = self.make_span(pos, pos + 1);
+                    Ok(Spanned {
+                        node: Token::LBrace,
+                        span,
+                    })
+                } else {
+                    let word_span = match self.read_word(pos, ch) {
+                        Ok(span) => span,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    Ok(Spanned {
+                        node: Token::Word(word_span),
+                        span: word_span,
+                    })
+                }
             }
             '}' => {
-                let span = self.make_span(pos, pos + 1);
-                Ok(Spanned {
-                    node: Token::RBrace,
-                    span,
-                })
+                let standalone = match self.peek_char() {
+                    None => true,
+                    Some(next) => is_word_break(next),
+                };
+                if standalone {
+                    let span = self.make_span(pos, pos + 1);
+                    Ok(Spanned {
+                        node: Token::RBrace,
+                        span,
+                    })
+                } else {
+                    let word_span = match self.read_word(pos, ch) {
+                        Ok(span) => span,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    Ok(Spanned {
+                        node: Token::Word(word_span),
+                        span: word_span,
+                    })
+                }
             }
 
             // Redirects / process substitution

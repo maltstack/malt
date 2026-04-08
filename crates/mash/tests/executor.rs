@@ -1284,6 +1284,19 @@ fn invalid_set_o_option_fails() {
 }
 
 #[test]
+fn set_posix_option_is_accepted_as_a_noop() {
+    let (result, env) = run("set -o posix; set +o posix");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(env.exit_requested(), None);
+}
+
+#[test]
 fn eval_parse_error_aborts_noninteractive_script() {
     let (result, env) = run("eval \"if\"\necho lived\n");
     assert_eq!(result.exit_code, 1);
@@ -2090,6 +2103,19 @@ fn builtin_unalias() {
 fn builtin_unalias_all() {
     let (_, env) = run("alias a='1'; alias b='2'; unalias -a");
     assert!(env.aliases().is_empty());
+}
+
+#[test]
+fn builtin_unalias_honors_double_dash_end_of_options() {
+    let (result, env) = run("alias a='printf ok'; unalias -- a");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(env.get_alias("a").is_none());
 }
 
 #[test]

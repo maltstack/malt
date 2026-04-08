@@ -221,6 +221,24 @@ fn heredoc_script_preserves_following_command() {
     }
 }
 
+#[test]
+fn adjacent_braces_can_be_simple_command_arguments() {
+    let input = "find . -exec echo {} +";
+    let cmds = parse(input).unwrap();
+    match &cmds[0].node {
+        Command::Simple { name, args, .. } => {
+            assert_eq!(name.text(input), "find");
+            assert_eq!(args.len(), 5);
+            assert_eq!(args[0].text(input), ".");
+            assert_eq!(args[1].text(input), "-exec");
+            assert_eq!(args[2].text(input), "echo");
+            assert_eq!(args[3].text(input), "{}");
+            assert_eq!(args[4].text(input), "+");
+        }
+        other => panic!("expected Simple, got {:?}", other),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Compound command tests
 // ---------------------------------------------------------------------------

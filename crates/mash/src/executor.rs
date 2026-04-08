@@ -988,8 +988,6 @@ fn execute_simple_with_io(
         Some(n) if !n.is_empty() => n.clone(),
         _ => return ExecResult::success(),
     };
-    let dispatch_name = explicit_internal_command_name(&cmd_name);
-    let dispatch_name = dispatch_name.as_deref().unwrap_or(&cmd_name);
 
     // 2. Expand arguments.
     let mut argv: Vec<String> = Vec::new();
@@ -1001,6 +999,16 @@ fn execute_simple_with_io(
             Err(e) => return noninteractive_shell_error(env, format!("mash: {e}\n")),
         }
     }
+
+    let exec_with_args = cmd_name == "exec" && !argv.is_empty();
+    let mut resolved_cmd_name = cmd_name.clone();
+    if exec_with_args {
+        resolved_cmd_name = argv.remove(0);
+    }
+    let resolved_dispatch_name = explicit_internal_command_name(&resolved_cmd_name);
+    let resolved_dispatch_name = resolved_dispatch_name
+        .as_deref()
+        .unwrap_or(resolved_cmd_name.as_str());
 
     // 3. Temporary env assignments.
     let mut child_env: Vec<(String, String)> = Vec::new();
@@ -1021,12 +1029,16 @@ fn execute_simple_with_io(
     };
 
     // 5. Handle builtins in pipeline context.
-    let builtin_stdin = if BUILTIN_NAMES.contains(&dispatch_name) {
-        resolved_io.stdin.take().or(stdin_file.take())
+    let builtin_stdin = if BUILTIN_NAMES.contains(&resolved_dispatch_name) {
+        resolved_io
+            .stdin
+            .take()
+            .or(stdin_file.take())
+            .or_else(|| env.open_fd_read(0).ok())
     } else {
         None
     };
-    let saved_nonstdio_states = if BUILTIN_NAMES.contains(&dispatch_name) {
+    let saved_nonstdio_states = if BUILTIN_NAMES.contains(&resolved_dispatch_name) {
         let states: Vec<(u32, SavedFdState)> = nonstdio_affected_fds(&resolved_io)
             .into_iter()
             .map(|fd| (fd, save_fd_state(env, fd)))
@@ -1036,8 +1048,10 @@ fn execute_simple_with_io(
     } else {
         Vec::new()
     };
-    if let Some(mut result) = try_execute_builtin(dispatch_name, &argv, env, builtin_stdin) {
-        let builtin_name = builtin_output_name(dispatch_name, &argv);
+    if let Some(mut result) =
+        try_execute_builtin(resolved_dispatch_name, &argv, env, builtin_stdin)
+    {
+        let builtin_name = builtin_output_name(resolved_dispatch_name, &argv);
         apply_builtin_output_redirects(&mut result, resolved_io, &builtin_name);
         for (fd, state) in saved_nonstdio_states {
             restore_fd_state(env, fd, state);
@@ -1057,7 +1071,7 @@ fn execute_simple_with_io(
 
     // 5b. Handle malt-tools (in-process POSIX utilities like grep, cat, wc).
     let tools_registry = malt_tools::Registry::new();
-    if dispatch_name == "sleep" && env.current_job_id().is_some() {
+    if resolved_dispatch_name == "sleep" && env.current_job_id().is_some() {
         let mut result = execute_interruptible_sleep(&argv, env);
         apply_output_redirects(&mut result, resolved_io);
         if let Some(mut pipe_out) = stdout_file {
@@ -1068,15 +1082,15 @@ fn execute_simple_with_io(
         }
         return result;
     }
-    if tools_registry.contains(dispatch_name) {
-        record_hashed_command(env, &cmd_name, dispatch_name);
+    if tools_registry.contains(resolved_dispatch_name) {
+        record_hashed_command(env, &resolved_cmd_name, resolved_dispatch_name);
         let stdin_bytes: Vec<u8> =
             if let Some(mut file) = resolved_io.stdin.take().or(stdin_file.take()) {
                 let mut buf = Vec::new();
                 if let Err(e) = std::io::Read::read_to_end(&mut file, &mut buf) {
                     return ExecResult::failure(
                         1,
-                        format!("mash: {dispatch_name}: read stdin failed: {e}\n"),
+                        format!("mash: {resolved_dispatch_name}: read stdin failed: {e}\n"),
                     );
                 }
                 buf
@@ -1084,7 +1098,7 @@ fn execute_simple_with_io(
                 Vec::new()
             };
 
-        let tool_fn = tools_registry.get(dispatch_name).unwrap();
+        let tool_fn = tools_registry.get(resolved_dispatch_name).unwrap();
         let tool_result = tool_fn(&argv, &stdin_bytes);
         let mut result = ExecResult {
             exit_code: tool_result.exit_code,
@@ -1102,16 +1116,17 @@ fn execute_simple_with_io(
     }
 
     // 6. Check for shell functions (in pipeline context).
-    if let Some(func_def) = env.get_function(&cmd_name).cloned() {
+    if let Some(func_def) = env.get_function(&resolved_cmd_name).cloned() {
         if env.call_depth() >= 50 {
-            let msg = format!("mash: {cmd_name}: maximum function nesting level exceeded\n");
+            let msg =
+                format!("mash: {resolved_cmd_name}: maximum function nesting level exceeded\n");
             return ExecResult::failure(1, msg);
         }
         env.push_scope();
         let saved = env.save_positional();
         env.replace_positional_args(&argv);
         env.push_call(CallFrame {
-            name: cmd_name.clone(),
+            name: resolved_cmd_name.clone(),
             file: String::new(),
             line: 0,
         });
@@ -1137,18 +1152,18 @@ fn execute_simple_with_io(
     }
 
     // 7. Resolve executable path.
-    let program = match find_in_path(&cmd_name, env) {
+    let program = match find_in_path(&resolved_cmd_name, env) {
         Some(p) => p,
         None => {
-            let msg = format!("mash: {cmd_name}: command not found\n");
+            let msg = format!("mash: {resolved_cmd_name}: command not found\n");
             return ExecResult::failure(127, msg);
         }
     };
-    record_hashed_command(env, &cmd_name, &program.to_string_lossy());
+    record_hashed_command(env, &resolved_cmd_name, &program.to_string_lossy());
 
     if should_execute_shell_script_with_mash(&program) {
         return execute_shell_script_with_io(
-            &cmd_name,
+            &resolved_cmd_name,
             &program,
             &argv,
             child_env.as_slice(),
@@ -1162,7 +1177,7 @@ fn execute_simple_with_io(
     // 7. Build SpawnConfig with pipeline I/O + redirect overrides.
     let mut config = malt_platform::process::SpawnConfig::new(&program);
     config.args = argv.iter().map(|a| a.into()).collect();
-    configure_command_spawn_identity(&mut config, &cmd_name, &program);
+    configure_command_spawn_identity(&mut config, &resolved_cmd_name, &program);
 
     // stdin: explicit redirect wins, then pipeline, then inherit.
     config.stdin = match resolved_io.stdin {
@@ -1202,7 +1217,7 @@ fn execute_simple_with_io(
     let mut child = match malt_platform::process::spawn(config) {
         Ok(c) => c,
         Err(e) => {
-            let msg = format!("mash: {cmd_name}: {e}\n");
+            let msg = format!("mash: {resolved_cmd_name}: {e}\n");
             let code = match &e {
                 malt_platform::process::SpawnError::NotFound { .. } => 127,
                 malt_platform::process::SpawnError::PermissionDenied { .. } => 126,
@@ -1219,14 +1234,14 @@ fn execute_simple_with_io(
     if let Some(mut out) = child.take_stdout() {
         if let Err(e) = out.read_to_end(&mut stdout_bytes) {
             stderr_bytes.extend_from_slice(
-                format!("mash: {cmd_name}: stdout read failed: {e}\n").as_bytes(),
+                format!("mash: {resolved_cmd_name}: stdout read failed: {e}\n").as_bytes(),
             );
         }
     }
     if let Some(mut err) = child.take_stderr() {
         if let Err(e) = err.read_to_end(&mut stderr_bytes) {
             stderr_bytes.extend_from_slice(
-                format!("mash: {cmd_name}: stderr read failed: {e}\n").as_bytes(),
+                format!("mash: {resolved_cmd_name}: stderr read failed: {e}\n").as_bytes(),
             );
         }
     }
@@ -1235,7 +1250,7 @@ fn execute_simple_with_io(
     let exit_code = match wait_for_child_exit_code(&mut child, env) {
         Ok(code) => code,
         Err(e) => {
-            let msg = format!("mash: {cmd_name}: wait failed: {e}\n");
+            let msg = format!("mash: {resolved_cmd_name}: wait failed: {e}\n");
             stderr_bytes.extend_from_slice(msg.as_bytes());
             1
         }
@@ -1838,6 +1853,7 @@ fn try_execute_builtin(
                                         "nounset" => env.options_mut().nounset = true,
                                         "xtrace" => env.options_mut().xtrace = true,
                                         "verbose" => env.options_mut().verbose = true,
+                                        "posix" => {}
                                         "noglob" => env.options_mut().noglob = true,
                                         "pipefail" => env.options_mut().pipefail = true,
                                         "nolog" => env.options_mut().nolog = true,
@@ -1887,6 +1903,7 @@ fn try_execute_builtin(
                                         "nounset" => env.options_mut().nounset = false,
                                         "xtrace" => env.options_mut().xtrace = false,
                                         "verbose" => env.options_mut().verbose = false,
+                                        "posix" => {}
                                         "noglob" => env.options_mut().noglob = false,
                                         "pipefail" => env.options_mut().pipefail = false,
                                         "nolog" => env.options_mut().nolog = false,
@@ -3728,16 +3745,38 @@ fn builtin_unalias(argv: &[String], env: &mut Env) -> ExecResult {
         return ExecResult::failure(1, "mash: unalias: usage: unalias [-a] name [name ...]\n");
     }
 
-    // unalias -a: remove all.
-    if argv.iter().any(|a| a == "-a") {
+    let mut clear_all = false;
+    let mut names: Vec<&String> = Vec::new();
+    let mut parsing_options = true;
+
+    for arg in argv {
+        if parsing_options && arg == "--" {
+            parsing_options = false;
+            continue;
+        }
+        if parsing_options && arg.starts_with('-') && arg.len() > 1 {
+            if arg == "-a" {
+                clear_all = true;
+                continue;
+            }
+            return ExecResult::failure(1, format!("mash: unalias: {arg}: invalid option\n"));
+        }
+        parsing_options = false;
+        names.push(arg);
+    }
+
+    if clear_all {
         env.clear_aliases();
         return ExecResult::success();
+    }
+    if names.is_empty() {
+        return ExecResult::failure(1, "mash: unalias: usage: unalias [-a] name [name ...]\n");
     }
 
     let mut exit_code = 0;
     let mut stderr = Vec::new();
 
-    for name in argv {
+    for name in names {
         if !env.unset_alias(name) {
             stderr.extend_from_slice(format!("mash: unalias: {}: not found\n", name).as_bytes());
             exit_code = 1;

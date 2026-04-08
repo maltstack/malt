@@ -120,6 +120,7 @@ fn mock_connection() -> MockConnection {
         strikethrough: false,
         reverse: false,
         blink: false,
+        token_name: None,
         _unknown: Vec::new(),
     };
     let body_style = ResolvedStyle {
@@ -132,6 +133,7 @@ fn mock_connection() -> MockConnection {
         strikethrough: false,
         reverse: false,
         blink: false,
+        token_name: None,
         _unknown: Vec::new(),
     };
     MockConnection::new(vec![

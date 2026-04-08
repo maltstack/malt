@@ -216,6 +216,7 @@ impl DaemonConnection for HttpConnection {
                                 strikethrough: false,
                                 reverse: false,
                                 blink: false,
+                                token_name: None,
                                 _unknown: Vec::new(),
                             },
                         });
@@ -235,6 +236,7 @@ impl DaemonConnection for HttpConnection {
                 strikethrough: false,
                 reverse: false,
                 blink: false,
+                token_name: None,
                 _unknown: Vec::new(),
             };
             for (i, line) in text.lines().enumerate() {

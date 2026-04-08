@@ -225,6 +225,7 @@ fn degrade_style(style: &ResolvedStyle, caps: &ClientCapabilities) -> ResolvedSt
             strikethrough: style.strikethrough,
             reverse: style.reverse,
             blink: style.blink,
+            token_name: None,
             _unknown: Vec::new(),
         },
         // Future color depth variants — fall back to TrueColor passthrough.

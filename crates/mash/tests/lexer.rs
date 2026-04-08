@@ -144,6 +144,19 @@ fn lbrace_rbrace() {
 }
 
 #[test]
+fn adjacent_braces_stay_in_word_tokens() {
+    let input = "find . -exec echo {} +";
+    let toks = spanned(input);
+    assert_eq!(toks[0].span.text(input), "find");
+    assert_eq!(toks[1].span.text(input), ".");
+    assert_eq!(toks[2].span.text(input), "-exec");
+    assert_eq!(toks[3].span.text(input), "echo");
+    assert_eq!(toks[4].span.text(input), "{}");
+    assert_eq!(toks[5].span.text(input), "+");
+    assert!(matches!(toks[6].node, Token::Eof));
+}
+
+#[test]
 fn double_bracket() {
     assert_eq!(
         nodes("[[ x ]]"),

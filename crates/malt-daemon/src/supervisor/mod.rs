@@ -32,7 +32,7 @@ impl ProcessSupervisor {
             rows: req.rows,
         };
 
-        let mut pty_proc = spawn_with_pty(&req.program, &req.args, &req.cwd, size)
+        let pty_proc = spawn_with_pty(&req.program, &req.args, &req.cwd, size)
             .map_err(|e| match e {
                 malt_platform::pty::PtySpawnError::Pty(e) => SupervisorError::PtyError(e),
                 malt_platform::pty::PtySpawnError::Spawn(e) => SupervisorError::SpawnFailed(e),

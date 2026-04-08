@@ -120,6 +120,25 @@ fn script_file_heredoc_before_output_redirect_executes_without_running_delimiter
 }
 
 #[test]
+#[cfg(not(windows))]
+fn exec_with_args_in_pipeline_runs_target_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mash"))
+        .args(["-c", "printf 'foo\\n' | exec sed -n p"])
+        .output()
+        .expect("run mash");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "foo\n");
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+}
+
+#[test]
 #[cfg(windows)]
 fn interactive_child_inherits_shell_fd_redirections_and_extra_fds() {
     let dir = tempfile::tempdir().expect("tempdir");
