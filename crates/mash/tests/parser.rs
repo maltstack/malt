@@ -184,6 +184,29 @@ fn heredoc_and_output_redirect_stay_on_same_command() {
 }
 
 #[test]
+fn heredoc_before_output_redirect_stays_on_same_command() {
+    let input = "cat <<EOF >scr\nhello\nEOF\n";
+    let cmds = parse(input).unwrap();
+    match &cmds[0].node {
+        Command::Simple {
+            name,
+            args,
+            redirects,
+            ..
+        } => {
+            assert_eq!(name.text(input), "cat");
+            assert!(args.is_empty());
+            assert_eq!(redirects.len(), 2);
+            assert!(matches!(redirects[0].node.kind, RedirectKind::HereDoc));
+            assert_eq!(redirects[0].node.heredoc_body.as_deref(), Some("hello\n"));
+            assert!(matches!(redirects[1].node.kind, RedirectKind::Output));
+            assert_eq!(redirects[1].node.target.text(input), "scr");
+        }
+        other => panic!("expected Simple, got {:?}", other),
+    }
+}
+
+#[test]
 fn heredoc_script_preserves_following_command() {
     let input = "cat >scr <<EOF\nhello\nEOF\ncat scr\n";
     let cmds = parse(input).unwrap();
@@ -605,7 +628,8 @@ mod regression {
 
     #[test]
     fn multiline_function_body() {
-        parse("setup() {\n  mkdir -p /tmp/work\n  cd /tmp/work\n  export WORK=/tmp/work\n}").unwrap();
+        parse("setup() {\n  mkdir -p /tmp/work\n  cd /tmp/work\n  export WORK=/tmp/work\n}")
+            .unwrap();
     }
 
     #[test]
@@ -634,6 +658,11 @@ mod regression {
     }
 
     #[test]
+    fn escaped_open_paren_word_parses() {
+        parse("printf '%s' \\(").unwrap();
+    }
+
+    #[test]
     fn case_glob_patterns() {
         parse("case $file in\n  *.tar.gz) echo tgz ;;\n  *.zip)    echo zip ;;\n  *)        echo other ;;\nesac").unwrap();
     }
@@ -656,5 +685,16 @@ mod regression {
     #[test]
     fn output_process_substitution() {
         parse("tee >(grep error > errors.log) < input").unwrap();
+    }
+
+    #[test]
+    fn function_body_followed_by_plus_parameter_expansion_parses() {
+        parse("f() { echo $# ; }\nunset -v nonesuch\nf ${nonesuch+nonempty} a b\nx=foo\nf ${x+hi} a b\n")
+            .unwrap();
+    }
+
+    #[test]
+    fn command_substitution_with_unset_parameter_word_elision_parses() {
+        parse("count() { echo $#; }\n[ $(count a $nonesuch b) -eq 2 ]\n").unwrap();
     }
 }

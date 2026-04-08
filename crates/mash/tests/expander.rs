@@ -1,10 +1,14 @@
 use mash::env::Env;
 use mash::expander::*;
+use std::sync::Mutex;
+
+static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn tilde_expands_to_home() {
     let mut env = Env::empty();
-    env.set("HOME", mash::env::Variable::string("/home/user")).unwrap();
+    env.set("HOME", mash::env::Variable::string("/home/user"))
+        .unwrap();
     let result = expand_word_nosplit("~/bin", &mut env).unwrap();
     assert_eq!(result, "/home/user/bin");
 }
@@ -20,7 +24,8 @@ fn tilde_plus_expands_to_pwd() {
 #[test]
 fn tilde_minus_expands_to_oldpwd() {
     let mut env = Env::empty();
-    env.set("OLDPWD", mash::env::Variable::string("/var")).unwrap();
+    env.set("OLDPWD", mash::env::Variable::string("/var"))
+        .unwrap();
     let result = expand_word_nosplit("~-", &mut env).unwrap();
     assert_eq!(result, "/var");
 }
@@ -36,7 +41,8 @@ fn simple_var_expansion() {
 #[test]
 fn simple_var_in_text() {
     let mut env = Env::empty();
-    env.set("NAME", mash::env::Variable::string("world")).unwrap();
+    env.set("NAME", mash::env::Variable::string("world"))
+        .unwrap();
     let result = expand_word_nosplit("hello $NAME!", &mut env).unwrap();
     assert_eq!(result, "hello world!");
 }
@@ -95,6 +101,25 @@ fn backslash_escape() {
 }
 
 #[test]
+fn case_pattern_expansion_preserves_backslash_newline_match() {
+    let mut env = Env::empty();
+    let word = expand_word_nosplit("'foo\\\nbar'", &mut env).unwrap();
+    let pattern = expand_word_for_case_pattern("foo\\\\\"\n\"bar", &mut env).unwrap();
+    assert!(
+        shell_pattern_match(&word, &pattern),
+        "word={word:?} pattern={pattern:?}"
+    );
+}
+
+#[test]
+fn heredoc_expansion_removes_backslash_newline_line_continuation() {
+    let mut env = Env::empty();
+    let body = "\"line\".\\${PATH}.\\'three\\'\\\\x\\\nline four\n";
+    let expanded = expand_heredoc_body(body, &mut env).unwrap();
+    assert_eq!(expanded, "\"line\".${PATH}.\\'three\\'\\xline four\n");
+}
+
+#[test]
 fn command_sub_captures_output() {
     let mut env = Env::empty();
     let result = expand_word_nosplit("$(echo hello)", &mut env).unwrap();
@@ -120,21 +145,30 @@ fn brace_simple() {
 #[test]
 fn brace_default_unset() {
     let mut env = Env::empty();
-    assert_eq!(expand_word_nosplit("${X:-fallback}", &mut env).unwrap(), "fallback");
+    assert_eq!(
+        expand_word_nosplit("${X:-fallback}", &mut env).unwrap(),
+        "fallback"
+    );
 }
 
 #[test]
 fn brace_default_set() {
     let mut env = Env::empty();
     env.set("X", mash::env::Variable::string("val")).unwrap();
-    assert_eq!(expand_word_nosplit("${X:-fallback}", &mut env).unwrap(), "val");
+    assert_eq!(
+        expand_word_nosplit("${X:-fallback}", &mut env).unwrap(),
+        "val"
+    );
 }
 
 #[test]
 fn brace_default_empty_with_colon() {
     let mut env = Env::empty();
     env.set("X", mash::env::Variable::string("")).unwrap();
-    assert_eq!(expand_word_nosplit("${X:-fallback}", &mut env).unwrap(), "fallback");
+    assert_eq!(
+        expand_word_nosplit("${X:-fallback}", &mut env).unwrap(),
+        "fallback"
+    );
 }
 
 #[test]
@@ -147,7 +181,10 @@ fn brace_default_empty_without_colon() {
 #[test]
 fn brace_assign() {
     let mut env = Env::empty();
-    assert_eq!(expand_word_nosplit("${X:=hello}", &mut env).unwrap(), "hello");
+    assert_eq!(
+        expand_word_nosplit("${X:=hello}", &mut env).unwrap(),
+        "hello"
+    );
     assert_eq!(env.get_str("X"), "hello");
 }
 
@@ -172,6 +209,56 @@ fn brace_alt_unset() {
 }
 
 #[test]
+fn quoted_star_uses_first_ifs_character() {
+    let mut env = Env::empty();
+    env.set_positional_params("mash", &["1".into(), "2".into(), "3".into()]);
+    env.set("IFS", mash::env::Variable::string(", ")).unwrap();
+    assert_eq!(expand_word_nosplit("\"$*\"", &mut env).unwrap(), "1,2,3");
+}
+
+#[test]
+fn quoted_star_with_empty_ifs_concatenates_positional_args() {
+    let mut env = Env::empty();
+    env.set_positional_params("mash", &["a".into(), "b  e   e".into(), "c".into()]);
+    env.set("IFS", mash::env::Variable::string("")).unwrap();
+    assert_eq!(
+        expand_word_nosplit("\"$*\"", &mut env).unwrap(),
+        "ab  e   ec"
+    );
+}
+
+#[test]
+fn unquoted_star_with_empty_ifs_preserves_argument_boundaries() {
+    let mut env = Env::empty();
+    env.set_positional_params("mash", &["a".into(), "b  e   e".into(), "c".into()]);
+    env.set("IFS", mash::env::Variable::string("")).unwrap();
+    assert_eq!(
+        expand_word("$*", &mut env).unwrap(),
+        vec!["a".to_string(), "b  e   e".to_string(), "c".to_string()]
+    );
+}
+
+#[test]
+fn quoted_assignment_uses_quoted_star_semantics() {
+    let mut env = Env::empty();
+    env.set_positional_params(
+        "mash",
+        &[
+            "a".into(),
+            "s p  aces".into(),
+            "b".into(),
+            "c".into(),
+            "and\ttabs\n and newlines".into(),
+        ],
+    );
+    env.set("IFS", mash::env::Variable::string(": ")).unwrap();
+    assert_eq!(
+        expand_word_nosplit("\"${var=$*}\"", &mut env).unwrap(),
+        "a:s p  aces:b:c:and\ttabs\n and newlines"
+    );
+}
+
+#[test]
 fn brace_length() {
     let mut env = Env::empty();
     env.set("X", mash::env::Variable::string("hello")).unwrap();
@@ -181,43 +268,61 @@ fn brace_length() {
 #[test]
 fn brace_strip_prefix() {
     let mut env = Env::empty();
-    env.set("X", mash::env::Variable::string("/path/to/file")).unwrap();
-    assert_eq!(expand_word_nosplit("${X#*/}", &mut env).unwrap(), "path/to/file");
+    env.set("X", mash::env::Variable::string("/path/to/file"))
+        .unwrap();
+    assert_eq!(
+        expand_word_nosplit("${X#*/}", &mut env).unwrap(),
+        "path/to/file"
+    );
 }
 
 #[test]
 fn brace_strip_prefix_greedy() {
     let mut env = Env::empty();
-    env.set("X", mash::env::Variable::string("/path/to/file")).unwrap();
+    env.set("X", mash::env::Variable::string("/path/to/file"))
+        .unwrap();
     assert_eq!(expand_word_nosplit("${X##*/}", &mut env).unwrap(), "file");
 }
 
 #[test]
 fn brace_strip_suffix() {
     let mut env = Env::empty();
-    env.set("X", mash::env::Variable::string("file.tar.gz")).unwrap();
-    assert_eq!(expand_word_nosplit("${X%.*}", &mut env).unwrap(), "file.tar");
+    env.set("X", mash::env::Variable::string("file.tar.gz"))
+        .unwrap();
+    assert_eq!(
+        expand_word_nosplit("${X%.*}", &mut env).unwrap(),
+        "file.tar"
+    );
 }
 
 #[test]
 fn brace_strip_suffix_greedy() {
     let mut env = Env::empty();
-    env.set("X", mash::env::Variable::string("file.tar.gz")).unwrap();
+    env.set("X", mash::env::Variable::string("file.tar.gz"))
+        .unwrap();
     assert_eq!(expand_word_nosplit("${X%%.*}", &mut env).unwrap(), "file");
 }
 
 #[test]
 fn brace_replace_first() {
     let mut env = Env::empty();
-    env.set("X", mash::env::Variable::string("hello world hello")).unwrap();
-    assert_eq!(expand_word_nosplit("${X/hello/bye}", &mut env).unwrap(), "bye world hello");
+    env.set("X", mash::env::Variable::string("hello world hello"))
+        .unwrap();
+    assert_eq!(
+        expand_word_nosplit("${X/hello/bye}", &mut env).unwrap(),
+        "bye world hello"
+    );
 }
 
 #[test]
 fn brace_replace_all() {
     let mut env = Env::empty();
-    env.set("X", mash::env::Variable::string("hello world hello")).unwrap();
-    assert_eq!(expand_word_nosplit("${X//hello/bye}", &mut env).unwrap(), "bye world bye");
+    env.set("X", mash::env::Variable::string("hello world hello"))
+        .unwrap();
+    assert_eq!(
+        expand_word_nosplit("${X//hello/bye}", &mut env).unwrap(),
+        "bye world bye"
+    );
 }
 
 #[test]
@@ -244,22 +349,28 @@ fn brace_lowercase_all() {
 #[test]
 fn brace_substring() {
     let mut env = Env::empty();
-    env.set("X", mash::env::Variable::string("hello world")).unwrap();
+    env.set("X", mash::env::Variable::string("hello world"))
+        .unwrap();
     assert_eq!(expand_word_nosplit("${X:6}", &mut env).unwrap(), "world");
 }
 
 #[test]
 fn brace_substring_with_length() {
     let mut env = Env::empty();
-    env.set("X", mash::env::Variable::string("hello world")).unwrap();
+    env.set("X", mash::env::Variable::string("hello world"))
+        .unwrap();
     assert_eq!(expand_word_nosplit("${X:0:5}", &mut env).unwrap(), "hello");
 }
 
 #[test]
 fn brace_nested_default() {
     let mut env = Env::empty();
-    env.set("FALLBACK", mash::env::Variable::string("default")).unwrap();
-    assert_eq!(expand_word_nosplit("${X:-$FALLBACK}", &mut env).unwrap(), "default");
+    env.set("FALLBACK", mash::env::Variable::string("default"))
+        .unwrap();
+    assert_eq!(
+        expand_word_nosplit("${X:-$FALLBACK}", &mut env).unwrap(),
+        "default"
+    );
 }
 
 // ── Arithmetic evaluation tests ──
@@ -368,7 +479,8 @@ fn arith_logical() {
 #[test]
 fn word_split_default_ifs() {
     let mut env = Env::empty();
-    env.set("X", mash::env::Variable::string("a  b  c")).unwrap();
+    env.set("X", mash::env::Variable::string("a  b  c"))
+        .unwrap();
     let result = expand_word("$X", &mut env).unwrap();
     assert_eq!(result, vec!["a", "b", "c"]);
 }
@@ -402,7 +514,8 @@ fn word_split_quoted_no_split() {
 #[test]
 fn word_split_leading_trailing_ws_trimmed() {
     let mut env = Env::empty();
-    env.set("X", mash::env::Variable::string("  a b  ")).unwrap();
+    env.set("X", mash::env::Variable::string("  a b  "))
+        .unwrap();
     let result = expand_word("$X", &mut env).unwrap();
     assert_eq!(result, vec!["a", "b"]);
 }
@@ -449,12 +562,161 @@ fn glob_quoted_star_literal() {
     assert_eq!(result, vec!["*.rs"]);
 }
 
+#[test]
+fn shell_pattern_bracket_expression_supports_literal_hyphen_and_right_bracket() {
+    assert!(shell_pattern_match("file-", "file[-123]"));
+    assert!(shell_pattern_match("file-", "file[123-]"));
+    assert!(shell_pattern_match("file]", "file[]123]"));
+}
+
+#[test]
+fn shell_pattern_bracket_expression_supports_posix_class_and_collating_literals() {
+    assert!(shell_pattern_match("filea", "file[[:alpha:]]"));
+    assert!(shell_pattern_match("file-", "file[[.-.]]"));
+    assert!(shell_pattern_match("file]", "file[[.].]]"));
+    assert!(shell_pattern_match("file-", "file[[=-=]]"));
+    assert!(shell_pattern_match("file]", "file[[=]=]]"));
+}
+
+#[test]
+fn assignment_tilde_expands_at_start_and_after_colon() {
+    let mut env = Env::empty();
+    env.set("HOME", mash::env::Variable::string("/home/alice"))
+        .unwrap();
+
+    assert_eq!(
+        expand_assignment_word_nosplit("~", &mut env).unwrap(),
+        "/home/alice"
+    );
+    assert_eq!(
+        expand_assignment_word_nosplit("~/bin", &mut env).unwrap(),
+        "/home/alice/bin"
+    );
+    assert_eq!(
+        expand_assignment_word_nosplit(":~", &mut env).unwrap(),
+        ":/home/alice"
+    );
+    assert_eq!(
+        expand_assignment_word_nosplit("foo:~:bar", &mut env).unwrap(),
+        "foo:/home/alice:bar"
+    );
+}
+
+#[test]
+fn non_assignment_tilde_before_colon_stays_literal() {
+    let mut env = Env::empty();
+    env.set("HOME", mash::env::Variable::string("/home/alice"))
+        .unwrap();
+
+    assert_eq!(expand_word("~:", &mut env).unwrap(), vec!["~:".to_string()]);
+}
+
+#[test]
+fn non_assignment_tilde_with_quoted_suffix_stays_literal_and_drops_quotes() {
+    let mut env = Env::empty();
+    env.set("HOME", mash::env::Variable::string("/home/alice"))
+        .unwrap();
+
+    assert_eq!(
+        expand_word("~\"alice\"", &mut env).unwrap(),
+        vec!["~alice".to_string()]
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_shell_path_variable_expands_without_truncation() {
+    let mut env = Env::empty();
+    env.set(
+        "TEST_SHELL",
+        mash::env::Variable::string(
+            "C:/Users/mamuk/projects/orix/malt/.worktrees/windows-smoosh-baseline/target-wave3/debug/mash.exe",
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(
+        expand_word("$TEST_SHELL", &mut env).unwrap(),
+        vec![
+            "C:/Users/mamuk/projects/orix/malt/.worktrees/windows-smoosh-baseline/target-wave3/debug/mash.exe"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn pathname_glob_supports_posix_bracket_forms() {
+    let _guard = CWD_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let prev = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    std::fs::write("file-", "").unwrap();
+    std::fs::write("file]", "").unwrap();
+    std::fs::write("filea", "").unwrap();
+
+    let mut env = Env::empty();
+    assert_eq!(expand_word("file[[.-.]]", &mut env).unwrap(), vec!["file-"]);
+    assert_eq!(expand_word("file[[=-=]]", &mut env).unwrap(), vec!["file-"]);
+    assert_eq!(expand_word("file[[.].]]", &mut env).unwrap(), vec!["file]"]);
+    assert_eq!(expand_word("file[[=]=]]", &mut env).unwrap(), vec!["file]"]);
+    assert_eq!(
+        expand_word("file[[:alpha:]]", &mut env).unwrap(),
+        vec!["filea"]
+    );
+
+    std::env::set_current_dir(prev).unwrap();
+}
+
+#[test]
+fn pathname_glob_preserves_explicit_double_slash_segment() {
+    let _guard = CWD_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let prev = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    std::fs::create_dir("foo").unwrap();
+    std::fs::write("foo/a", "").unwrap();
+    std::fs::write("foo/b", "").unwrap();
+    std::fs::write("foo/c", "").unwrap();
+
+    let mut env = Env::empty();
+    assert_eq!(
+        expand_word("foo//*", &mut env).unwrap(),
+        vec!["foo//a", "foo//b", "foo//c"]
+    );
+
+    std::env::set_current_dir(prev).unwrap();
+}
+
+#[test]
+fn pathname_glob_synthesizes_dot_and_dotdot_matches() {
+    let _guard = CWD_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let prev = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    std::fs::create_dir_all("bar/inner").unwrap();
+    std::fs::write("bar/foo", "").unwrap();
+    std::fs::write("bar/inner/foo", "").unwrap();
+    std::env::set_current_dir(dir.path().join("bar/inner")).unwrap();
+
+    let mut env = Env::empty();
+    assert_eq!(
+        expand_word(".*/foo", &mut env).unwrap(),
+        vec!["../foo", "./foo"]
+    );
+
+    std::env::set_current_dir(prev).unwrap();
+}
+
 // ── Heredoc expansion tests ──
 
 #[test]
 fn heredoc_expands_vars() {
     let mut env = Env::empty();
-    env.set("NAME", mash::env::Variable::string("world")).unwrap();
+    env.set("NAME", mash::env::Variable::string("world"))
+        .unwrap();
     let result = expand_heredoc_body("hello $NAME\n", &mut env).unwrap();
     assert_eq!(result, "hello world\n");
 }
@@ -472,8 +734,10 @@ fn heredoc_quotes_literal() {
 #[test]
 fn full_pipeline_mixed() {
     let mut env = Env::empty();
-    env.set("USER", mash::env::Variable::string("alice")).unwrap();
-    env.set("HOME", mash::env::Variable::string("/home/alice")).unwrap();
+    env.set("USER", mash::env::Variable::string("alice"))
+        .unwrap();
+    env.set("HOME", mash::env::Variable::string("/home/alice"))
+        .unwrap();
     let result = expand_word_nosplit("Welcome $USER to $HOME", &mut env).unwrap();
     assert_eq!(result, "Welcome alice to /home/alice");
 }
@@ -491,7 +755,8 @@ fn mixed_quoting_and_expansion() {
 #[test]
 fn nested_parameter_default() {
     let mut env = Env::empty();
-    env.set("FALLBACK", mash::env::Variable::string("default")).unwrap();
+    env.set("FALLBACK", mash::env::Variable::string("default"))
+        .unwrap();
     let result = expand_word_nosplit("${X:-${FALLBACK}}", &mut env).unwrap();
     assert_eq!(result, "default");
 }

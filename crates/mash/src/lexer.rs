@@ -307,6 +307,23 @@ impl<'a> Lexer<'a> {
                 self.next_char(); // consume '{'
                 Ok(self.read_balanced_braces(dollar_pos)?)
             }
+            Some(c) if "?!$#@*-".contains(c) || c.is_ascii_digit() => {
+                self.next_char();
+                Ok(dollar_pos + 1 + c.len_utf8())
+            }
+            Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+                let mut end = dollar_pos + 1 + c.len_utf8();
+                self.next_char();
+                while let Some(next) = self.peek_char() {
+                    if next.is_ascii_alphanumeric() || next == '_' {
+                        self.next_char();
+                        end += next.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                Ok(end)
+            }
             _ => Ok(default_end),
         }
     }

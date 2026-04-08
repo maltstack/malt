@@ -28,11 +28,22 @@ fn main() {
                     eprintln!("mash: -c: option requires an argument");
                     exit(2);
                 };
-                run_command(command, interactive);
+                let arg0 = args.get(i + 2).cloned().unwrap_or_else(|| "mash".to_string());
+                let positional = if i + 3 <= args.len() {
+                    args[i + 3..].to_vec()
+                } else {
+                    Vec::new()
+                };
+                run_command(command, interactive, &arg0, &positional);
                 return;
             }
             arg if !arg.starts_with('-') || arg == "-" => {
-                run_script_file(arg, interactive);
+                let positional = if i + 1 <= args.len() {
+                    args[i + 1..].to_vec()
+                } else {
+                    Vec::new()
+                };
+                run_script_file(arg, interactive, &positional);
                 return;
             }
             unknown => {
@@ -42,15 +53,27 @@ fn main() {
         }
     }
 
+    if interactive && !malt_platform::io::is_tty(0) {
+        run_stdin(interactive, false);
+        return;
+    }
+
     run_interactive();
 }
 
-fn run_command(command: &str, interactive: bool) {
-    use mash::env::Env;
+fn run_command(command: &str, interactive: bool, arg0: &str, positional: &[String]) {
+    use mash::env::{Env, Variable};
     use mash::executor::execute_list;
 
     let mut env = Env::from_os();
     env.set_interactive(interactive);
+    env.set_positional_params(arg0, positional);
+    if let Ok(self_exe) = std::env::current_exe() {
+        let _ = env.set(
+            "MASH_SELF_EXE",
+            Variable::exported_string(self_exe.to_string_lossy().into_owned()),
+        );
+    }
 
     match mash::parser::parse(command) {
         Ok(commands) => {
@@ -75,11 +98,16 @@ fn run_command(command: &str, interactive: bool) {
     }
 }
 
-fn run_script_file(path: &str, interactive: bool) {
-    use mash::env::Env;
+fn run_script_file(path: &str, interactive: bool, positional: &[String]) {
+    use mash::env::{Env, Variable};
     use mash::executor::execute_list;
 
     let path = resolve_script_path(path);
+    let path_buf = std::path::PathBuf::from(&path);
+    if !malt_platform::fs::is_readable(&path_buf) {
+        eprintln!("mash: {}: Permission denied", path);
+        exit(126);
+    }
     let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => {
@@ -90,9 +118,13 @@ fn run_script_file(path: &str, interactive: bool) {
 
     let mut env = Env::from_os();
     env.set_interactive(interactive);
-
-    // Set $0 to script name
-    let _ = env.set("0", mash::env::Variable::string(&path));
+    env.set_positional_params(&path, positional);
+    if let Ok(self_exe) = std::env::current_exe() {
+        let _ = env.set(
+            "MASH_SELF_EXE",
+            Variable::exported_string(self_exe.to_string_lossy().into_owned()),
+        );
+    }
 
     match mash::parser::parse(&contents) {
         Ok(commands) => {
@@ -134,21 +166,35 @@ fn resolve_script_path(path: &str) -> String {
 }
 
 fn run_interactive() {
-    use mash::env::Env;
+    run_stdin(true, true);
+}
+
+fn run_stdin(interactive: bool, prompt: bool) {
+    use mash::env::{Env, Variable};
     use mash::executor::execute;
 
     let mut env = Env::from_os();
-    env.set_interactive(true);
+    env.set_interactive(interactive);
+    if let Ok(self_exe) = std::env::current_exe() {
+        let _ = env.set(
+            "MASH_SELF_EXE",
+            Variable::exported_string(self_exe.to_string_lossy().into_owned()),
+        );
+    }
 
     let stdin = io::stdin();
 
-    println!("MASH 0.1.0 -- POSIX Shell for MALT");
-    println!("Type 'exit' to quit");
-    println!();
+    if prompt {
+        println!("MASH 0.1.0 -- POSIX Shell for MALT");
+        println!("Type 'exit' to quit");
+        println!();
+    }
 
     loop {
-        print!("$ ");
-        let _ = io::stdout().flush();
+        if prompt {
+            print!("$ ");
+            let _ = io::stdout().flush();
+        }
 
         let mut line = String::new();
         match stdin.lock().read_line(&mut line) {
@@ -179,6 +225,9 @@ fn run_interactive() {
                     }
                     Err(e) => {
                         eprintln!("mash: parse error: {}", e);
+                        if !prompt {
+                            exit(1);
+                        }
                     }
                 }
             }
@@ -187,5 +236,9 @@ fn run_interactive() {
                 break;
             }
         }
+    }
+
+    if !prompt {
+        exit(env.exit_code());
     }
 }

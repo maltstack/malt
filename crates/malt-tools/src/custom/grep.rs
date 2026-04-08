@@ -24,7 +24,7 @@ pub fn grep(args: &[String], stdin: &[u8]) -> BuiltinResult {
     let mut count_only = false;
     let mut line_numbers = false;
     let mut files_only = false;
-    let mut pattern_str: Option<&str> = None;
+    let mut pattern_str: Option<String> = None;
     let mut file_args: Vec<&str> = Vec::new();
 
     let mut i = 0;
@@ -34,7 +34,7 @@ pub fn grep(args: &[String], stdin: &[u8]) -> BuiltinResult {
             i += 1;
             while i < args.len() {
                 if pattern_str.is_none() {
-                    pattern_str = Some(args[i].as_str());
+                    pattern_str = Some(args[i].clone());
                 } else {
                     file_args.push(args[i].as_str());
                 }
@@ -44,13 +44,30 @@ pub fn grep(args: &[String], stdin: &[u8]) -> BuiltinResult {
         }
 
         if arg.starts_with('-') && arg.len() > 1 && !arg.starts_with("--") {
-            for ch in arg[1..].chars() {
+            let mut chars = arg[1..].chars().peekable();
+            while let Some(ch) = chars.next() {
                 match ch {
                     'i' => case_insensitive = true,
                     'v' => invert = true,
                     'c' => count_only = true,
                     'n' => line_numbers = true,
                     'l' => files_only = true,
+                    'e' => {
+                        let rest: String = chars.collect();
+                        if !rest.is_empty() {
+                            pattern_str = Some(rest);
+                        } else {
+                            i += 1;
+                            if i >= args.len() {
+                                return BuiltinResult::failure(
+                                    2,
+                                    b"grep: option requires an argument -- 'e'\n".to_vec(),
+                                );
+                            }
+                            pattern_str = Some(args[i].clone());
+                        }
+                        break;
+                    }
                     _ => {
                         let msg = format!("grep: unknown option: -{}\n", ch);
                         return BuiltinResult::failure(2, msg.into_bytes());
@@ -58,7 +75,7 @@ pub fn grep(args: &[String], stdin: &[u8]) -> BuiltinResult {
                 }
             }
         } else if pattern_str.is_none() {
-            pattern_str = Some(args[i].as_str());
+            pattern_str = Some(args[i].clone());
         } else {
             file_args.push(args[i].as_str());
         }
@@ -75,7 +92,7 @@ pub fn grep(args: &[String], stdin: &[u8]) -> BuiltinResult {
         }
     };
 
-    let re = match RegexBuilder::new(pattern_str)
+    let re = match RegexBuilder::new(&pattern_str)
         .case_insensitive(case_insensitive)
         .size_limit(1_000_000)
         .build()
@@ -286,5 +303,19 @@ mod tests {
     fn grep_invalid_regex() {
         let r = grep(&["[invalid".into()], b"test\n");
         assert_eq!(r.exit_code, 2);
+    }
+
+    #[test]
+    fn grep_e_option_uses_following_pattern() {
+        let r = grep(&["-e".into(), "^.$".into()], b".\n..\n");
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(String::from_utf8_lossy(&r.stdout), ".\n");
+    }
+
+    #[test]
+    fn grep_combined_flags_can_be_followed_by_e_pattern() {
+        let r = grep(&["-in".into(), "-e".into(), "hello".into()], b"HELLO\n");
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(String::from_utf8_lossy(&r.stdout), "1:HELLO\n");
     }
 }

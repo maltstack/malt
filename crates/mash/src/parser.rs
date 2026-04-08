@@ -1024,42 +1024,52 @@ impl<'a> Parser<'a> {
                     let quoted_val = *quoted;
                     let body_tok = self.advance()?;
                     end_span = body_tok.span;
-                    // Determine the heredoc kind from the preceding redirect.
-                    let kind = if let Some(prev) = redirects.last() {
-                        if matches!(
-                            prev.node.kind,
+                    let heredoc_index = redirects.iter().rposition(|redir| {
+                        matches!(
+                            redir.node.kind,
                             RedirectKind::HereDoc | RedirectKind::HereDocStrip
-                        ) {
-                            prev.node.kind
-                        } else {
-                            RedirectKind::HereDoc
-                        }
-                    } else {
-                        RedirectKind::HereDoc
-                    };
-                    // Remove the preceding delimiter redirect — only the body matters.
-                    if let Some(prev) = redirects.last() {
-                        if matches!(
-                            prev.node.kind,
-                            RedirectKind::HereDoc | RedirectKind::HereDocStrip
-                        ) {
-                            redirects.pop();
-                        }
-                    }
-                    // Store the heredoc body directly in the AST.
-                    redirects.push(Spanned {
-                        node: Redirect {
-                            kind,
-                            target: body_tok.span,
-                            fd: None,
-                            quoted: quoted_val,
-                            heredoc_body: Some(body_val),
-                        },
-                        span: body_tok.span,
+                        ) && redir.node.heredoc_body.is_none()
                     });
+                    if let Some(index) = heredoc_index {
+                        let prior = redirects[index].clone();
+                        redirects[index] = Spanned {
+                            node: Redirect {
+                                kind: prior.node.kind,
+                                target: body_tok.span,
+                                fd: prior.node.fd,
+                                quoted: quoted_val,
+                                heredoc_body: Some(body_val),
+                            },
+                            span: prior.span.merge(body_tok.span),
+                        };
+                    } else {
+                        redirects.push(Spanned {
+                            node: Redirect {
+                                kind: RedirectKind::HereDoc,
+                                target: body_tok.span,
+                                fd: None,
+                                quoted: quoted_val,
+                                heredoc_body: Some(body_val),
+                            },
+                            span: body_tok.span,
+                        });
+                    }
                     if !matches!(self.peek().node, Token::HereDocBody { .. }) {
                         break;
                     }
+                }
+                Token::Newline => {
+                    let awaiting_heredoc_body = redirects.iter().any(|redir| {
+                        matches!(
+                            redir.node.kind,
+                            RedirectKind::HereDoc | RedirectKind::HereDocStrip
+                        ) && redir.node.heredoc_body.is_none()
+                    });
+                    if awaiting_heredoc_body {
+                        self.advance()?;
+                        continue;
+                    }
+                    break;
                 }
                 _ => break,
             }

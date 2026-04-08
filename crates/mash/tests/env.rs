@@ -41,6 +41,28 @@ fn from_os_normalizes_pwd_separators() {
     assert!(!pwd.contains('\\'), "PWD should use forward slashes: {pwd}");
 }
 
+#[test]
+fn from_os_does_not_import_ifs() {
+    let original = std::env::var_os("IFS");
+    std::env::set_var("IFS", "123");
+    let env = Env::from_os();
+    assert_eq!(env.get_str("IFS"), " \t\n");
+    assert!(env.is_set("IFS"));
+    assert!(!env.get("IFS").expect("IFS should exist").exported);
+    match original {
+        Some(value) => std::env::set_var("IFS", value),
+        None => std::env::remove_var("IFS"),
+    }
+}
+
+#[test]
+fn empty_env_sets_default_ifs() {
+    let env = Env::empty();
+    assert_eq!(env.get_str("IFS"), " \t\n");
+    assert!(env.is_set("IFS"));
+    assert!(!env.get("IFS").expect("IFS should exist").exported);
+}
+
 // ── Task 2: Variable access + scope stack ──
 
 #[test]

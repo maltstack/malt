@@ -4,9 +4,13 @@ use crate::ast::{Command, Spanned};
 use crate::parser;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::io::{Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::sync::{mpsc::Sender, Arc, Condvar, Mutex, MutexGuard};
 
 const MASH_FD_ALIASES_ENV: &str = "MASH_FD_ALIASES";
+const MASH_FD_SNAPSHOTS_ENV: &str = "MASH_FD_SNAPSHOTS";
+const DEFAULT_IFS: &str = " \t\n";
 
 // ── Variable storage ──
 
@@ -150,6 +154,7 @@ pub struct TrapAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobStatus {
     Running,
+    Stopped,
     Done,
     Signaled(String),
 }
@@ -160,6 +165,75 @@ pub struct JobEntry {
     pub pid: u32,
     pub command: String,
     pub status: JobStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BackgroundCompletion {
+    done: bool,
+    exit_code: i32,
+}
+
+#[derive(Debug)]
+struct BackgroundTask {
+    state: Mutex<BackgroundCompletion>,
+    ready: Condvar,
+    pending_signal: Mutex<Option<(String, i32)>>,
+}
+
+impl BackgroundTask {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(BackgroundCompletion {
+                done: false,
+                exit_code: 0,
+            }),
+            ready: Condvar::new(),
+            pending_signal: Mutex::new(None),
+        }
+    }
+
+    fn request_signal(&self, signal: String, exit_code: i32) {
+        let mut pending = match self.pending_signal.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *pending = Some((signal, exit_code));
+    }
+
+    fn take_signal(&self) -> Option<(String, i32)> {
+        let mut pending = match self.pending_signal.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        pending.take()
+    }
+
+    fn complete(&self, exit_code: i32) {
+        let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if state.done {
+            return;
+        }
+        state.done = true;
+        state.exit_code = exit_code;
+        self.ready.notify_all();
+    }
+
+    fn wait(&self) -> i32 {
+        let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        while !state.done {
+            state = match self.ready.wait(state) {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+        }
+        state.exit_code
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +268,6 @@ pub enum EnvError {
 
 // ── Env struct ──
 
-#[derive(Clone)]
 pub struct Env {
     scopes: Vec<HashMap<String, Variable>>,
     unset_masks: Vec<HashSet<String>>,
@@ -217,11 +290,58 @@ pub struct Env {
     suppress_errexit: bool,
     history: Arc<Mutex<Vec<String>>>,
     jobs: Arc<Mutex<Vec<JobEntry>>>,
+    job_tasks: Arc<Mutex<HashMap<u32, Arc<BackgroundTask>>>>,
     /// Opaque isolation context token passed through from daemon.
     /// MASH does not interpret this; it's passed to platform spawn traits.
     isolation_context: Option<malt_platform::isolation::IsolationContext>,
     fd_registry: malt_platform::vfs::SharedFdRegistry,
     fd_aliases: Arc<Mutex<HashMap<u32, u32>>>,
+    fd_snapshots: Arc<Mutex<HashMap<u32, PathBuf>>>,
+    bg_pid_reporter: Option<Sender<u32>>,
+    bg_pid_reporting_enabled: bool,
+    current_job_id: Option<u32>,
+}
+
+impl Clone for Env {
+    fn clone(&self) -> Self {
+        let fd_registry = malt_platform::vfs::SharedFdRegistry::new();
+        for fd in self.fd_registry.list_fds() {
+            if let Ok(file) = self.fd_registry.open(fd) {
+                fd_registry.register_file_at(fd, file);
+            }
+        }
+
+        Self {
+            scopes: self.scopes.clone(),
+            unset_masks: self.unset_masks.clone(),
+            local_vars: self.local_vars.clone(),
+            special: self.special.clone(),
+            options: self.options.clone(),
+            functions: self.functions.clone(),
+            aliases: self.aliases.clone(),
+            traps: self.traps.clone(),
+            loop_control: self.loop_control.clone(),
+            call_stack: self.call_stack.clone(),
+            call_depth: self.call_depth,
+            loop_depth: self.loop_depth,
+            exit_requested: self.exit_requested,
+            is_interactive: self.is_interactive,
+            dir_stack: self.dir_stack.clone(),
+            hash_table: self.hash_table.clone(),
+            disabled_builtins: self.disabled_builtins.clone(),
+            suppress_errexit: self.suppress_errexit,
+            history: self.history.clone(),
+            jobs: self.jobs.clone(),
+            job_tasks: self.job_tasks.clone(),
+            isolation_context: self.isolation_context.clone(),
+            fd_registry,
+            fd_aliases: Arc::new(Mutex::new(self.fd_aliases_lock().clone())),
+            fd_snapshots: Arc::new(Mutex::new(self.fd_snapshots_lock().clone())),
+            bg_pid_reporter: self.bg_pid_reporter.clone(),
+            bg_pid_reporting_enabled: self.bg_pid_reporting_enabled,
+            current_job_id: self.current_job_id,
+        }
+    }
 }
 
 impl Env {
@@ -247,19 +367,38 @@ impl Env {
             suppress_errexit: false,
             history: Arc::new(Mutex::new(Vec::new())),
             jobs: Arc::new(Mutex::new(Vec::new())),
+            job_tasks: Arc::new(Mutex::new(HashMap::new())),
             isolation_context: None,
             fd_registry: malt_platform::vfs::SharedFdRegistry::new(),
             fd_aliases: Arc::new(Mutex::new(HashMap::new())),
+            fd_snapshots: Arc::new(Mutex::new(HashMap::new())),
+            bg_pid_reporter: None,
+            bg_pid_reporting_enabled: false,
+            current_job_id: None,
         };
         env.special
             .insert("$".to_string(), std::process::id().to_string());
         env.special.insert("?".to_string(), "0".to_string());
+        let ppid = std::env::var("MASH_PPID").unwrap_or_else(|_| "0".to_string());
+        env.special.insert("PPID".to_string(), ppid);
+        env.scopes[0].insert(
+            "IFS".to_string(),
+            Variable {
+                value: VarValue::String(DEFAULT_IFS.to_string()),
+                exported: false,
+                readonly: false,
+                integer: false,
+            },
+        );
         env
     }
 
     pub fn from_os() -> Self {
         let mut env = Self::empty();
         for (key, value) in std::env::vars() {
+            if key == "IFS" {
+                continue;
+            }
             env.scopes[0].insert(key, Variable::exported_string(value));
         }
         if let Ok(alias_spec) = std::env::var(MASH_FD_ALIASES_ENV) {
@@ -269,6 +408,17 @@ impl Env {
                         (fd_text.parse::<u32>(), target_text.parse::<u32>())
                     {
                         env.register_fd_alias(fd, target_fd);
+                    }
+                }
+            }
+        }
+        if let Ok(snapshot_spec) = std::env::var(MASH_FD_SNAPSHOTS_ENV) {
+            for entry in snapshot_spec.split(',').filter(|entry| !entry.is_empty()) {
+                if let Some((fd_text, path_hex)) = entry.split_once('|') {
+                    if let (Ok(fd), Some(path)) =
+                        (fd_text.parse::<u32>(), decode_snapshot_path(path_hex))
+                    {
+                        env.register_fd_snapshot_path(fd, path);
                     }
                 }
             }
@@ -504,6 +654,41 @@ impl Env {
         self.special.insert("!".to_string(), pid.to_string());
     }
 
+    pub fn set_shell_pid(&mut self, pid: u32) {
+        self.special.insert("$".to_string(), pid.to_string());
+    }
+
+    pub fn set_bg_pid_reporter(&mut self, reporter: Option<Sender<u32>>) {
+        self.bg_pid_reporter = reporter;
+    }
+
+    pub fn set_bg_pid_reporting_enabled(&mut self, enabled: bool) {
+        self.bg_pid_reporting_enabled = enabled;
+    }
+
+    pub fn report_bg_pid(&self, pid: u32) {
+        if !self.bg_pid_reporting_enabled {
+            return;
+        }
+        if let Some(reporter) = &self.bg_pid_reporter {
+            let _ = reporter.send(pid);
+        }
+    }
+
+    pub fn set_current_job_id(&mut self, job_id: Option<u32>) {
+        self.current_job_id = job_id;
+    }
+
+    pub fn current_job_id(&self) -> Option<u32> {
+        self.current_job_id
+    }
+
+    pub fn take_pending_job_signal(&self) -> Option<(String, i32)> {
+        let job_id = self.current_job_id?;
+        let task = self.job_tasks_lock().get(&job_id).cloned()?;
+        task.take_signal()
+    }
+
     // ── Options + runtime state ──
 
     pub fn options(&self) -> &ShellOptions {
@@ -627,6 +812,12 @@ impl Env {
         &self.traps
     }
 
+    pub fn inherit_traps_for_subshell(&mut self) {
+        for trap in self.traps.values_mut() {
+            trap.inherited = true;
+        }
+    }
+
     pub fn clear_noninherited_traps(&mut self) {
         self.traps.retain(|_, trap| trap.inherited);
     }
@@ -659,17 +850,53 @@ impl Env {
             command,
             status: JobStatus::Running,
         });
+        self.job_tasks_lock()
+            .insert(job_id, Arc::new(BackgroundTask::new()));
     }
 
-    pub fn mark_job_done(&self, job_id: u32) {
-        if let Some(job) = self.jobs_lock().iter_mut().find(|job| job.job_id == job_id) {
-            job.status = JobStatus::Done;
+    pub fn next_job_id(&self) -> u32 {
+        let jobs = self.jobs_lock();
+        let mut candidate = 1u32;
+        loop {
+            if jobs.iter().all(|job| job.job_id != candidate) {
+                return candidate;
+            }
+            candidate = candidate.saturating_add(1);
         }
     }
 
-    pub fn signal_job(&self, pid: u32, signal: String) -> bool {
+    pub fn update_job_pid(&self, job_id: u32, pid: u32) {
+        if let Some(job) = self.jobs_lock().iter_mut().find(|job| job.job_id == job_id) {
+            job.pid = pid;
+        }
+    }
+
+    pub fn mark_job_done(&self, job_id: u32, exit_code: i32) {
+        if let Some(job) = self.jobs_lock().iter_mut().find(|job| job.job_id == job_id) {
+            if matches!(job.status, JobStatus::Running | JobStatus::Stopped) {
+                job.status = JobStatus::Done;
+            }
+        }
+        self.complete_job(job_id, exit_code);
+    }
+
+    pub fn signal_job(&self, pid: u32, signal: String, exit_code: i32) -> bool {
         if let Some(job) = self.jobs_lock().iter_mut().find(|job| job.pid == pid) {
-            job.status = JobStatus::Signaled(signal);
+            let job_id = job.job_id;
+            match signal.as_str() {
+                "TSTP" => {
+                    job.status = JobStatus::Stopped;
+                }
+                "CONT" => {
+                    job.status = JobStatus::Running;
+                }
+                _ => {
+                    job.status = JobStatus::Signaled(signal.clone());
+                }
+            }
+            if let Some(task) = self.job_tasks_lock().get(&job_id).cloned() {
+                task.request_signal(signal, exit_code);
+            }
             return true;
         }
         false
@@ -678,12 +905,45 @@ impl Env {
     pub fn remove_job(&self, pid: u32) -> bool {
         let mut jobs = self.jobs_lock();
         let len_before = jobs.len();
+        let removed_job_ids: Vec<u32> = jobs
+            .iter()
+            .filter(|job| job.pid == pid)
+            .map(|job| job.job_id)
+            .collect();
         jobs.retain(|job| job.pid != pid);
+        if !removed_job_ids.is_empty() {
+            let mut tasks = self.job_tasks_lock();
+            for job_id in removed_job_ids {
+                tasks.remove(&job_id);
+            }
+        }
         len_before != jobs.len()
     }
 
     pub fn jobs(&self) -> Vec<JobEntry> {
         self.jobs_lock().clone()
+    }
+
+    pub fn wait_for_job(&self, pid: u32) -> Option<i32> {
+        let job_id = self
+            .jobs_lock()
+            .iter()
+            .find(|job| job.pid == pid)
+            .map(|job| job.job_id)?;
+        let task = self.job_tasks_lock().get(&job_id).cloned()?;
+        Some(task.wait())
+    }
+
+    pub fn job_pid_from_spec(&self, spec: &str) -> Option<u32> {
+        if let Some(rest) = spec.strip_prefix('%') {
+            let job_id = rest.parse::<u32>().ok()?;
+            return self
+                .jobs_lock()
+                .iter()
+                .find(|job| job.job_id == job_id)
+                .map(|job| job.pid);
+        }
+        spec.parse::<u32>().ok()
     }
 
     // ── Hash table (PATH cache) ──
@@ -828,12 +1088,20 @@ impl Env {
 
     pub fn register_fd(&self, fd: u32, file: File) {
         self.clear_fd_alias(fd);
+        self.clear_fd_snapshot(fd);
         self.fd_registry.register_file_at(fd, file);
     }
 
     pub fn register_fd_alias(&self, fd: u32, target_fd: u32) {
         let _ = self.fd_registry.close(fd);
+        self.clear_fd_snapshot(fd);
         self.fd_aliases_lock().insert(fd, target_fd);
+    }
+
+    pub fn register_fd_snapshot_path(&self, fd: u32, path: PathBuf) {
+        let _ = self.fd_registry.close(fd);
+        self.clear_fd_alias(fd);
+        self.fd_snapshots_lock().insert(fd, path);
     }
 
     pub fn fd_alias_target(&self, fd: u32) -> Option<u32> {
@@ -857,25 +1125,65 @@ impl Env {
         )
     }
 
+    pub fn fd_snapshot_path(&self, fd: u32) -> Option<PathBuf> {
+        self.fd_snapshots_lock().get(&fd).cloned()
+    }
+
+    pub fn fd_snapshot_env_spec(&self) -> Option<String> {
+        let snapshots = self.fd_snapshots_lock();
+        if snapshots.is_empty() {
+            return None;
+        }
+        let mut entries: Vec<(u32, PathBuf)> = snapshots
+            .iter()
+            .map(|(fd, path)| (*fd, path.clone()))
+            .collect();
+        entries.sort_unstable_by_key(|(fd, _)| *fd);
+        Some(
+            entries
+                .into_iter()
+                .map(|(fd, path)| format!("{fd}|{}", encode_snapshot_path(&path)))
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    }
+
     pub fn open_fd(&self, fd: u32) -> std::io::Result<File> {
+        if let Some(path) = self.fd_snapshot_path(fd) {
+            return std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path);
+        }
         self.fd_registry.open(fd)
     }
 
     pub fn open_fd_read(&self, fd: u32) -> std::io::Result<File> {
+        if let Some(path) = self.fd_snapshot_path(fd) {
+            return std::fs::OpenOptions::new().read(true).open(path);
+        }
         self.fd_registry.open_read(fd)
     }
 
     pub fn open_fd_write(&self, fd: u32) -> std::io::Result<File> {
+        if let Some(path) = self.fd_snapshot_path(fd) {
+            let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+            file.seek(SeekFrom::End(0))?;
+            return Ok(file);
+        }
         self.fd_registry.open_write(fd)
     }
 
     pub fn close_fd(&self, fd: u32) -> std::io::Result<()> {
         self.clear_fd_alias(fd);
+        self.clear_fd_snapshot(fd);
         self.fd_registry.close(fd)
     }
 
     pub fn has_fd(&self, fd: u32) -> bool {
-        self.fd_registry.is_registered(fd) || self.fd_aliases_lock().contains_key(&fd)
+        self.fd_registry.is_registered(fd)
+            || self.fd_aliases_lock().contains_key(&fd)
+            || self.fd_snapshots_lock().contains_key(&fd)
     }
 
     fn history_lock(&self) -> MutexGuard<'_, Vec<String>> {
@@ -892,6 +1200,13 @@ impl Env {
         }
     }
 
+    fn job_tasks_lock(&self) -> MutexGuard<'_, HashMap<u32, Arc<BackgroundTask>>> {
+        match self.job_tasks.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     fn fd_aliases_lock(&self) -> MutexGuard<'_, HashMap<u32, u32>> {
         match self.fd_aliases.lock() {
             Ok(guard) => guard,
@@ -899,9 +1214,46 @@ impl Env {
         }
     }
 
+    fn fd_snapshots_lock(&self) -> MutexGuard<'_, HashMap<u32, PathBuf>> {
+        match self.fd_snapshots.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn complete_job(&self, job_id: u32, exit_code: i32) {
+        if let Some(task) = self.job_tasks_lock().get(&job_id).cloned() {
+            task.complete(exit_code);
+        }
+    }
+
     fn clear_fd_alias(&self, fd: u32) {
         self.fd_aliases_lock().remove(&fd);
     }
+
+    fn clear_fd_snapshot(&self, fd: u32) {
+        self.fd_snapshots_lock().remove(&fd);
+    }
+}
+
+fn encode_snapshot_path(path: &Path) -> String {
+    path.as_os_str()
+        .to_string_lossy()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn decode_snapshot_path(hex: &str) -> Option<PathBuf> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for idx in (0..hex.len()).step_by(2) {
+        bytes.push(u8::from_str_radix(&hex[idx..idx + 2], 16).ok()?);
+    }
+    Some(PathBuf::from(String::from_utf8(bytes).ok()?))
 }
 
 // ── EnvSnapshot ──

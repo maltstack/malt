@@ -10,6 +10,11 @@ fn main() {
 }
 
 fn normalize_arg0(arg: &str) -> String {
+    #[cfg(windows)]
+    if let Ok(shell_argv0) = std::env::var("MASH_ARGV0") {
+        return shell_argv0.replace('\\', "/");
+    }
+
     let normalized = arg.replace('\\', "/");
     normalized
         .strip_suffix(".exe")

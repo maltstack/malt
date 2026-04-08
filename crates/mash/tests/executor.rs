@@ -49,6 +49,12 @@ fn echo_multiple_args() {
 }
 
 #[test]
+fn builtin_echo_n_suppresses_trailing_newline() {
+    let output = run_stdout("echo -n hello; echo world");
+    assert_eq!(output, "helloworld\n");
+}
+
+#[test]
 fn exit_code_zero() {
     let (result, _) = run("echo test");
     assert_eq!(result.exit_code, 0);
@@ -82,6 +88,48 @@ fn special_builtin_error_aborts_noninteractive_script() {
 }
 
 #[test]
+fn parameter_expansion_error_aborts_noninteractive_script() {
+    let input = "unset x\necho ${x?z}\necho blargh\n";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(result.exit_code, 1);
+    assert!(
+        String::from_utf8_lossy(&result.stdout).is_empty(),
+        "script should stop before echo: {}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    assert_eq!(env.exit_requested(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("x: z"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn heredoc_expansion_error_aborts_noninteractive_script() {
+    let input = "cat <<EOF > script\nunset x\necho ${x?z}\nEOF\nchmod +x script\n";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(result.exit_code, 1);
+    assert!(
+        String::from_utf8_lossy(&result.stdout).is_empty(),
+        "stdout: {}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    assert_eq!(env.exit_requested(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("heredoc expansion: x: z"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 fn source_missing_file_aborts_noninteractive_script() {
     let input = "source not_a_thing\necho hi\n";
     let cmds = parse(input).expect("parse failed");
@@ -107,6 +155,46 @@ fn sequential_commands() {
     let output = run_stdout("echo first; echo second");
     assert!(output.contains("first"), "got: {output}");
     assert!(output.contains("second"), "got: {output}");
+}
+
+#[test]
+fn append_redirection_preserves_existing_file_contents() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let old_cwd = std::env::current_dir().expect("current dir");
+    std::env::set_current_dir(dir.path()).expect("chdir tempdir");
+
+    let (result, _) = run("echo first > out; echo second >> out; cat out");
+
+    std::env::set_current_dir(old_cwd).expect("restore cwd");
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "first\nsecond\n");
+}
+
+#[test]
+fn append_redirection_accumulates_printf_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let old_cwd = std::env::current_dir().expect("current dir");
+    std::env::set_current_dir(dir.path()).expect("chdir tempdir");
+
+    let (result, _) = run("printf '%s' alpha > out; printf '%s' beta >> out; cat out");
+
+    std::env::set_current_dir(old_cwd).expect("restore cwd");
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "alphabeta");
 }
 
 #[test]
@@ -200,6 +288,93 @@ fn exec_can_duplicate_shell_stdout_to_extra_fd() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&result.stdout), "hello\n");
+}
+
+#[test]
+fn exec_fd_duplication_snapshots_current_shell_stdout() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("snap.txt");
+    let cmd = format!(
+        "exec 1>{path}; exec 3>&1; echo hello >&3",
+        path = shell_path(&path)
+    );
+    let (result, _) = run(&cmd);
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stdout).is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello\n");
+}
+
+#[test]
+fn command_substitution_captures_function_stderr_via_two_to_one() {
+    let (result, _) = run("f() { echo message >&2; }; msg=$(f 2>&1); printf '[%s]\\n' \"$msg\"");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "[message]\n");
+}
+
+#[test]
+fn command_substitution_captures_function_stderr_via_indirect_two_to_fd() {
+    let (result, _) =
+        run("f() { echo message >&2; }; x=1; msg=$(f 2>&$x); printf '[%s]\\n' \"$msg\"");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "[message]\n");
+}
+
+#[test]
+#[cfg(windows)]
+fn pipeline_subshell_can_write_to_snapshotted_shell_stdout_fd() {
+    let (result, _) = run("exec 3>&1; (echo hi >&3) | true");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "hi\n");
+}
+
+#[test]
+#[cfg(windows)]
+fn subshell_pipeline_preserves_times_ioerror_status() {
+    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let sleep = temp.path().join("sleep.cmd");
+    let capture = temp.path().join("capture.txt");
+    std::fs::write(&sleep, "@echo off\r\ntimeout /t %1 /nobreak >nul\r\n").unwrap();
+
+    let input = format!(
+        "exec 1>{capture}\nexec 3>&1\n(\n    trap \"\" PIPE\n    sleep 1\n    command times\n    echo ?=$? >&3\n) | true\n",
+        capture = shell_path(&capture)
+    );
+    let cmds = parse(&input).expect("parse failed");
+    let mut env = Env::from_os();
+    let path = format!("{};{}", temp.path().display(), env.get_str("PATH"));
+    env.set("PATH", Variable::exported_string(path))
+        .expect("set PATH");
+
+    let result = execute_list(&cmds, &input, &mut env);
+    let captured = std::fs::read_to_string(&capture).unwrap_or_default();
+
+    assert_eq!(captured, "?=2\n");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("times"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 /// Helper: convert a path to a forward-slash string for shell commands.
@@ -445,6 +620,61 @@ fn case_no_match() {
 }
 
 #[test]
+fn case_pattern_matches_backslash_newline_construct() {
+    let output =
+        run_stdout("case 'foo\\\nbar' in ( foo\\\\\"\n\"bar ) echo good ;; ( * ) echo bad ;; esac");
+    assert_eq!(output, "good\n");
+}
+
+#[test]
+fn backtick_command_substitution_preserves_backslash_for_hash_argument() {
+    let output = run_stdout("x=`printf '%s' \\#`; printf '%s\\n' \"$x\"");
+    assert_eq!(output, "#\n");
+}
+
+#[test]
+fn backtick_command_substitution_preserves_backslash_for_close_paren_argument() {
+    let output = run_stdout("x=`printf '%s' \\)`; printf '%s\\n' \"$x\"");
+    assert_eq!(output, ")\n");
+}
+
+#[test]
+fn test_string_equality_accepts_close_paren_operands() {
+    let (result, _) = run("[ \")\" = \")\" ]");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn test_string_equality_accepts_close_paren_from_vars_and_command_subst() {
+    let (result, _) = run("c=')'; out=$(printf '%s' \\)); [ \"$c\" = \"$out\" ]");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn test_string_equality_accepts_open_paren_from_vars_and_command_subst() {
+    let (result, _) = run("c='('; out=$(printf '%s' \\(); [ \"$c\" = \"$out\" ]");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 fn function_def_and_call() {
     let output = run_stdout("greet() { echo hello; }; greet");
     assert!(output.contains("hello"), "got: {output}");
@@ -587,6 +817,13 @@ fn command_substitution_in_variable() {
 }
 
 #[test]
+fn env_assignment_uses_command_substitution_exit_status() {
+    let (result, env) = run("x=$(false)");
+    assert_eq!(result.exit_code, 1);
+    assert_eq!(env.exit_code(), 1);
+}
+
+#[test]
 fn command_substitution_strips_trailing_newlines() {
     let output = run_stdout("echo \"$(echo hello)\"");
     // The inner echo outputs "hello\n", capture_command strips trailing newlines
@@ -618,6 +855,20 @@ fn set_e_suppressed_in_if() {
         run_stdout("set -e; if nonexistent_xyz; then echo no; else echo yes; fi; echo after");
     assert!(output.contains("yes"));
     assert!(output.contains("after"));
+}
+
+#[test]
+fn set_e_does_not_abort_on_failed_and_or_list() {
+    let output = run_stdout("set -e; false && true; echo after");
+    assert_eq!(output, "after\n");
+}
+
+#[test]
+fn set_e_is_suppressed_for_entire_if_subshell_condition() {
+    let output = run_stdout(
+        "set -o errexit; if ( echo 1; false; echo 2; set -o errexit; echo 3; false; echo 4 ); then echo 5; fi; echo 6",
+    );
+    assert_eq!(output, "1\n2\n3\n4\n5\n6\n");
 }
 
 #[test]
@@ -995,6 +1246,56 @@ fn trap_print_specific() {
     assert!(output.contains("echo bye"), "got: {output}");
 }
 
+#[test]
+fn exit_trap_status_overrides_prior_command_status() {
+    let (result, _) = run("trap '(true) || echo bug' EXIT; false");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "");
+}
+
+#[test]
+fn subshell_inherits_parent_exit_trap_for_listing_without_running_it() {
+    let output = run_stdout("trap 'echo bye' EXIT; (trap); echo done");
+    assert_eq!(output, "trap -- 'echo bye' EXIT\ndone\nbye\n");
+}
+
+#[test]
+fn invalid_set_o_option_fails() {
+    let (result, _) = run("set -o bad@option && echo BUG4");
+    assert_eq!(
+        result.exit_code,
+        1,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("bad@option"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn eval_parse_error_aborts_noninteractive_script() {
+    let (result, env) = run("eval \"if\"\necho lived\n");
+    assert_eq!(result.exit_code, 1);
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("eval"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(env.exit_requested(), Some(1));
+}
+
 // ── type builtin ────────────────────────────────────────────────────
 
 #[test]
@@ -1066,6 +1367,14 @@ fn hash_output_can_be_redirected_in_pipeline() {
 }
 
 #[test]
+fn hashall_records_commands_from_function_definition_body() {
+    let output = run_stdout("set -h\nhash -r\nf() {\n  ls\n  touch hi\n  rm hi\n}\nhash\n");
+    assert!(output.contains("ls"), "output: {output}");
+    assert!(output.contains("touch"), "output: {output}");
+    assert!(output.contains("rm"), "output: {output}");
+}
+
+#[test]
 fn interactive_history_records_commands_and_respects_nolog() {
     let input = "\
 history | grep history >/dev/null || exit 1
@@ -1103,11 +1412,23 @@ echo ok
 }
 
 #[test]
+fn for_loop_preserves_prior_stdout_when_readonly_iteration_variable_aborts() {
+    let (result, _) = run("(for x in a b c; do echo $x; readonly x; done) && exit 1\nexit 0\n");
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "a\n");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("readonly variable"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 fn jobs_builtin_lists_background_job_with_long_format() {
     let input = "\
-echo hi & pid=$!
+sleep 10 & pid=$!
 jobs -l >job_info
-grep \"echo hi\" job_info >/dev/null || exit 1
+grep \"sleep 10\" job_info >/dev/null || exit 1
 grep \"$pid\" job_info >/dev/null || exit 2
 kill $pid
 echo ok
@@ -1131,6 +1452,103 @@ echo ok
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&result.stdout), "ok\n");
+}
+
+#[test]
+fn wait_builtin_flushes_background_group_output() {
+    let input = "\
+echo hi
+{ sleep 1; echo derp; } &
+echo bye
+wait
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "hi\nbye\nderp\n");
+}
+
+#[test]
+fn wait_builtin_for_signaled_job_preserves_background_output_order() {
+    let input = "\
+( echo first; sleep 10; echo never ) & pid=$!
+sleep 1
+kill $pid
+wait $pid
+echo after:$?
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "first\nafter:143\n");
+}
+
+#[test]
+fn wait_builtin_preserves_background_stdin_consumption() {
+    let input = "\
+exec <in
+cat &
+wait
+";
+    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let saved = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+    std::fs::write("in", "illegible\n").unwrap();
+
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    std::env::set_current_dir(saved).unwrap();
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "illegible\n");
+}
+
+#[test]
+fn exec_input_redirect_registers_readable_shell_fd() {
+    let input = "exec <in\n";
+    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let saved = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+    std::fs::write("in", "illegible\n").unwrap();
+
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    let mut file = env.open_fd_read(0).expect("open shell stdin");
+    let mut buf = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut buf).expect("read shell stdin");
+
+    std::env::set_current_dir(saved).unwrap();
+
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(String::from_utf8_lossy(&buf), "illegible\n");
 }
 
 #[test]
@@ -1194,6 +1612,31 @@ kill -s INT $$
 }
 
 #[test]
+fn background_jobs_do_not_inherit_parent_term_trap_action() {
+    let input = "\
+trap 'echo hi' TERM
+sleep 2 &
+pid=$!
+sleep 0.2
+kill $pid
+sleep 0.2
+wait $pid
+echo $?
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "143\n");
+}
+
+#[test]
 fn exit_trap_runs_at_shell_exit_not_in_subshell_or_command_substitution() {
     let input = "\
 trap 'echo bye' EXIT
@@ -1211,6 +1654,181 @@ echo $(echo hi)
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&result.stdout), "hi\nhi\nbye\n");
+}
+
+#[test]
+fn return_short_circuits_or_list_inside_function() {
+    let input = "\
+f() {
+  return 5 || echo fail passthrough
+}
+f
+echo $?
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "5\n");
+}
+
+#[test]
+fn subshell_break_two_stops_after_break() {
+    let input = "\
+for x in a b
+do
+  (
+    for y in c d
+    do
+      break 2
+    done
+    echo $x
+  )
+done
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "a\nb\n");
+}
+
+#[test]
+fn exit_trap_runs_when_function_subshell_returns() {
+    let input = "\
+f() ( trap 'echo FOO' EXIT; return 5; echo BAR )
+f
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "FOO\n");
+}
+
+#[test]
+fn errexit_applies_inside_signal_trap() {
+    let input = "\
+set -e
+trap 'false; echo BUG' INT
+kill -s INT $$
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        1,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stdout).is_empty());
+}
+
+#[test]
+fn exit_trap_can_run_function_that_returns() {
+    let input = "trap 'f() { false; return; }; f; echo $?' EXIT";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "1\n");
+}
+
+#[test]
+fn special_builtin_prefix_assignments_are_visible_left_to_right_and_persist() {
+    let input = "\
+x=5 y=$((x+2)) :
+echo $x $y
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "5 7\n");
+}
+
+#[test]
+fn plain_assignment_command_without_command_substitution_returns_zero() {
+    let input = "\
+false
+x=hi
+echo $?
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "0\n");
+}
+
+#[test]
+fn function_prefix_redirect_expansion_precedes_assignment_word_expansion() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let old_dir = std::env::current_dir().expect("cwd");
+    std::env::set_current_dir(dir.path()).expect("cd tempdir");
+
+    let input = "\
+show() { echo \"got ${EFF-unset}\"; }
+unset x
+EFF=${x=assign} show 2>${x=redir}
+echo ${EFF-unset after function call}
+[ -f assign ] && echo assign exists && rm assign
+[ -f redir ] && echo redir exists && rm redir
+";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    let result = execute_list(&cmds, input, &mut env);
+
+    std::env::set_current_dir(old_dir).expect("restore cwd");
+
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout),
+        "got redir\nunset after function call\nredir exists\n"
+    );
 }
 
 #[test]

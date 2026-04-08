@@ -84,7 +84,12 @@ fn and_and() {
 fn semicolon() {
     assert_eq!(
         nodes("a ; b"),
-        vec![word_span(0, 1), Token::Semicolon, word_span(4, 5), Token::Eof]
+        vec![
+            word_span(0, 1),
+            Token::Semicolon,
+            word_span(4, 5),
+            Token::Eof
+        ]
     );
 }
 
@@ -92,7 +97,12 @@ fn semicolon() {
 fn semi_semi() {
     assert_eq!(
         nodes("a ;; b"),
-        vec![word_span(0, 1), Token::SemiSemi, word_span(5, 6), Token::Eof]
+        vec![
+            word_span(0, 1),
+            Token::SemiSemi,
+            word_span(5, 6),
+            Token::Eof
+        ]
     );
 }
 
@@ -116,7 +126,12 @@ fn lparen_rparen() {
 fn lparen_paren() {
     assert_eq!(
         nodes("(( x ))"),
-        vec![Token::LParenParen, word_span(3, 4), Token::RParenParen, Token::Eof]
+        vec![
+            Token::LParenParen,
+            word_span(3, 4),
+            Token::RParenParen,
+            Token::Eof
+        ]
     );
 }
 
@@ -132,7 +147,12 @@ fn lbrace_rbrace() {
 fn double_bracket() {
     assert_eq!(
         nodes("[[ x ]]"),
-        vec![Token::LBracketBracket, word_span(3, 4), Token::RBracketBracket, Token::Eof]
+        vec![
+            Token::LBracketBracket,
+            word_span(3, 4),
+            Token::RBracketBracket,
+            Token::Eof
+        ]
     );
 }
 
@@ -143,49 +163,167 @@ fn double_bracket() {
 #[test]
 fn redirect_input() {
     let toks = nodes("< file");
-    assert_eq!(toks, vec![Token::Redirect(RedirectKind::Input), word_span(2, 6), Token::Eof]);
+    assert_eq!(
+        toks,
+        vec![
+            Token::Redirect(RedirectKind::Input),
+            word_span(2, 6),
+            Token::Eof
+        ]
+    );
 }
 
 #[test]
 fn redirect_output() {
     let toks = nodes("> file");
-    assert_eq!(toks, vec![Token::Redirect(RedirectKind::Output), word_span(2, 6), Token::Eof]);
+    assert_eq!(
+        toks,
+        vec![
+            Token::Redirect(RedirectKind::Output),
+            word_span(2, 6),
+            Token::Eof
+        ]
+    );
 }
 
 #[test]
 fn redirect_append() {
     let toks = nodes(">> file");
-    assert_eq!(toks, vec![Token::Redirect(RedirectKind::Append), word_span(3, 7), Token::Eof]);
+    assert_eq!(
+        toks,
+        vec![
+            Token::Redirect(RedirectKind::Append),
+            word_span(3, 7),
+            Token::Eof
+        ]
+    );
 }
 
 #[test]
 fn redirect_clobber() {
     let toks = nodes(">| file");
-    assert_eq!(toks, vec![Token::Redirect(RedirectKind::Clobber), word_span(3, 7), Token::Eof]);
+    assert_eq!(
+        toks,
+        vec![
+            Token::Redirect(RedirectKind::Clobber),
+            word_span(3, 7),
+            Token::Eof
+        ]
+    );
 }
 
 #[test]
 fn redirect_input_output() {
     let toks = nodes("<> file");
-    assert_eq!(toks, vec![Token::Redirect(RedirectKind::InputOutput), word_span(3, 7), Token::Eof]);
+    assert_eq!(
+        toks,
+        vec![
+            Token::Redirect(RedirectKind::InputOutput),
+            word_span(3, 7),
+            Token::Eof
+        ]
+    );
 }
 
 #[test]
 fn redirect_dup_input() {
     let toks = nodes("<& 0");
-    assert_eq!(toks, vec![Token::Redirect(RedirectKind::DupInput), word_span(3, 4), Token::Eof]);
+    assert_eq!(
+        toks,
+        vec![
+            Token::Redirect(RedirectKind::DupInput),
+            word_span(3, 4),
+            Token::Eof
+        ]
+    );
 }
 
 #[test]
 fn redirect_dup_output() {
     let toks = nodes(">& 1");
-    assert_eq!(toks, vec![Token::Redirect(RedirectKind::DupOutput), word_span(3, 4), Token::Eof]);
+    assert_eq!(
+        toks,
+        vec![
+            Token::Redirect(RedirectKind::DupOutput),
+            word_span(3, 4),
+            Token::Eof
+        ]
+    );
 }
 
 #[test]
 fn redirect_both() {
     let toks = nodes("&> file");
-    assert_eq!(toks, vec![Token::Redirect(RedirectKind::Both), word_span(3, 7), Token::Eof]);
+    assert_eq!(
+        toks,
+        vec![
+            Token::Redirect(RedirectKind::Both),
+            word_span(3, 7),
+            Token::Eof
+        ]
+    );
+}
+
+#[test]
+fn plus_parameter_expansion_stays_inside_word() {
+    let toks = nodes("f ${x+hi} a");
+    assert_eq!(
+        toks,
+        vec![
+            word_span(0, 1),
+            word_span(2, 9),
+            word_span(10, 11),
+            Token::Eof
+        ]
+    );
+}
+
+#[test]
+fn command_substitution_with_unset_parameter_word_elision_lexes() {
+    let toks = nodes("[ $(count a $nonesuch b) -eq 2 ]");
+    assert_eq!(
+        toks,
+        vec![
+            word_span(0, 1),
+            word_span(2, 24),
+            word_span(25, 28),
+            word_span(29, 30),
+            word_span(31, 32),
+            Token::Eof
+        ]
+    );
+}
+
+#[test]
+fn function_then_plus_parameter_expansion_tokenizes_as_words() {
+    let toks = nodes("f() { echo $# ; }\nf ${nonesuch+nonempty} a b\nx=foo\nf ${x+hi} a b\n");
+    assert_eq!(
+        toks,
+        vec![
+            word_span(0, 1),
+            Token::LParen,
+            Token::RParen,
+            Token::LBrace,
+            word_span(6, 10),
+            word_span(11, 13),
+            Token::Semicolon,
+            Token::RBrace,
+            Token::Newline,
+            word_span(18, 19),
+            word_span(20, 40),
+            word_span(41, 42),
+            word_span(43, 44),
+            Token::Newline,
+            word_span(45, 50),
+            Token::Newline,
+            word_span(51, 52),
+            word_span(53, 60),
+            word_span(61, 62),
+            word_span(63, 64),
+            Token::Newline,
+            Token::Eof
+        ]
+    );
 }
 
 #[test]
@@ -199,19 +337,40 @@ fn invalid_digit_ampersand_less_sequence_is_lex_error() {
 #[test]
 fn redirect_here_string() {
     let toks = nodes("<<< word");
-    assert_eq!(toks, vec![Token::Redirect(RedirectKind::HereString), word_span(4, 8), Token::Eof]);
+    assert_eq!(
+        toks,
+        vec![
+            Token::Redirect(RedirectKind::HereString),
+            word_span(4, 8),
+            Token::Eof
+        ]
+    );
 }
 
 #[test]
 fn redirect_heredoc() {
     let toks = nodes("<< EOF");
-    assert_eq!(toks, vec![Token::Redirect(RedirectKind::HereDoc), word_span(3, 6), Token::Eof]);
+    assert_eq!(
+        toks,
+        vec![
+            Token::Redirect(RedirectKind::HereDoc),
+            word_span(3, 6),
+            Token::Eof
+        ]
+    );
 }
 
 #[test]
 fn redirect_heredoc_strip() {
     let toks = nodes("<<- EOF");
-    assert_eq!(toks, vec![Token::Redirect(RedirectKind::HereDocStrip), word_span(4, 7), Token::Eof]);
+    assert_eq!(
+        toks,
+        vec![
+            Token::Redirect(RedirectKind::HereDocStrip),
+            word_span(4, 7),
+            Token::Eof
+        ]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -394,13 +553,19 @@ fn iterator_yields_none_after_eof() {
 fn pipeline() {
     let input = "cat file | grep pattern | wc -l";
     let toks = spanned(input);
-    let texts: Vec<_> = toks.iter().map(|t| match &t.node {
-        Token::Word(s) => s.text(input).to_string(),
-        Token::Pipe => "|".to_string(),
-        Token::Eof => "EOF".to_string(),
-        other => format!("{:?}", other),
-    }).collect();
-    assert_eq!(texts, vec!["cat", "file", "|", "grep", "pattern", "|", "wc", "-l", "EOF"]);
+    let texts: Vec<_> = toks
+        .iter()
+        .map(|t| match &t.node {
+            Token::Word(s) => s.text(input).to_string(),
+            Token::Pipe => "|".to_string(),
+            Token::Eof => "EOF".to_string(),
+            other => format!("{:?}", other),
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["cat", "file", "|", "grep", "pattern", "|", "wc", "-l", "EOF"]
+    );
 }
 
 #[test]
@@ -476,6 +641,13 @@ fn backtick_in_word() {
     let input = "echo `date`";
     let toks = spanned(input);
     assert_eq!(toks[1].span.text(input), "`date`");
+}
+
+#[test]
+fn backslash_open_paren_stays_in_word() {
+    let input = "printf '%s' \\(";
+    let toks = spanned(input);
+    assert_eq!(toks[2].span.text(input), "\\(");
 }
 
 #[test]
@@ -701,9 +873,9 @@ fn heredoc_token_sequence() {
     // Verify the token order: Word(cat), Redirect(HereDoc), Word(EOF), Newline, HereDocBody, Eof
     let input = "cat <<EOF\nhello\nEOF\n";
     let toks = nodes(input);
-    assert!(matches!(&toks[0], Token::Word(_)));           // cat
+    assert!(matches!(&toks[0], Token::Word(_))); // cat
     assert!(matches!(&toks[1], Token::Redirect(RedirectKind::HereDoc)));
-    assert!(matches!(&toks[2], Token::Word(_)));           // EOF (delimiter)
+    assert!(matches!(&toks[2], Token::Word(_))); // EOF (delimiter)
     assert!(matches!(&toks[3], Token::Newline));
     assert!(matches!(&toks[4], Token::HereDocBody { .. }));
 }
@@ -732,4 +904,3 @@ fn multiple_heredocs() {
 fn word_span(start: u32, end: u32) -> Token {
     Token::Word(Span::new(start, end))
 }
-

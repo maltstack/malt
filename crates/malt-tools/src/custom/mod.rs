@@ -1,6 +1,7 @@
 pub mod cat;
 pub mod chmod;
 pub mod cp;
+pub mod date;
 pub mod env;
 pub mod fds;
 pub mod grep;
@@ -11,6 +12,7 @@ pub mod mkdir;
 pub mod mv;
 pub mod rm;
 pub mod sed;
+pub mod sleep;
 pub mod touch;
 pub mod wc;
 pub mod which;

@@ -40,7 +40,7 @@ pub enum ExpandError {
 
 /// Expand through full pipeline: tilde -> param -> cmd sub -> arith -> split -> glob -> quote removal.
 pub fn expand_word(word: &str, env: &mut Env) -> Result<Vec<String>, ExpandError> {
-    let expanded = expand_string_inner(word, env, false)?;
+    let expanded = expand_string_inner(word, env, false, false)?;
     let ifs = env.get_str("IFS");
     let ifs = if env.is_set("IFS") {
         ifs.to_string()
@@ -63,19 +63,25 @@ pub fn expand_word(word: &str, env: &mut Env) -> Result<Vec<String>, ExpandError
 
 /// Expand without word splitting or globbing.
 pub fn expand_word_nosplit(word: &str, env: &mut Env) -> Result<String, ExpandError> {
-    let expanded = expand_string_inner(word, env, false)?;
+    let expanded = expand_string_inner(word, env, false, false)?;
+    Ok(strip_sentinels(&expanded))
+}
+
+/// Expand an assignment value without word splitting or globbing.
+pub fn expand_assignment_word_nosplit(word: &str, env: &mut Env) -> Result<String, ExpandError> {
+    let expanded = expand_string_inner(word, env, false, true)?;
     Ok(strip_sentinels(&expanded))
 }
 
 /// Like nosplit but preserves glob escaping from quoted regions for case patterns.
 pub fn expand_word_for_case_pattern(word: &str, env: &mut Env) -> Result<String, ExpandError> {
-    let expanded = expand_string_inner(word, env, false)?;
+    let expanded = expand_string_inner(word, env, false, false)?;
     Ok(strip_sentinels_case_pattern(&expanded))
 }
 
 /// Heredoc body expansion — quotes are literal, only $var and $(cmd) expanded.
 pub fn expand_heredoc_body(body: &str, env: &mut Env) -> Result<String, ExpandError> {
-    let expanded = expand_string_inner(body, env, true)?;
+    let expanded = expand_string_inner(body, env, true, false)?;
     Ok(strip_sentinels(&expanded))
 }
 
@@ -93,9 +99,11 @@ fn expand_string_inner(
     word: &str,
     env: &mut Env,
     heredoc_mode: bool,
+    assignment_mode: bool,
 ) -> Result<String, ExpandError> {
     let mut result = String::new();
     let mut chars = word.chars().peekable();
+    let mut tilde_can_expand = true;
 
     while let Some(&ch) = chars.peek() {
         match ch {
@@ -111,6 +119,7 @@ fn expand_string_inner(
                     result.push(c);
                 }
                 result.push(S_QUOTED);
+                tilde_can_expand = false;
             }
             '"' if !heredoc_mode => {
                 chars.next();
@@ -138,10 +147,12 @@ fn expand_string_inner(
                         '$' => {
                             chars.next();
                             expand_dollar(&mut chars, &mut result, env, true)?;
+                            tilde_can_expand = false;
                         }
                         '`' => {
                             chars.next();
                             expand_backtick(&mut chars, &mut result, env)?;
+                            tilde_can_expand = false;
                         }
                         _ => {
                             chars.next();
@@ -150,21 +161,29 @@ fn expand_string_inner(
                     }
                 }
                 result.push(S_QUOTED);
+                tilde_can_expand = false;
             }
             '$' => {
                 chars.next();
                 expand_dollar(&mut chars, &mut result, env, false)?;
+                tilde_can_expand = false;
             }
             '`' => {
                 chars.next();
                 expand_backtick(&mut chars, &mut result, env)?;
+                tilde_can_expand = false;
             }
-            '~' if !heredoc_mode && result.is_empty() => {
+            '~' if !heredoc_mode && tilde_can_expand => {
                 chars.next();
-                let expanded = expand_tilde(&mut chars, env);
-                result.push(S_QUOTED);
-                result.push_str(&expanded);
-                result.push(S_QUOTED);
+                if matches!(chars.peek().copied(), Some('\'' | '"' | '\\' | '$' | '`')) {
+                    result.push('~');
+                } else {
+                    let expanded = expand_tilde(&mut chars, env, assignment_mode);
+                    result.push(S_QUOTED);
+                    result.push_str(&expanded);
+                    result.push(S_QUOTED);
+                }
+                tilde_can_expand = false;
             }
             '\\' if !heredoc_mode => {
                 chars.next();
@@ -176,6 +195,7 @@ fn expand_string_inner(
                         result.push(S_QUOTED);
                         result.push(next);
                         result.push(S_QUOTED);
+                        tilde_can_expand = false;
                     }
                 }
             }
@@ -183,6 +203,9 @@ fn expand_string_inner(
                 chars.next();
                 if let Some(&next) = chars.peek() {
                     match next {
+                        '\n' => {
+                            chars.next();
+                        }
                         '$' | '`' | '\\' => {
                             chars.next();
                             result.push(next);
@@ -196,6 +219,7 @@ fn expand_string_inner(
             _ => {
                 chars.next();
                 result.push(ch);
+                tilde_can_expand = assignment_mode && ch == ':';
             }
         }
     }
@@ -205,10 +229,14 @@ fn expand_string_inner(
 
 // ── Tilde expansion ──
 
-fn expand_tilde(chars: &mut std::iter::Peekable<std::str::Chars>, env: &Env) -> String {
+fn expand_tilde(
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+    env: &Env,
+    assignment_mode: bool,
+) -> String {
     let mut suffix = String::new();
     while let Some(&c) = chars.peek() {
-        if c == '/' || c == ':' {
+        if c == '/' || (assignment_mode && c == ':') {
             break;
         }
         chars.next();
@@ -244,7 +272,7 @@ fn expand_dollar(
                 let expr = collect_until_double_paren(chars);
                 // Expand any nested constructs (variables, command substitutions)
                 // within the arithmetic expression before evaluating
-                let expanded_expr = expand_string_inner(&expr, env, false)?;
+                let expanded_expr = expand_string_inner(&expr, env, false, false)?;
                 let stripped = strip_sentinels(&expanded_expr);
                 let val = eval_arithmetic(&stripped, env)?;
                 result.push_str(&val.to_string());
@@ -444,7 +472,7 @@ fn expand_brace_param(
         if val_is_nonempty {
             result.push_str(&val);
         } else {
-            result.push_str(&expand_string_inner(&default, env, false)?);
+            result.push_str(&expand_string_inner(&default, env, false, in_double_quote)?);
         }
         return Ok(());
     }
@@ -452,7 +480,7 @@ fn expand_brace_param(
         if val_is_set {
             result.push_str(&val);
         } else {
-            result.push_str(&expand_string_inner(&default, env, false)?);
+            result.push_str(&expand_string_inner(&default, env, false, in_double_quote)?);
         }
         return Ok(());
     }
@@ -462,7 +490,7 @@ fn expand_brace_param(
         if val_is_nonempty {
             result.push_str(&val);
         } else {
-            let expanded = expand_string_inner(&default, env, false)?;
+            let expanded = expand_string_inner(&default, env, false, in_double_quote)?;
             let stored = strip_sentinels(&expanded);
             let _ = env.set(&name, Variable::string(&stored));
             result.push_str(&expanded);
@@ -473,7 +501,7 @@ fn expand_brace_param(
         if val_is_set {
             result.push_str(&val);
         } else {
-            let expanded = expand_string_inner(&default, env, false)?;
+            let expanded = expand_string_inner(&default, env, false, in_double_quote)?;
             let stored = strip_sentinels(&expanded);
             let _ = env.set(&name, Variable::string(&stored));
             result.push_str(&expanded);
@@ -484,7 +512,7 @@ fn expand_brace_param(
     // ${VAR:+alt} / ${VAR+alt}
     if let Some(alt) = try_strip_op(&rest, ":+") {
         if val_is_nonempty {
-            result.push_str(&expand_string_inner(&alt, env, false)?);
+            result.push_str(&expand_string_inner(&alt, env, false, in_double_quote)?);
         } else if !in_double_quote {
             result.push(S_ZERO);
         }
@@ -492,7 +520,7 @@ fn expand_brace_param(
     }
     if let Some(alt) = try_strip_op(&rest, "+") {
         if val_is_set {
-            result.push_str(&expand_string_inner(&alt, env, false)?);
+            result.push_str(&expand_string_inner(&alt, env, false, in_double_quote)?);
         } else if !in_double_quote {
             result.push(S_ZERO);
         }
@@ -504,7 +532,8 @@ fn expand_brace_param(
         if val_is_nonempty {
             result.push_str(&val);
         } else {
-            let expanded_msg = strip_sentinels(&expand_string_inner(&msg, env, false)?);
+            let expanded_msg =
+                strip_sentinels(&expand_string_inner(&msg, env, false, in_double_quote)?);
             let message = if expanded_msg.is_empty() {
                 format!("{}: parameter null or not set", name)
             } else {
@@ -518,7 +547,8 @@ fn expand_brace_param(
         if val_is_set {
             result.push_str(&val);
         } else {
-            let expanded_msg = strip_sentinels(&expand_string_inner(&msg, env, false)?);
+            let expanded_msg =
+                strip_sentinels(&expand_string_inner(&msg, env, false, in_double_quote)?);
             let message = if expanded_msg.is_empty() {
                 format!("{}: parameter not set", name)
             } else {
@@ -583,25 +613,25 @@ fn expand_brace_param(
 
     // ${VAR%%pattern} — largest suffix strip
     if let Some(pat) = try_strip_op(&rest, "%%") {
-        let expanded_pat = expand_string_inner(&pat, env, false)?;
+        let expanded_pat = expand_string_inner(&pat, env, false, false)?;
         result.push_str(&strip_largest_suffix(&val, &expanded_pat));
         return Ok(());
     }
     // ${VAR%pattern} — smallest suffix strip
     if let Some(pat) = try_strip_op(&rest, "%") {
-        let expanded_pat = expand_string_inner(&pat, env, false)?;
+        let expanded_pat = expand_string_inner(&pat, env, false, false)?;
         result.push_str(&strip_smallest_suffix(&val, &expanded_pat));
         return Ok(());
     }
     // ${VAR##pattern} — largest prefix strip
     if let Some(pat) = try_strip_op(&rest, "##") {
-        let expanded_pat = expand_string_inner(&pat, env, false)?;
+        let expanded_pat = expand_string_inner(&pat, env, false, false)?;
         result.push_str(&strip_largest_prefix(&val, &expanded_pat));
         return Ok(());
     }
     // ${VAR#pattern} — smallest prefix strip
     if let Some(pat) = try_strip_op(&rest, "#") {
-        let expanded_pat = expand_string_inner(&pat, env, false)?;
+        let expanded_pat = expand_string_inner(&pat, env, false, false)?;
         result.push_str(&strip_smallest_prefix(&val, &expanded_pat));
         return Ok(());
     }
@@ -609,14 +639,14 @@ fn expand_brace_param(
     // ${VAR//pattern/replacement} — global substitution
     if let Some(pat_rep) = try_strip_op(&rest, "//") {
         let (pat, rep) = split_subst(&pat_rep);
-        let expanded_pat = expand_string_inner(&pat, env, false)?;
+        let expanded_pat = expand_string_inner(&pat, env, false, false)?;
         result.push_str(&shell_replace_all(&val, &expanded_pat, &rep));
         return Ok(());
     }
     // ${VAR/pattern/replacement} — first substitution
     if let Some(pat_rep) = try_strip_op(&rest, "/") {
         let (pat, rep) = split_subst(&pat_rep);
-        let expanded_pat = expand_string_inner(&pat, env, false)?;
+        let expanded_pat = expand_string_inner(&pat, env, false, false)?;
         result.push_str(&shell_replace_first(&val, &expanded_pat, &rep));
         return Ok(());
     }
@@ -626,7 +656,7 @@ fn expand_brace_param(
         if pat.is_empty() {
             result.push_str(&val.to_uppercase());
         } else {
-            let expanded_pat = expand_string_inner(pat, env, false)?;
+            let expanded_pat = expand_string_inner(pat, env, false, false)?;
             let s: String = val
                 .chars()
                 .map(|c| {
@@ -649,7 +679,7 @@ fn expand_brace_param(
                 let matches = if pat.is_empty() {
                     true
                 } else {
-                    let expanded_pat = expand_string_inner(pat, env, false)?;
+                    let expanded_pat = expand_string_inner(pat, env, false, false)?;
                     shell_pattern_match(&c.to_string(), &expanded_pat)
                 };
                 let upper = if matches {
@@ -671,7 +701,7 @@ fn expand_brace_param(
         if pat.is_empty() {
             result.push_str(&val.to_lowercase());
         } else {
-            let expanded_pat = expand_string_inner(pat, env, false)?;
+            let expanded_pat = expand_string_inner(pat, env, false, false)?;
             let s: String = val
                 .chars()
                 .map(|c| {
@@ -694,7 +724,7 @@ fn expand_brace_param(
                 let matches = if pat.is_empty() {
                     true
                 } else {
-                    let expanded_pat = expand_string_inner(pat, env, false)?;
+                    let expanded_pat = expand_string_inner(pat, env, false, false)?;
                     shell_pattern_match(&c.to_string(), &expanded_pat)
                 };
                 let lower = if matches {
@@ -935,10 +965,34 @@ fn match_bracket_class(ch: u8, pattern: &[u8]) -> Option<(bool, usize)> {
         i += 1;
     }
     let mut matched = false;
-    let start = i;
+    let mut consumed_any = false;
+
+    if i < pattern.len() && pattern[i] == b']' {
+        matched |= ch == b']';
+        i += 1;
+        consumed_any = true;
+    }
+    if i < pattern.len() && pattern[i] == b'-' {
+        matched |= ch == b'-';
+        i += 1;
+        consumed_any = true;
+    }
+
     while i < pattern.len() {
-        if pattern[i] == b']' && i > start {
+        if pattern[i] == b']' && consumed_any {
             return Some((matched ^ negate, i + 1));
+        }
+        if pattern[i] == b'\\' && i + 1 < pattern.len() {
+            matched |= ch == pattern[i + 1];
+            i += 2;
+            consumed_any = true;
+            continue;
+        }
+        if let Some((class_matched, consumed)) = match_posix_bracket_item(ch, &pattern[i..]) {
+            matched |= class_matched;
+            i += consumed;
+            consumed_any = true;
+            continue;
         }
         if i + 2 < pattern.len() && pattern[i + 1] == b'-' && pattern[i + 2] != b']' {
             let lo = pattern[i];
@@ -947,14 +1001,56 @@ fn match_bracket_class(ch: u8, pattern: &[u8]) -> Option<(bool, usize)> {
                 matched = true;
             }
             i += 3;
+            consumed_any = true;
         } else {
             if pattern[i] == ch {
                 matched = true;
             }
             i += 1;
+            consumed_any = true;
         }
     }
     None // unclosed bracket
+}
+
+fn match_posix_bracket_item(ch: u8, pattern: &[u8]) -> Option<(bool, usize)> {
+    if pattern.len() < 4 || pattern[0] != b'[' {
+        return None;
+    }
+
+    match pattern[1] {
+        b':' => {
+            let end = pattern[2..].windows(2).position(|window| window == b":]")?;
+            let class_name = std::str::from_utf8(&pattern[2..2 + end]).ok()?;
+            Some((matches_posix_class(ch, class_name), 2 + end + 2))
+        }
+        b'.' | b'=' => {
+            if pattern.len() >= 5 && pattern[3] == pattern[1] && pattern[4] == b']' {
+                Some((ch == pattern[2], 5))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn matches_posix_class(ch: u8, class_name: &str) -> bool {
+    match class_name {
+        "alnum" => ch.is_ascii_alphanumeric(),
+        "alpha" => ch.is_ascii_alphabetic(),
+        "blank" => matches!(ch, b' ' | b'\t'),
+        "cntrl" => ch.is_ascii_control(),
+        "digit" => ch.is_ascii_digit(),
+        "graph" => ch.is_ascii_graphic(),
+        "lower" => ch.is_ascii_lowercase(),
+        "print" => !ch.is_ascii_control(),
+        "punct" => ch.is_ascii_punctuation(),
+        "space" => matches!(ch, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'),
+        "upper" => ch.is_ascii_uppercase(),
+        "xdigit" => ch.is_ascii_hexdigit(),
+        _ => false,
+    }
 }
 
 // ── Strip / replace helpers ──
@@ -1057,6 +1153,13 @@ fn expand_simple_var(
     env: &mut Env,
     in_double_quote: bool,
 ) -> Result<(), ExpandError> {
+    fn positional_args(env: &Env) -> Vec<String> {
+        let count = env.get_str("#").parse::<usize>().unwrap_or(0);
+        (1..=count)
+            .map(|i| env.get_str(&i.to_string()).to_string())
+            .collect()
+    }
+
     // Collect variable name
     let mut name = String::new();
     if let Some(&c) = chars.peek() {
@@ -1088,16 +1191,38 @@ fn expand_simple_var(
     let val = env.get_str(&name).to_string();
 
     if name == "@" && in_double_quote {
-        // "$@" — each arg as separate field with hard boundaries
-        let args: Vec<String> = (1..)
-            .map(|i| env.get_str(&i.to_string()).to_string())
-            .take_while(|s| !s.is_empty())
-            .collect();
+        // "$@" — each arg as separate field with hard boundaries.
+        let args = positional_args(env);
         for (i, arg) in args.iter().enumerate() {
             if i > 0 {
                 result.push(S_BOUNDARY);
             }
             result.push_str(arg);
+        }
+    } else if name == "*" {
+        let args = positional_args(env);
+        let ifs = if env.is_set("IFS") {
+            env.get_str("IFS")
+        } else {
+            " \t\n"
+        };
+        let sep = if ifs.is_empty() {
+            String::new()
+        } else {
+            ifs.chars().next().unwrap().to_string()
+        };
+
+        if in_double_quote {
+            result.push_str(&args.join(&sep));
+        } else if ifs.is_empty() {
+            for (i, arg) in args.iter().enumerate() {
+                if i > 0 {
+                    result.push(S_BOUNDARY);
+                }
+                result.push_str(arg);
+            }
+        } else {
+            result.push_str(&args.join(&sep));
         }
     } else {
         result.push_str(&val);
@@ -1120,8 +1245,18 @@ fn expand_backtick(
         if c == '\\' {
             chars.next();
             if let Some(&next) = chars.peek() {
-                chars.next();
-                cmd.push(next);
+                match next {
+                    '$' | '`' | '\\' => {
+                        chars.next();
+                        cmd.push(next);
+                    }
+                    '\n' => {
+                        chars.next();
+                    }
+                    _ => cmd.push('\\'),
+                }
+            } else {
+                cmd.push('\\');
             }
         } else {
             chars.next();
@@ -1189,6 +1324,43 @@ fn collect_until_close_paren(chars: &mut std::iter::Peekable<std::str::Chars>) -
     let mut cmd = String::new();
     let mut depth = 1;
     while let Some(c) = chars.next() {
+        if c == '\\' {
+            cmd.push(c);
+            if let Some(next) = chars.next() {
+                cmd.push(next);
+            }
+            continue;
+        }
+        if c == '\'' {
+            cmd.push(c);
+            while let Some(next) = chars.next() {
+                cmd.push(next);
+                if next == '\'' {
+                    break;
+                }
+                if next == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        cmd.push(escaped);
+                    }
+                }
+            }
+            continue;
+        }
+        if c == '"' {
+            cmd.push(c);
+            while let Some(next) = chars.next() {
+                cmd.push(next);
+                if next == '"' {
+                    break;
+                }
+                if next == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        cmd.push(escaped);
+                    }
+                }
+            }
+            continue;
+        }
         if c == '(' {
             depth += 1;
         }
@@ -1410,6 +1582,11 @@ fn contains_glob_chars(s: &str) -> bool {
     false
 }
 
+fn has_windows_drive_prefix(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
 /// Convert a sentinel-decorated field to a glob pattern string.
 ///
 /// Chars inside `\u{E001}..\u{E001}` pairs are quoted (literal); glob metacharacters
@@ -1443,6 +1620,13 @@ fn expand_pathname(field: &str) -> Vec<String> {
     }
 
     let original_stripped = strip_sentinels(field);
+    if !original_stripped.starts_with('/') && !has_windows_drive_prefix(&original_stripped) {
+        let matches = expand_relative_pathname(field);
+        if !matches.is_empty() {
+            return matches;
+        }
+    }
+
     let glob_pat = sentinel_to_glob_pattern(field);
 
     let opts = glob::MatchOptions {
@@ -1478,6 +1662,104 @@ fn expand_pathname(field: &str) -> Vec<String> {
     }
 }
 
+#[derive(Clone)]
+struct PathnameCandidate {
+    fs_path: std::path::PathBuf,
+    display_path: String,
+}
+
+fn expand_relative_pathname(field: &str) -> Vec<String> {
+    let Ok(start_dir) = std::env::current_dir() else {
+        return Vec::new();
+    };
+
+    let mut candidates = vec![PathnameCandidate {
+        fs_path: start_dir,
+        display_path: String::new(),
+    }];
+
+    for (index, segment) in field.split('/').enumerate() {
+        if index > 0 {
+            for candidate in &mut candidates {
+                candidate.display_path.push('/');
+            }
+        }
+
+        if segment.is_empty() {
+            continue;
+        }
+
+        if !contains_glob_chars(segment) {
+            let literal = strip_sentinels(segment);
+            for candidate in &mut candidates {
+                candidate.fs_path.push(&literal);
+                candidate.display_path.push_str(&literal);
+            }
+            continue;
+        }
+
+        let segment_pattern = strip_sentinels_case_pattern(segment);
+        let mut next = Vec::new();
+        for candidate in &candidates {
+            next.extend(match_path_segment(candidate, &segment_pattern));
+        }
+        if next.is_empty() {
+            return Vec::new();
+        }
+        candidates = next;
+    }
+
+    let mut matches: Vec<String> = candidates
+        .into_iter()
+        .map(|candidate| candidate.display_path)
+        .collect();
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+fn match_path_segment(candidate: &PathnameCandidate, pattern: &str) -> Vec<PathnameCandidate> {
+    let mut matches = Vec::new();
+    let match_dotfiles = pattern.starts_with('.');
+
+    if match_dotfiles && shell_pattern_match(".", pattern) {
+        let mut next = candidate.clone();
+        next.display_path.push('.');
+        matches.push(next);
+    }
+
+    if match_dotfiles && shell_pattern_match("..", pattern) {
+        let mut next = candidate.clone();
+        next.display_path.push_str("..");
+        if let Some(parent) = candidate.fs_path.parent() {
+            next.fs_path = parent.to_path_buf();
+        }
+        matches.push(next);
+    }
+
+    let read_dir = match std::fs::read_dir(&candidate.fs_path) {
+        Ok(read_dir) => read_dir,
+        Err(_) => return matches,
+    };
+
+    for entry in read_dir.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') && !match_dotfiles {
+            continue;
+        }
+        if !shell_pattern_match(&name, pattern) {
+            continue;
+        }
+
+        let mut next = candidate.clone();
+        next.fs_path = entry.path();
+        next.display_path.push_str(&name);
+        matches.push(next);
+    }
+
+    matches
+}
+
 // ── Quote removal ──
 
 fn strip_sentinels(s: &str) -> String {
@@ -1493,7 +1775,7 @@ fn strip_sentinels_case_pattern(s: &str) -> String {
         match c {
             S_QUOTED => in_quoted = !in_quoted,
             S_BOUNDARY | S_ZERO | S_LITERAL => {}
-            '*' | '?' | '[' | ']' if in_quoted => {
+            '*' | '?' | '[' | ']' | '\\' if in_quoted => {
                 result.push('\\');
                 result.push(c);
             }

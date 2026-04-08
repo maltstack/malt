@@ -70,11 +70,21 @@ fn helper_inventory() -> &'static [&'static str] {
 }
 
 fn helper_dir_for(test_tmpdir: &Path) -> PathBuf {
-    test_tmpdir.join("test-util")
+    test_tmpdir.join("support").join("test-util")
+}
+
+fn workspace_dir_for(test_tmpdir: &Path) -> PathBuf {
+    test_tmpdir.join("work")
+}
+
+fn process_temp_dir_for(test_tmpdir: &Path) -> PathBuf {
+    test_tmpdir.join("support").join("tmp")
 }
 
 fn staged_script_path(test_tmpdir: &Path, test_name: &str) -> PathBuf {
-    test_tmpdir.join(format!("{test_name}.test"))
+    test_tmpdir
+        .join("support")
+        .join(format!("{test_name}.test"))
 }
 
 fn helper_executable_name(name: &str) -> String {
@@ -132,25 +142,41 @@ fn resolve_helper_binary_path_for(
     current_test_exe: &Path,
 ) -> Result<PathBuf, String> {
     let mut checked = Vec::new();
+    let mut existing = Vec::new();
 
     if let Some(path) = env_candidate {
         checked.push(path.display().to_string());
         if path.exists() {
-            return Ok(path);
+            existing.push(path);
         }
     }
 
     for candidate in helper_binary_fallback_candidates(current_test_exe, helper_name) {
         checked.push(candidate.display().to_string());
         if candidate.exists() {
-            return Ok(candidate);
+            existing.push(candidate);
         }
+    }
+
+    if let Some(path) = newest_existing_helper(existing) {
+        return Ok(path);
     }
 
     Err(format!(
         "helper {helper_name} could not be resolved from cargo test context; checked {}",
         checked.join(", ")
     ))
+}
+
+fn newest_existing_helper(candidates: Vec<PathBuf>) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .filter_map(|path| {
+            let modified = fs::metadata(&path).ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
 }
 
 fn resolve_helper_binary_path(helper_name: &str) -> Result<PathBuf, String> {
@@ -177,6 +203,10 @@ fn stage_helpers(test_tmpdir: &Path) -> Result<PathBuf, String> {
 
 fn stage_test_script(test_tmpdir: &Path, test_name: &str, script: &str) -> Result<PathBuf, String> {
     let script_path = staged_script_path(test_tmpdir, test_name);
+    if let Some(parent) = script_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create staged script dir {}: {e}", parent.display()))?;
+    }
     fs::write(&script_path, script)
         .map_err(|e| format!("write staged test script {}: {e}", script_path.display()))?;
     Ok(script_path)
@@ -230,31 +260,74 @@ fn render_failure_label(kind: FailureKind) -> &'static str {
 }
 
 fn build_runner_env(
-    test_tmpdir: &Path,
+    workspace_dir: &Path,
+    process_temp_dir: &Path,
     helper_dir: &Path,
     mash: &Path,
     inherited_path: &str,
 ) -> Vec<(String, String)> {
-    vec![
-        ("PATH".to_string(), inherited_path.to_string()),
+    let helper_dir_shell = helper_dir.to_string_lossy().replace('\\', "/");
+    let mash_dir = mash.parent().unwrap_or_else(|| Path::new(""));
+    #[cfg(windows)]
+    let path_sep = ';';
+    #[cfg(not(windows))]
+    let path_sep = ':';
+    let path_value = if mash_dir.as_os_str().is_empty() {
+        inherited_path.to_string()
+    } else if inherited_path.is_empty() {
+        mash_dir.to_string_lossy().into_owned()
+    } else {
+        format!("{}{}{}", mash_dir.to_string_lossy(), path_sep, inherited_path)
+    };
+    #[cfg(windows)]
+    let test_shell = mash
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("mash")
+        .to_string();
+    #[cfg(not(windows))]
+    let test_shell = mash.to_string_lossy().replace('\\', "/");
+    let mut envs = vec![
+        ("PATH".to_string(), path_value),
         (
             "HOME".to_string(),
-            env::var("HOME").unwrap_or_else(|_| test_tmpdir.to_string_lossy().to_string()),
+            env::var("HOME").unwrap_or_else(|_| workspace_dir.to_string_lossy().to_string()),
+        ),
+        (
+            "LOGNAME".to_string(),
+            env::var("LOGNAME")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "malt-user".to_string()),
         ),
         ("TERM".to_string(), "dumb".to_string()),
-        (
-            "TEST_SHELL".to_string(),
-            mash.to_string_lossy().into_owned(),
-        ),
-        (
-            "TEST_UTIL".to_string(),
-            helper_dir.to_string_lossy().into_owned(),
-        ),
+        ("TEST_SHELL".to_string(), test_shell),
+        ("TEST_UTIL".to_string(), helper_dir_shell),
         (
             "PWD".to_string(),
-            test_tmpdir.to_string_lossy().to_string().replace('\\', "/"),
+            workspace_dir
+                .to_string_lossy()
+                .to_string()
+                .replace('\\', "/"),
         ),
-    ]
+    ];
+
+    #[cfg(windows)]
+    {
+        let temp = process_temp_dir.to_string_lossy().into_owned();
+        envs.push(("TEMP".to_string(), temp.clone()));
+        envs.push(("TMP".to_string(), temp));
+    }
+
+    #[cfg(not(windows))]
+    {
+        envs.push((
+            "TMPDIR".to_string(),
+            process_temp_dir.to_string_lossy().into_owned(),
+        ));
+    }
+
+    envs
 }
 
 fn render_summary(
@@ -275,6 +348,13 @@ fn render_summary(
          skipped unsupported: {skipped_unsupported}\n\
          harness failures: {harness_failures}\n\
          shell failures: {shell_failures}\n"
+    )
+}
+
+fn should_print_full_failure_list() -> bool {
+    matches!(
+        env::var("MASH_SMOOSH_FULL_FAILURES").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
     )
 }
 
@@ -356,6 +436,22 @@ fn run_test(name: &str, test_dir: &Path, mash: &Path) -> TestOutcome {
             format!("could not create tmpdir: {e}"),
         );
     }
+    let workspace_dir = workspace_dir_for(&test_tmpdir_path);
+    if let Err(e) = fs::create_dir_all(&workspace_dir) {
+        return TestOutcome::failed(
+            name,
+            FailureKind::Harness,
+            format!("could not create workspace dir: {e}"),
+        );
+    }
+    let process_temp_dir = process_temp_dir_for(&test_tmpdir_path);
+    if let Err(e) = fs::create_dir_all(&process_temp_dir) {
+        return TestOutcome::failed(
+            name,
+            FailureKind::Harness,
+            format!("could not create process temp dir: {e}"),
+        );
+    }
 
     let helper_dir = match stage_helpers(&test_tmpdir_path) {
         Ok(dir) => dir,
@@ -380,15 +476,21 @@ fn run_test(name: &str, test_dir: &Path, mash: &Path) -> TestOutcome {
     #[cfg(not(windows))]
     let path_val = env::var("PATH").unwrap_or_default();
 
-    let runner_env = build_runner_env(&test_tmpdir_path, &helper_dir, mash, &path_val);
+    let runner_env = build_runner_env(
+        &workspace_dir,
+        &process_temp_dir,
+        &helper_dir,
+        mash,
+        &path_val,
+    );
     let mash_str = mash.to_string_lossy().into_owned();
 
     let mut command = Command::new(&mash_str);
     command
-        .arg(staged_script.file_name().unwrap_or_default())
+        .arg(&staged_script)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .current_dir(&test_tmpdir_path)
+        .current_dir(&workspace_dir)
         .env_clear();
 
     for (key, value) in runner_env {
@@ -512,6 +614,13 @@ fn helper_stage_dir_is_under_test_tmpdir() {
         helper_dir.file_name().and_then(|s| s.to_str()),
         Some("test-util")
     );
+    assert_eq!(
+        helper_dir
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|s| s.to_str()),
+        Some("support")
+    );
 }
 
 #[test]
@@ -519,11 +628,28 @@ fn staged_script_is_written_inside_test_tmpdir() {
     let tmp = tempfile::tempdir().expect("create tempdir");
     let script_path =
         stage_test_script(tmp.path(), "sample.testcase", "echo ok\n").expect("stage script");
-    assert_eq!(script_path, tmp.path().join("sample.testcase.test"));
+    assert_eq!(
+        script_path,
+        tmp.path().join("support").join("sample.testcase.test")
+    );
     assert_eq!(
         fs::read_to_string(&script_path).expect("read staged script"),
         "echo ok\n"
     );
+}
+
+#[test]
+fn workspace_dir_is_separate_from_support_and_process_temp_dirs() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let workspace_dir = workspace_dir_for(tmp.path());
+    let helper_dir = helper_dir_for(tmp.path());
+    let process_temp_dir = process_temp_dir_for(tmp.path());
+
+    assert_eq!(workspace_dir, tmp.path().join("work"));
+    assert_eq!(process_temp_dir, tmp.path().join("support").join("tmp"));
+    assert!(helper_dir.starts_with(tmp.path().join("support")));
+    assert!(!helper_dir.starts_with(&workspace_dir));
+    assert_ne!(workspace_dir, process_temp_dir);
 }
 
 #[test]
@@ -601,6 +727,29 @@ fn helper_resolution_falls_back_to_target_layout_when_env_path_missing() {
 }
 
 #[test]
+fn helper_resolution_prefers_newer_existing_binary() {
+    let temp = tempfile::tempdir().expect("create tempdir");
+    let target_debug = temp.path().join("target").join("debug");
+    let deps_dir = target_debug.join("deps");
+    fs::create_dir_all(&deps_dir).expect("create deps dir");
+
+    let current_test_exe = deps_dir.join("smoosh_runner.exe");
+    fs::write(&current_test_exe, b"test").expect("write current test exe");
+
+    let env_helper = deps_dir.join(helper_executable_name("getenv"));
+    fs::write(&env_helper, b"stale").expect("write stale env helper");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    let fresh_helper = target_debug.join(helper_executable_name("getenv"));
+    fs::write(&fresh_helper, b"fresh").expect("write fresh helper");
+
+    let resolved = resolve_helper_binary_path_for("getenv", Some(env_helper), &current_test_exe)
+        .expect("resolve freshest helper");
+
+    assert_eq!(resolved, fresh_helper);
+}
+
+#[test]
 fn helper_resolution_error_mentions_cargo_test_context() {
     let current_test_exe = PathBuf::from("C:/repo/target/debug/deps/smoosh_runner.exe");
     let error = resolve_helper_binary_path_for("getenv", None, &current_test_exe)
@@ -608,6 +757,23 @@ fn helper_resolution_error_mentions_cargo_test_context() {
 
     assert!(error.contains("cargo test context"));
     assert!(error.contains("getenv.exe"));
+}
+
+#[test]
+#[cfg(windows)]
+fn staged_argv_helper_honors_mash_argv0_override() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let helper_dir = stage_helpers(tmp.path()).expect("stage helpers");
+    let output = Command::new(helper_dir.join(helper_executable_name("argv")))
+        .env("MASH_ARGV0", "argv")
+        .output()
+        .expect("run staged argv helper");
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "argv[0] = \"argv\";\n"
+    );
 }
 
 #[test]
@@ -624,8 +790,11 @@ fn shell_failure_reason_is_tagged() {
 fn test_util_env_points_to_staged_helper_dir() {
     let tmp = std::env::temp_dir().join("mash_runner_test_util_env_test");
     let helper_dir = helper_dir_for(&tmp);
+    let workspace_dir = workspace_dir_for(&tmp);
+    let process_temp_dir = process_temp_dir_for(&tmp);
     let envs = build_runner_env(
-        &tmp,
+        &workspace_dir,
+        &process_temp_dir,
         &helper_dir,
         Path::new("C:/mash.exe"),
         "C:/windows/system32",
@@ -637,8 +806,130 @@ fn test_util_env_points_to_staged_helper_dir() {
 
     assert_eq!(
         test_util.as_deref(),
-        Some(helper_dir.to_string_lossy().as_ref())
+        Some(helper_dir.to_string_lossy().replace('\\', "/").as_ref())
     );
+}
+
+#[test]
+#[cfg(windows)]
+fn test_util_env_uses_shell_style_separators() {
+    let tmp = PathBuf::from(r"C:\tmp\smoosh");
+    let helper_dir = helper_dir_for(&tmp);
+    let workspace_dir = workspace_dir_for(&tmp);
+    let process_temp_dir = process_temp_dir_for(&tmp);
+    let envs = build_runner_env(
+        &workspace_dir,
+        &process_temp_dir,
+        &helper_dir,
+        Path::new(r"C:\bin\mash.exe"),
+        r"C:\Windows\System32",
+    );
+    let test_util = envs
+        .iter()
+        .find(|(k, _)| k == "TEST_UTIL")
+        .map(|(_, v)| v.clone());
+
+    assert_eq!(
+        test_util.as_deref(),
+        Some("C:/tmp/smoosh/support/test-util")
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn test_shell_env_uses_command_token() {
+    let tmp = PathBuf::from(r"C:\tmp\smoosh");
+    let helper_dir = helper_dir_for(&tmp);
+    let workspace_dir = workspace_dir_for(&tmp);
+    let process_temp_dir = process_temp_dir_for(&tmp);
+    let envs = build_runner_env(
+        &workspace_dir,
+        &process_temp_dir,
+        &helper_dir,
+        Path::new(r"C:\bin\mash.exe"),
+        r"C:\Windows\System32",
+    );
+    let test_shell = envs
+        .iter()
+        .find(|(k, _)| k == "TEST_SHELL")
+        .map(|(_, v)| v.clone());
+
+    assert_eq!(test_shell.as_deref(), Some("mash"));
+}
+
+#[test]
+fn runner_env_path_prepends_mash_directory() {
+    let tmp = std::env::temp_dir().join("mash_runner_path_prepend_test");
+    let helper_dir = helper_dir_for(&tmp);
+    let workspace_dir = workspace_dir_for(&tmp);
+    let process_temp_dir = process_temp_dir_for(&tmp);
+    #[cfg(windows)]
+    let mash = Path::new(r"C:\bin\mash.exe");
+    #[cfg(not(windows))]
+    let mash = Path::new("/opt/mash/bin/mash");
+    #[cfg(windows)]
+    let inherited = r"C:\Windows\System32";
+    #[cfg(not(windows))]
+    let inherited = "/usr/bin";
+
+    let envs = build_runner_env(
+        &workspace_dir,
+        &process_temp_dir,
+        &helper_dir,
+        mash,
+        inherited,
+    );
+    let path = envs
+        .iter()
+        .find(|(k, _)| k == "PATH")
+        .map(|(_, v)| v.clone())
+        .expect("PATH should be set");
+
+    #[cfg(windows)]
+    assert_eq!(path, r"C:\bin;C:\Windows\System32");
+    #[cfg(not(windows))]
+    assert_eq!(path, "/opt/mash/bin:/usr/bin");
+}
+
+#[test]
+fn runner_env_sets_process_tempdir_inside_test_tmpdir() {
+    let tmp = std::env::temp_dir().join("mash_runner_process_tempdir_test");
+    let helper_dir = helper_dir_for(&tmp);
+    let workspace_dir = workspace_dir_for(&tmp);
+    let process_temp_dir = process_temp_dir_for(&tmp);
+    let envs = build_runner_env(
+        &workspace_dir,
+        &process_temp_dir,
+        &helper_dir,
+        Path::new("C:/mash.exe"),
+        "C:/windows/system32",
+    );
+
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            envs.iter()
+                .find(|(k, _)| k == "TEMP")
+                .map(|(_, v)| v.as_str()),
+            Some(process_temp_dir.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            envs.iter()
+                .find(|(k, _)| k == "TMP")
+                .map(|(_, v)| v.as_str()),
+            Some(process_temp_dir.to_string_lossy().as_ref())
+        );
+    }
+
+    #[cfg(not(windows))]
+    {
+        assert_eq!(
+            envs.iter()
+                .find(|(k, _)| k == "TMPDIR")
+                .map(|(_, v)| v.as_str()),
+            Some(process_temp_dir.to_string_lossy().as_ref())
+        );
+    }
 }
 
 #[test]
@@ -741,15 +1032,20 @@ fn smoosh_conformance_tests() {
 
     if !failures.is_empty() {
         println!("\nFailing tests:");
-        for (name, kind, reason) in &failures[..10.min(failures.len())] {
+        let display_limit = if should_print_full_failure_list() {
+            failures.len()
+        } else {
+            10
+        };
+        for (name, kind, reason) in &failures[..display_limit.min(failures.len())] {
             let label = render_failure_label(*kind);
             println!("  FAIL  [{label}] {name}");
             if !reason.is_empty() {
                 println!("        {reason}");
             }
         }
-        if failures.len() > 10 {
-            println!("  ... and {} more failures", failures.len() - 10);
+        if failures.len() > display_limit {
+            println!("  ... and {} more failures", failures.len() - display_limit);
         }
     }
 

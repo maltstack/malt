@@ -16,6 +16,9 @@ fn main() {
     }
 }
 
+const MASH_FD_ALIASES_ENV: &str = "MASH_FD_ALIASES";
+const MASH_FD_SNAPSHOTS_ENV: &str = "MASH_FD_SNAPSHOTS";
+
 fn parse_bound(value: Option<&String>, default: i32) -> i32 {
     value
         .and_then(|value| value.parse().ok())
@@ -24,6 +27,9 @@ fn parse_bound(value: Option<&String>, default: i32) -> i32 {
 
 #[cfg(unix)]
 fn is_fd_open(fd: i32) -> bool {
+    if shell_managed_fd_is_open(fd) {
+        return true;
+    }
     unsafe extern "C" {
         fn fcntl(fd: i32, cmd: i32, ...) -> i32;
     }
@@ -34,6 +40,9 @@ fn is_fd_open(fd: i32) -> bool {
 
 #[cfg(windows)]
 fn is_fd_open(fd: i32) -> bool {
+    if shell_managed_fd_is_open(fd) {
+        return true;
+    }
     unsafe extern "C" {
         fn _close(fd: i32) -> i32;
         fn _dup(fd: i32) -> i32;
@@ -51,6 +60,52 @@ fn is_fd_open(fd: i32) -> bool {
         let _ = _close(duplicated);
     }
     true
+}
+
+fn shell_managed_fd_is_open(fd: i32) -> bool {
+    env_declares_fd(fd, MASH_FD_ALIASES_ENV, ':') || env_declares_fd(fd, MASH_FD_SNAPSHOTS_ENV, '|')
+}
+
+fn env_declares_fd(fd: i32, env_name: &str, separator: char) -> bool {
+    let Ok(spec) = std::env::var(env_name) else {
+        return false;
+    };
+    spec.split(',')
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| entry.split_once(separator))
+        .filter_map(|(fd_text, _)| fd_text.parse::<i32>().ok())
+        .any(|declared_fd| declared_fd == fd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alias_env_marks_declared_fd_open() {
+        unsafe {
+            std::env::set_var(MASH_FD_ALIASES_ENV, "3:1,4:2");
+        }
+        assert!(shell_managed_fd_is_open(3));
+        assert!(shell_managed_fd_is_open(4));
+        assert!(!shell_managed_fd_is_open(5));
+        unsafe {
+            std::env::remove_var(MASH_FD_ALIASES_ENV);
+        }
+    }
+
+    #[test]
+    fn snapshot_env_marks_declared_fd_open() {
+        unsafe {
+            std::env::set_var(MASH_FD_SNAPSHOTS_ENV, "5|616263,6|646566");
+        }
+        assert!(shell_managed_fd_is_open(5));
+        assert!(shell_managed_fd_is_open(6));
+        assert!(!shell_managed_fd_is_open(7));
+        unsafe {
+            std::env::remove_var(MASH_FD_SNAPSHOTS_ENV);
+        }
+    }
 }
 
 #[cfg(windows)]

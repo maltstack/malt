@@ -21,7 +21,10 @@ pub fn ln(args: &[String], _stdin: &[u8]) -> BuiltinResult {
             "-f" => force = true,
             "--" => {}
             _ if arg.starts_with('-') && arg.len() > 1 => {
-                return BuiltinResult::failure(1, format!("ln: unsupported option '{}'\n", arg).into());
+                return BuiltinResult::failure(
+                    1,
+                    format!("ln: unsupported option '{}'\n", arg).into(),
+                );
             }
             _ => operands.push(arg),
         }
@@ -54,9 +57,8 @@ pub fn ln(args: &[String], _stdin: &[u8]) -> BuiltinResult {
             match Path::new(source).file_name() {
                 Some(name) => destination.join(name),
                 None => {
-                    stderr.extend_from_slice(
-                        format!("ln: invalid source '{}'\n", source).as_bytes(),
-                    );
+                    stderr
+                        .extend_from_slice(format!("ln: invalid source '{}'\n", source).as_bytes());
                     exit_code = 1;
                     continue;
                 }
@@ -140,7 +142,12 @@ mod tests {
 
         #[cfg(unix)]
         {
-            assert_eq!(result.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&result.stderr));
+            assert_eq!(
+                result.exit_code,
+                0,
+                "stderr: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
             assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
         }
 
@@ -175,7 +182,12 @@ mod tests {
             b"",
         );
         #[cfg(unix)]
-        assert_eq!(initial.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&initial.stderr));
+        assert_eq!(
+            initial.exit_code,
+            0,
+            "stderr: {}",
+            String::from_utf8_lossy(&initial.stderr)
+        );
 
         #[cfg(windows)]
         if initial.exit_code != 0 {
@@ -197,7 +209,12 @@ mod tests {
             b"",
         );
 
-        assert_eq!(replaced.exit_code, 0, "stderr: {}", String::from_utf8_lossy(&replaced.stderr));
+        assert_eq!(
+            replaced.exit_code,
+            0,
+            "stderr: {}",
+            String::from_utf8_lossy(&replaced.stderr)
+        );
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
         assert_eq!(fs::read_to_string(&link).unwrap(), "second");
     }

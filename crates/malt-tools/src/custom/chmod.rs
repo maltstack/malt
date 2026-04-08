@@ -20,6 +20,12 @@ pub fn chmod(args: &[String], _stdin: &[u8]) -> BuiltinResult {
 
     let mut i = 0;
     while i < args.len() {
+        if mode_str.is_none() && looks_like_shorthand_mode(&args[i]) {
+            mode_str = Some(&args[i]);
+            i += 1;
+            continue;
+        }
+
         match args[i].as_str() {
             "-R" | "-r" | "--recursive" => recursive = true,
             "-f" | "--force" => { /* ignore errors */ }
@@ -94,6 +100,13 @@ pub fn chmod(args: &[String], _stdin: &[u8]) -> BuiltinResult {
         stdout: Vec::new(),
         stderr,
     }
+}
+
+fn looks_like_shorthand_mode(arg: &str) -> bool {
+    let mut chars = arg.chars();
+    matches!(chars.next(), Some('+' | '-' | '='))
+        && chars.clone().next().is_some()
+        && chars.all(|ch| matches!(ch, 'r' | 'w' | 'x'))
 }
 
 fn parse_mode(mode: &str, current: u32) -> Result<u32, String> {
@@ -191,5 +204,28 @@ mod tests {
 
         let r = chmod(&["644".into(), path.into()], b"");
         assert_eq!(r.exit_code, 1);
+    }
+
+    #[test]
+    fn chmod_minus_r_is_treated_as_mode_not_recursive_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("script.sh");
+        fs::write(&path, "echo hi\n").unwrap();
+
+        let result = chmod(
+            &["-r".into(), path.to_string_lossy().into_owned()],
+            b"",
+        );
+
+        assert_eq!(
+            result.exit_code,
+            0,
+            "stderr: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(
+            !malt_platform::fs::is_readable(&path),
+            "mode should remove read permission"
+        );
     }
 }

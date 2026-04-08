@@ -69,6 +69,7 @@ impl Registry {
         tools.insert("cat".to_string(), custom::cat::cat as ToolFn);
         tools.insert("chmod".to_string(), custom::chmod::chmod as ToolFn);
         tools.insert("cp".to_string(), custom::cp::cp as ToolFn);
+        tools.insert("date".to_string(), custom::date::date as ToolFn);
         tools.insert("env".to_string(), custom::env::env_cmd as ToolFn);
         tools.insert("fds".to_string(), custom::fds::FDS);
         tools.insert("grep".to_string(), custom::grep::grep as ToolFn);
@@ -79,6 +80,7 @@ impl Registry {
         tools.insert("mv".to_string(), custom::mv::mv as ToolFn);
         tools.insert("rm".to_string(), custom::rm::rm as ToolFn);
         tools.insert("sed".to_string(), custom::sed::sed as ToolFn);
+        tools.insert("sleep".to_string(), custom::sleep::sleep as ToolFn);
         tools.insert("touch".to_string(), custom::touch::touch as ToolFn);
         tools.insert("which".to_string(), custom::which::which as ToolFn);
         tools.insert("wc".to_string(), custom::wc::wc as ToolFn);
@@ -106,5 +108,63 @@ impl Registry {
 impl Default for Registry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn registry_contains_sleep_tool() {
+        let registry = Registry::new();
+        assert!(registry.contains("sleep"));
+    }
+
+    #[test]
+    fn registry_contains_date_tool() {
+        let registry = Registry::new();
+        assert!(registry.contains("date"));
+    }
+
+    #[test]
+    fn date_tool_supports_unix_epoch_format() {
+        let registry = Registry::new();
+        let date = registry.get("date").expect("date tool should be registered");
+        let result = date(&["+%s".to_string()], b"");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stderr.is_empty());
+        let output = String::from_utf8_lossy(&result.stdout);
+        assert!(output.ends_with('\n'));
+        assert!(
+            output.trim_end().chars().all(|ch| ch.is_ascii_digit()),
+            "unexpected date output: {output}"
+        );
+    }
+
+    #[test]
+    fn sleep_tool_waits_for_requested_duration() {
+        let registry = Registry::new();
+        let sleep = registry
+            .get("sleep")
+            .expect("sleep tool should be registered");
+        let start = Instant::now();
+        let result = sleep(&["0.05".to_string()], b"");
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            result.exit_code,
+            0,
+            "stderr: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(result.stdout.is_empty());
+        assert!(result.stderr.is_empty());
+        assert!(
+            elapsed >= Duration::from_millis(40),
+            "sleep returned too quickly: {elapsed:?}"
+        );
     }
 }
