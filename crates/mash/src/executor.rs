@@ -4821,10 +4821,28 @@ fn execute_list_node(
     // Accumulate stdout/stderr across the whole list.
     let mut all_stdout = Vec::new();
     let mut all_stderr = Vec::new();
+    let mut skip_last = false;
 
     for (cmd, op) in pairs {
         if env.exit_requested().is_some() {
             break;
+        }
+
+        // If skip_last is set from a previous AndIf/OrIf, skip this command.
+        if skip_last {
+            // Don't execute the command, but handle the op to potentially un-skip.
+            match op {
+                ListOp::OrIf if result.exit_code != 0 => {
+                    // Previous failed and this is OrIf: un-skip and evaluate next.
+                    skip_last = false;
+                }
+                ListOp::AndIf if result.exit_code == 0 => {
+                    // Previous succeeded and this is AndIf: un-skip and evaluate next.
+                    skip_last = false;
+                }
+                _ => {}
+            }
+            continue;
         }
 
         result = execute(cmd, source, env);
@@ -4849,37 +4867,23 @@ fn execute_list_node(
             }
             ListOp::AndIf => {
                 if result.exit_code != 0 {
+                    // AndIf failed: skip the next command.
                     env.set_suppress_errexit(true);
-                    // Short-circuit: skip the rest until we see OrIf or Sequential.
-                    // But since the AST pairs are flat, we need to skip to `last`.
-                    // Actually the parser structures AND-OR so each pair is one link.
-                    // If the pair fails on AndIf, the next command is `last` which
-                    // we should skip. Return current result.
-                    result.stdout = all_stdout;
-                    result.stderr = all_stderr;
-                    if let Some(code) = env.exit_requested() {
-                        result.exit_code = code;
-                    }
-                    return result;
+                    skip_last = true;
                 }
             }
             ListOp::OrIf => {
                 if result.exit_code == 0 {
+                    // OrIf succeeded: skip the next command.
                     env.set_suppress_errexit(true);
-                    // Short-circuit on success for OrIf.
-                    result.stdout = all_stdout;
-                    result.stderr = all_stderr;
-                    if let Some(code) = env.exit_requested() {
-                        result.exit_code = code;
-                    }
-                    return result;
+                    skip_last = true;
                 }
             }
         }
     }
 
-    // Execute the last command.
-    if env.exit_requested().is_none() {
+    // Execute the last command only if not short-circuited.
+    if !skip_last && env.exit_requested().is_none() {
         result = execute(last, source, env);
         all_stdout.extend_from_slice(&result.stdout);
         all_stderr.extend_from_slice(&result.stderr);
