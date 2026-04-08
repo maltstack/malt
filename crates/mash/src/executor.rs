@@ -1898,9 +1898,16 @@ fn try_execute_builtin(
             if input.is_empty() {
                 return Some(ExecResult::success());
             }
-            match crate::parser::parse(&input) {
+            let eval_aliases = crate::parser::collect_aliases_from_script(&input);
+            let merged_aliases = {
+                let mut m = env.aliases().clone();
+                m.extend(eval_aliases);
+                m
+            };
+            let preparsed = crate::parser::preparse_expanded(&input, &merged_aliases);
+            match crate::parser::parse(&preparsed) {
                 Ok(cmds) => {
-                    let result = execute_list(&cmds, &input, env);
+                    let result = execute_list(&cmds, &preparsed, env);
                     Some(result)
                 }
                 Err(e) => {
@@ -2093,9 +2100,16 @@ fn try_execute_builtin(
                     });
                 }
             };
-            match crate::parser::parse(&contents) {
+            let script_aliases = crate::parser::collect_aliases_from_script(&contents);
+            let merged_aliases = {
+                let mut m = env.aliases().clone();
+                m.extend(script_aliases);
+                m
+            };
+            let preparsed = crate::parser::preparse_expanded(&contents, &merged_aliases);
+            match crate::parser::parse(&preparsed) {
                 Ok(cmds) => {
-                    let mut result = execute_list_no_exit_trap(&cmds, &contents, env);
+                    let mut result = execute_list_no_exit_trap(&cmds, &preparsed, env);
                     // Handle loop control and return propagation from sourced script
                     match env.loop_control().clone() {
                         LoopControl::Return(code) => {

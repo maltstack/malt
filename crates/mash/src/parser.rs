@@ -7,6 +7,7 @@
 
 use crate::ast::*;
 use crate::lexer::Lexer;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -16,6 +17,111 @@ use crate::lexer::Lexer;
 pub fn parse(input: &str) -> Result<Vec<Spanned<Command>>, ParseError> {
     let mut parser = Parser::new(input)?;
     parser.parse_command_list()
+}
+
+/// Expand aliases before parsing so that grammar-introducing aliases like
+/// Modernish LOOP/DO/DONE macros are expanded into real syntax tokens.
+///
+/// This is a "preparse" step: it only expands aliases in command position
+/// (including after `|`, `&&`, `||`, `;`, newline). It does NOT expand
+/// inside compound commands (if/while/for/case/function bodies) because
+/// those contexts do not support aliases.
+pub fn preparse_expanded(input: &str, aliases: &HashMap<String, String>) -> String {
+    if aliases.is_empty() {
+        return input.to_string();
+    }
+    let mut lexer = Lexer::new(input);
+    let mut result = String::with_capacity(input.len());
+    let mut last_end = 0usize;
+    let mut in_command_position = true;
+    while let Some(tok) = lexer.next() {
+        let tok = match tok {
+            Ok(t) => t,
+            Err(_) => break,
+        };
+        let s = tok.span.start as usize;
+        let e = tok.span.end as usize;
+        if s > last_end {
+            result.push_str(&input[last_end..s]);
+        }
+        match &tok.node {
+            Token::Word(span) if in_command_position => {
+                let word = span.text(input);
+                if let Some(replacement) = aliases.get(word) {
+                    result.push_str(replacement);
+                    // If replacement ends with whitespace, next word is
+                    // still in command position.
+                    let ends_with_sep = replacement
+                        .as_bytes()
+                        .last()
+                        .map(|b| b" \t\n".contains(b))
+                        .unwrap_or(false);
+                    in_command_position = ends_with_sep;
+                } else {
+                    result.push_str(&input[s..e]);
+                    in_command_position = false;
+                }
+            }
+            _ => {
+                result.push_str(&input[s..e]);
+                // After certain tokens the next word is in command position.
+                in_command_position = matches!(
+                    tok.node,
+                    Token::Semicolon | Token::Newline | Token::Pipe | Token::AndAnd | Token::OrOr
+                );
+            }
+        }
+        last_end = e;
+    }
+    if last_end < input.len() {
+        result.push_str(&input[last_end..]);
+    }
+    result
+}
+
+/// Collect alias definitions from script text before execution.
+/// This scans for lines like `alias NAME='VALUE'` and builds a map
+/// that can be used for preparse expansion before the script executes.
+pub fn collect_aliases_from_script(input: &str) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    for line in input.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("alias ") {
+            // Support: alias NAME=VALUE
+            // Find the first unquoted '=' sign
+            let mut in_single = false;
+            let mut in_double = false;
+            let mut eq_pos = None;
+            let bytes = rest.as_bytes();
+            for (i, &b) in bytes.iter().enumerate() {
+                match b {
+                    b'\'' if !in_double => in_single = !in_single,
+                    b'"' if !in_single => in_double = !in_double,
+                    b'=' if !in_single && !in_double => {
+                        eq_pos = Some(i);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(pos) = eq_pos {
+                let name = rest[..pos].trim();
+                let value = &rest[pos + 1..];
+                // Strip surrounding quotes from value
+                let value = if (value.starts_with('\'') && value.ends_with('\''))
+                    || (value.starts_with('"') && value.ends_with('"'))
+                {
+                    &value[1..value.len() - 1]
+                } else {
+                    value
+                };
+                if !name.is_empty() {
+                    aliases.insert(name.to_string(), value.to_string());
+                }
+            }
+        }
+    }
+    aliases
 }
 
 // ---------------------------------------------------------------------------

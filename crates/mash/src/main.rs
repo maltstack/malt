@@ -145,9 +145,16 @@ fn run_command(
         );
     }
 
-    match mash::parser::parse(command) {
+    let cmd_aliases = mash::parser::collect_aliases_from_script(command);
+    let merged_aliases = {
+        let mut m = env.aliases().clone();
+        m.extend(cmd_aliases);
+        m
+    };
+    let preparsed = mash::parser::preparse_expanded(command, &merged_aliases);
+    match mash::parser::parse(&preparsed) {
         Ok(commands) => {
-            let result = execute_list(&commands, command, &mut env);
+            let result = execute_list(&commands, &preparsed, &mut env);
 
             // Print stdout
             if !result.stdout.is_empty() {
@@ -202,9 +209,16 @@ fn run_script_file(
         );
     }
 
-    match mash::parser::parse(&contents) {
+    let script_aliases = mash::parser::collect_aliases_from_script(&contents);
+    let merged_aliases = {
+        let mut m = env.aliases().clone();
+        m.extend(script_aliases);
+        m
+    };
+    let preparsed = mash::parser::preparse_expanded(&contents, &merged_aliases);
+    match mash::parser::parse(&preparsed) {
         Ok(commands) => {
-            let result = execute_list(&commands, &contents, &mut env);
+            let result = execute_list(&commands, &preparsed, &mut env);
 
             if !result.stdout.is_empty() {
                 let _ = io::stdout().write_all(&result.stdout);
@@ -285,10 +299,11 @@ fn run_stdin(interactive: bool, prompt: bool, startup_options: &[StartupOption])
                     break;
                 }
 
-                match mash::parser::parse(line) {
+                let preparsed = mash::parser::preparse_expanded(line, env.aliases());
+                match mash::parser::parse(&preparsed) {
                     Ok(commands) => {
                         for cmd in commands {
-                            let result = execute(&cmd, line, &mut env);
+                            let result = execute(&cmd, &preparsed, &mut env);
 
                             if !result.stdout.is_empty() {
                                 let _ = io::stdout().write_all(&result.stdout);
