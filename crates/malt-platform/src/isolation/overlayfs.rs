@@ -108,7 +108,7 @@ pub fn setup_overlayfs(
             mount_point,
             Some("overlay"),
             MsFlags::empty(),
-            Some(&options),
+            Some(options.as_str()),
         )?;
 
         Ok(())

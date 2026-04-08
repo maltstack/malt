@@ -142,7 +142,7 @@ pub fn unshare_namespaces(tier: IsolationTier) -> Result<(), IsolationError> {
             // via setuid binaries or file capabilities.
             #[cfg(target_os = "linux")]
             {
-                nix::prctl::set_no_new_privileges(true)?;
+                nix::sys::prctl::set_no_new_privs()?;
             }
 
             Ok(())
@@ -191,7 +191,7 @@ pub fn mount_proc(mount_point: &std::path::Path) -> Result<(), IsolationError> {
             mount_point,
             Some("proc"),
             MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
-            None,
+            None::<&str>,
         )?;
 
         Ok(())
@@ -219,7 +219,7 @@ pub fn mount_sysfs(mount_point: &std::path::Path) -> Result<(), IsolationError> 
             mount_point,
             Some("sysfs"),
             MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC | MsFlags::MS_RDONLY,
-            None,
+            None::<&str>,
         )?;
 
         Ok(())

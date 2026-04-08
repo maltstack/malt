@@ -17,6 +17,15 @@ use std::time::Duration;
 
 const TIMEOUT_SECS: u64 = 10;
 
+fn timeout_secs_for_test(name: &str) -> u64 {
+    match name {
+        // This case does multiple helper-process pipelines and can be slow on
+        // mounted Windows filesystems under WSL even when behavior is correct.
+        "semantics.dot.glob" => 30,
+        _ => TIMEOUT_SECS,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FailureKind {
     Shell,
@@ -510,7 +519,8 @@ fn run_test(name: &str, test_dir: &Path, mash: &Path) -> TestOutcome {
         }
     };
 
-    let output = wait_with_timeout(child, Duration::from_secs(TIMEOUT_SECS));
+    let timeout_secs = timeout_secs_for_test(name);
+    let output = wait_with_timeout(child, Duration::from_secs(timeout_secs));
 
     let (got_stdout, got_ec) = match output {
         Some(out) => (
@@ -521,7 +531,7 @@ fn run_test(name: &str, test_dir: &Path, mash: &Path) -> TestOutcome {
             return TestOutcome::failed(
                 name,
                 FailureKind::Harness,
-                format!("TIMEOUT after {TIMEOUT_SECS}s"),
+                format!("TIMEOUT after {timeout_secs}s"),
             );
         }
     };
@@ -681,13 +691,17 @@ fn helper_stage_uses_binary_artifact_names() {
 
 #[test]
 fn helper_binary_fallback_candidates_derive_from_current_test_exe() {
-    let current_test_exe = PathBuf::from("C:/repo/target/debug/deps/smoosh_runner.exe");
+    let current_test_exe = PathBuf::from(format!(
+        "C:/repo/target/debug/deps/smoosh_runner{}",
+        if cfg!(windows) { ".exe" } else { "" }
+    ));
     let candidates = helper_binary_fallback_candidates(&current_test_exe, "getenv");
+    let helper_name = helper_executable_name("getenv");
     assert_eq!(
         candidates,
         vec![
-            PathBuf::from("C:/repo/target/debug/deps/getenv.exe"),
-            PathBuf::from("C:/repo/target/debug/getenv.exe"),
+            PathBuf::from(format!("C:/repo/target/debug/deps/{helper_name}")),
+            PathBuf::from(format!("C:/repo/target/debug/{helper_name}")),
         ]
     );
 }
@@ -751,12 +765,15 @@ fn helper_resolution_prefers_newer_existing_binary() {
 
 #[test]
 fn helper_resolution_error_mentions_cargo_test_context() {
-    let current_test_exe = PathBuf::from("C:/repo/target/debug/deps/smoosh_runner.exe");
+    let current_test_exe = PathBuf::from(format!(
+        "C:/repo/target/debug/deps/smoosh_runner{}",
+        if cfg!(windows) { ".exe" } else { "" }
+    ));
     let error = resolve_helper_binary_path_for("getenv", None, &current_test_exe)
         .expect_err("expected unresolved helper");
 
     assert!(error.contains("cargo test context"));
-    assert!(error.contains("getenv.exe"));
+    assert!(error.contains(&helper_executable_name("getenv")));
 }
 
 #[test]

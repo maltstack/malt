@@ -228,7 +228,6 @@ struct ShellStdioCapture {
 struct CaptureFile {
     fd: u32,
     path: PathBuf,
-    reader: File,
     read_pos: u64,
 }
 
@@ -259,11 +258,15 @@ impl ShellStdioCapture {
         let Some(capture) = capture else {
             return Vec::new();
         };
-        if capture.reader.seek(SeekFrom::Start(capture.read_pos)).is_err() {
+        let mut reader = match std::fs::OpenOptions::new().read(true).open(&capture.path) {
+            Ok(file) => file,
+            Err(_) => return Vec::new(),
+        };
+        if reader.seek(SeekFrom::Start(capture.read_pos)).is_err() {
             return Vec::new();
         }
         let mut bytes = Vec::new();
-        if capture.reader.read_to_end(&mut bytes).is_err() {
+        if reader.read_to_end(&mut bytes).is_err() {
             bytes.clear();
             return bytes;
         }
@@ -275,7 +278,6 @@ impl ShellStdioCapture {
         let Some(capture) = capture else {
             return;
         };
-        drop(capture.reader);
         let _ = env.close_fd(capture.fd);
         let _ = std::fs::remove_file(&capture.path);
         if env.has_fd(stdio_fd) {
@@ -304,12 +306,11 @@ fn install_shell_capture_fd(env: &Env, fd: u32) -> Option<CaptureFile> {
         .truncate(true)
         .open(&path)
         .ok()?;
-    let reader = file.try_clone().ok()?;
+    drop(file);
     env.register_fd_snapshot_path(fd, path.clone());
     Some(CaptureFile {
         fd,
         path,
-        reader,
         read_pos: 0,
     })
 }
@@ -473,7 +474,7 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
             cmd: inner,
             redirects,
         } => {
-            let resolved_io = match resolve_redirects(redirects, source, env) {
+            let mut resolved_io = match resolve_redirects(redirects, source, env) {
                 Ok(io) => io,
                 Err(err_result) => {
                     if matches!(&inner.node, Command::Simple { name, .. } if {
@@ -491,10 +492,18 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
                     return err_result;
                 }
             };
+            let saved_states: Vec<(u32, SavedFdState)> = nonstdio_affected_fds(&resolved_io)
+                .into_iter()
+                .map(|fd| (fd, save_fd_state(env, fd)))
+                .collect();
+            apply_nonstdio_redirects(env, &mut resolved_io);
             // Execute the inner command, capturing its output.
             let mut result = execute(inner, source, env);
             // Apply redirects: write captured output to redirect files.
             apply_output_redirects(&mut result, resolved_io);
+            for (fd, state) in saved_states {
+                restore_fd_state(env, fd, state);
+            }
             result
         }
 
@@ -1013,9 +1022,22 @@ fn execute_simple_with_io(
     } else {
         None
     };
+    let saved_nonstdio_states = if BUILTIN_NAMES.contains(&dispatch_name) {
+        let states: Vec<(u32, SavedFdState)> = nonstdio_affected_fds(&resolved_io)
+            .into_iter()
+            .map(|fd| (fd, save_fd_state(env, fd)))
+            .collect();
+        apply_nonstdio_redirects(env, &mut resolved_io);
+        states
+    } else {
+        Vec::new()
+    };
     if let Some(mut result) = try_execute_builtin(dispatch_name, &argv, env, builtin_stdin) {
         let builtin_name = builtin_output_name(dispatch_name, &argv);
         apply_builtin_output_redirects(&mut result, resolved_io, &builtin_name);
+        for (fd, state) in saved_nonstdio_states {
+            restore_fd_state(env, fd, state);
+        }
         if let Some(mut pipe_out) = stdout_file {
             if let Err(e) = pipe_out.write_all(&result.stdout) {
                 let _ = e;
@@ -1024,6 +1046,9 @@ fn execute_simple_with_io(
             result.stdout = Vec::new();
         }
         return result;
+    }
+    for (fd, state) in saved_nonstdio_states {
+        restore_fd_state(env, fd, state);
     }
 
     // 5b. Handle malt-tools (in-process POSIX utilities like grep, cat, wc).
@@ -1321,6 +1346,19 @@ fn execute_simple(
         }
     }
     if BUILTIN_NAMES.contains(&dispatch_name) {
+        let persist_nonstdio_redirects = is_exec_no_args_command(&cmd_name, &argv)
+            || (dispatch_name == "command"
+                && argv.len() == 1
+                && argv.first().map(|s| s.as_str()) == Some("exec"));
+        let saved_nonstdio_states = if persist_nonstdio_redirects {
+            Vec::new()
+        } else {
+            nonstdio_affected_fds(&resolved_io)
+                .into_iter()
+                .map(|fd| (fd, save_fd_state(env, fd)))
+                .collect()
+        };
+        apply_nonstdio_redirects(env, &mut resolved_io);
         let builtin_stdin = if is_exec_no_args_command(&cmd_name, &argv) {
             None
         } else {
@@ -1332,7 +1370,15 @@ fn execute_simple(
             }
             let builtin_name = builtin_output_name(dispatch_name, &argv);
             apply_builtin_output_redirects(&mut result, resolved_io, &builtin_name);
+            if !persist_nonstdio_redirects {
+                for (fd, state) in saved_nonstdio_states {
+                    restore_fd_state(env, fd, state);
+                }
+            }
             return result;
+        }
+        for (fd, state) in saved_nonstdio_states {
+            restore_fd_state(env, fd, state);
         }
     }
 
@@ -4578,6 +4624,77 @@ impl ResolvedIo {
             extra_fd_snapshots: HashMap::new(),
             closed_fds: Vec::new(),
         }
+    }
+}
+
+enum SavedFdState {
+    Closed,
+    Alias(u32),
+    Snapshot(PathBuf),
+    File(File),
+}
+
+fn save_fd_state(env: &Env, fd: u32) -> SavedFdState {
+    if let Some(target) = env.fd_alias_target(fd) {
+        return SavedFdState::Alias(target);
+    }
+    if let Some(path) = env.fd_snapshot_path(fd) {
+        return SavedFdState::Snapshot(path);
+    }
+    if env.has_fd(fd) {
+        if let Ok(file) = env.open_fd(fd) {
+            return SavedFdState::File(file);
+        }
+    }
+    SavedFdState::Closed
+}
+
+fn restore_fd_state(env: &Env, fd: u32, state: SavedFdState) {
+    match state {
+        SavedFdState::Closed => {
+            let _ = env.close_fd(fd);
+        }
+        SavedFdState::Alias(target) => env.register_fd_alias(fd, target),
+        SavedFdState::Snapshot(path) => env.register_fd_snapshot_path(fd, path),
+        SavedFdState::File(file) => env.register_fd(fd, file),
+    }
+}
+
+fn nonstdio_affected_fds(io: &ResolvedIo) -> Vec<u32> {
+    let mut fds: Vec<u32> = io
+        .extra_fds
+        .keys()
+        .copied()
+        .map(u32::from)
+        .chain(io.extra_fd_aliases.keys().copied().map(u32::from))
+        .chain(io.extra_fd_snapshots.keys().copied().map(u32::from))
+        .chain(
+            io.closed_fds
+                .iter()
+                .copied()
+                .filter(|fd| *fd > 2)
+                .map(u32::from),
+        )
+        .collect();
+    fds.sort_unstable();
+    fds.dedup();
+    fds
+}
+
+fn apply_nonstdio_redirects(env: &Env, io: &mut ResolvedIo) {
+    for fd in io.closed_fds.drain(..) {
+        if fd > 2 {
+            let _ = env.close_fd(fd as u32);
+        }
+    }
+    for (fd, file) in io.extra_fds.drain() {
+        env.register_fd(fd as u32, file);
+    }
+    for (fd, target_fd) in io.extra_fd_aliases.drain() {
+        env.register_fd_alias(fd as u32, target_fd as u32);
+    }
+    for (fd, path) in io.extra_fd_snapshots.drain() {
+        env.register_fd_snapshot_path(fd as u32, path);
     }
 }
 

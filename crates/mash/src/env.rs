@@ -394,6 +394,7 @@ impl Env {
     }
 
     pub fn from_os() -> Self {
+        mark_inherited_fds_cloexec();
         let mut env = Self::empty();
         for (key, value) in std::env::vars() {
             if key == "IFS" {
@@ -1235,6 +1236,49 @@ impl Env {
         self.fd_snapshots_lock().remove(&fd);
     }
 }
+
+#[cfg(unix)]
+fn mark_inherited_fds_cloexec() {
+    unsafe extern "C" {
+        fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    }
+
+    const F_GETFD: i32 = 1;
+    const F_SETFD: i32 = 2;
+    const FD_CLOEXEC: i32 = 1;
+
+    let mark_fd = |fd: i32| {
+        if fd <= 2 {
+            return;
+        }
+        // SAFETY: `fcntl(fd, F_GETFD)` and `F_SETFD` are process-local metadata ops.
+        let flags = unsafe { fcntl(fd, F_GETFD) };
+        if flags >= 0 {
+            // SAFETY: same as above; preserving existing flags and adding CLOEXEC.
+            let _ = unsafe { fcntl(fd, F_SETFD, flags | FD_CLOEXEC) };
+        }
+    };
+
+    // Prefer scanning real open descriptors so high-number inherited fds are covered.
+    if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if let Ok(fd) = name.parse::<i32>() {
+                    mark_fd(fd);
+                }
+            }
+        }
+        return;
+    }
+
+    // Fallback when /proc is unavailable.
+    for fd in 3..=1024 {
+        mark_fd(fd);
+    }
+}
+
+#[cfg(not(unix))]
+fn mark_inherited_fds_cloexec() {}
 
 fn encode_snapshot_path(path: &Path) -> String {
     path.as_os_str()

@@ -8,9 +8,11 @@ use std::path::Path;
 pub fn is_tty(fd: i32) -> bool {
     #[cfg(unix)]
     {
-        use std::os::unix::io::RawFd;
+        use std::os::fd::BorrowedFd;
         // nix::unistd::isatty returns Ok(true) for a tty, Ok(false)/Err for non-tty/invalid fd.
-        nix::unistd::isatty(fd as RawFd).unwrap_or(false)
+        // SAFETY: `fd` is caller-provided and must be a valid descriptor for this check.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        nix::unistd::isatty(borrowed).unwrap_or(false)
     }
     #[cfg(not(unix))]
     {

@@ -124,10 +124,15 @@ pub fn open_virtual_dev(kind: VirtualDevKind, mode: DevOpenMode) -> std::io::Res
 fn open_dev_null(mode: DevOpenMode) -> io::Result<File> {
     use std::fs::OpenOptions;
 
+    #[cfg(windows)]
+    let device = "NUL";
+    #[cfg(not(windows))]
+    let device = "/dev/null";
+
     match mode {
-        DevOpenMode::Read => OpenOptions::new().read(true).open("NUL"),
-        DevOpenMode::Write => OpenOptions::new().write(true).open("NUL"),
-        DevOpenMode::ReadWrite => OpenOptions::new().read(true).write(true).open("NUL"),
+        DevOpenMode::Read => OpenOptions::new().read(true).open(device),
+        DevOpenMode::Write => OpenOptions::new().write(true).open(device),
+        DevOpenMode::ReadWrite => OpenOptions::new().read(true).write(true).open(device),
     }
 }
 
@@ -250,10 +255,15 @@ fn open_dev_full(mode: DevOpenMode) -> io::Result<File> {
 fn open_dev_tty(mode: DevOpenMode) -> io::Result<File> {
     use std::fs::OpenOptions;
 
+    #[cfg(windows)]
+    let device = "CON";
+    #[cfg(not(windows))]
+    let device = "/dev/tty";
+
     match mode {
-        DevOpenMode::Read => OpenOptions::new().read(true).open("CON"),
-        DevOpenMode::Write => OpenOptions::new().write(true).open("CON"),
-        DevOpenMode::ReadWrite => OpenOptions::new().read(true).write(true).open("CON"),
+        DevOpenMode::Read => OpenOptions::new().read(true).open(device),
+        DevOpenMode::Write => OpenOptions::new().write(true).open(device),
+        DevOpenMode::ReadWrite => OpenOptions::new().read(true).write(true).open(device),
     }
 }
 
@@ -263,7 +273,12 @@ fn open_dev_tty(mode: DevOpenMode) -> io::Result<File> {
 fn open_dev_std_stream(_mode: DevOpenMode) -> io::Result<File> {
     use std::fs::OpenOptions;
 
-    OpenOptions::new().read(true).write(true).open("CON")
+    #[cfg(windows)]
+    let device = "CON";
+    #[cfg(not(windows))]
+    let device = "/dev/tty";
+
+    OpenOptions::new().read(true).write(true).open(device)
 }
 
 #[cfg(test)]
@@ -345,5 +360,15 @@ mod tests {
 
         let result = try_open_virtual_dev(Path::new("/home/user"), DevOpenMode::Read);
         assert!(result.is_none());
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_dev_null_uses_posix_device_on_unix() {
+        let result = std::fs::OpenOptions::new().write(true).open("/dev/null");
+        assert!(result.is_ok());
+
+        let result = open_virtual_dev(VirtualDevKind::Null, DevOpenMode::Write);
+        assert!(result.is_ok());
     }
 }

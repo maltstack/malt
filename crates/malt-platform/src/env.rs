@@ -18,7 +18,11 @@ pub fn home_dir() -> Option<PathBuf> {
 /// Whether stdin is connected to an interactive terminal.
 pub fn is_interactive_terminal() -> bool {
     #[cfg(unix)]
-    { nix::unistd::isatty(0).unwrap_or(false) }
+    {
+        use std::os::fd::BorrowedFd;
+        // SAFETY: stdin fd `0` is a process-global conventional descriptor.
+        nix::unistd::isatty(unsafe { BorrowedFd::borrow_raw(0) }).unwrap_or(false)
+    }
     #[cfg(windows)]
     {
         use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE};

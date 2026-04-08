@@ -1,7 +1,7 @@
 //! Seccomp BPF syscall filtering primitive.
 //!
 //! Provides seccomp profile application for the Contained isolation tier.
-//! Uses raw `prctl` and `seccomp` syscalls via the `nix` crate.
+//! Uses raw `prctl` and `seccomp` syscalls.
 //!
 //! The default restricted profile allows only the syscalls needed for
 //! basic process operation (read, write, exit, mmap, etc.).
@@ -555,7 +555,7 @@ pub fn apply_seccomp_profile(allowed_syscalls: &[i64]) -> Result<(), IsolationEr
         // This requires building a sock_fprog structure
 
         // First, ensure NO_NEW_PRIVS is set (required for unprivileged seccomp)
-        nix::prctl::set_no_new_privileges(true).map_err(|e| {
+        nix::sys::prctl::set_no_new_privs().map_err(|e| {
             IsolationError::SeccompError(format!("failed to set NO_NEW_PRIVS: {e}"))
         })?;
 
@@ -608,8 +608,8 @@ pub fn apply_seccomp_profile(allowed_syscalls: &[i64]) -> Result<(), IsolationEr
 /// Returns a vector of `sock_filter` instructions that implement
 /// an allowlist filter.
 #[cfg(target_os = "linux")]
-fn build_bpf_filter(allowed_syscalls: &[i64]) -> Vec<nix::sys::socket::SockFilter> {
-    use nix::sys::socket::SockFilter;
+fn build_bpf_filter(allowed_syscalls: &[i64]) -> Vec<libc::sock_filter> {
+    use libc::sock_filter;
 
     let mut bpf = Vec::new();
 
@@ -630,7 +630,7 @@ fn build_bpf_filter(allowed_syscalls: &[i64]) -> Vec<nix::sys::socket::SockFilte
     const SECCOMP_RET_TRAP: u32 = 0x00030000;
 
     // Load syscall number (32-bit at offset 0)
-    bpf.push(SockFilter {
+    bpf.push(sock_filter {
         code: BPF_LD | BPF_W | BPF_ABS,
         jt: 0,
         jf: 0,
@@ -643,7 +643,7 @@ fn build_bpf_filter(allowed_syscalls: &[i64]) -> Vec<nix::sys::socket::SockFilte
 
     for (i, &syscall) in allowed_syscalls.iter().enumerate() {
         let remaining = (num_syscalls - i - 1) as u8;
-        bpf.push(SockFilter {
+        bpf.push(sock_filter {
             code: BPF_JMP | BPF_JEQ | BPF_K,
             jt: remaining, // If equal, skip remaining checks to allow
             jf: 0,
@@ -652,7 +652,7 @@ fn build_bpf_filter(allowed_syscalls: &[i64]) -> Vec<nix::sys::socket::SockFilte
     }
 
     // Return TRAP (kill with signal) for non-matching syscalls
-    bpf.push(SockFilter {
+    bpf.push(sock_filter {
         code: BPF_RET | BPF_K,
         jt: 0,
         jf: 0,
@@ -660,7 +660,7 @@ fn build_bpf_filter(allowed_syscalls: &[i64]) -> Vec<nix::sys::socket::SockFilte
     });
 
     // Return ALLOW for matching syscalls
-    bpf.push(SockFilter {
+    bpf.push(sock_filter {
         code: BPF_RET | BPF_K,
         jt: 0,
         jf: 0,
@@ -676,7 +676,7 @@ mod linux_seccomp {
     #[repr(C)]
     pub struct SockFprog {
         pub len: u16,
-        pub filter: *const nix::sys::socket::SockFilter,
+        pub filter: *const libc::sock_filter,
     }
 }
 
