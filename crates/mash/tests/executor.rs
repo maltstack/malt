@@ -523,15 +523,30 @@ fn redirect_both_stdout_and_stderr() {
 // ── Pipeline tests ────────────────────────────────────────────────────
 
 #[test]
+#[cfg(windows)]
 fn pipeline_echo_findstr() {
     let output = run_stdout("echo hello | findstr hello");
     assert!(output.contains("hello"), "got: {output}");
 }
 
 #[test]
+#[cfg(not(windows))]
+fn pipeline_echo_grep() {
+    let output = run_stdout("echo hello | grep hello");
+    assert!(output.contains("hello"), "got: {output}");
+}
+
+#[test]
+#[cfg(windows)]
 fn pipeline_filters() {
-    // echo outputs "hello world", findstr filters for "world"
     let output = run_stdout("echo hello world | findstr world");
+    assert!(output.contains("world"), "got: {output}");
+}
+
+#[test]
+#[cfg(not(windows))]
+fn pipeline_filters_with_grep() {
+    let output = run_stdout("echo hello world | grep world");
     assert!(output.contains("world"), "got: {output}");
 }
 
@@ -1340,6 +1355,27 @@ fn subshell_inherits_parent_exit_trap_for_listing_without_running_it() {
 }
 
 #[test]
+fn eval_exit_trap_runs_inside_eval_context() {
+    let output = run_stdout("eval '(trap \"echo bug\" EXIT)' >/dev/null; echo ok");
+    assert_eq!(output, "ok\n");
+}
+
+#[test]
+fn redirected_subshell_exit_trap_respects_redirected_stdout() {
+    let output = run_stdout("(trap 'echo foo' EXIT) >/dev/null; echo ok");
+    assert_eq!(output, "ok\n");
+}
+
+#[test]
+fn subshell_trap_listing_stays_before_subshell_exit_trap_output() {
+    let output = run_stdout("trap 'echo bye' EXIT; (trap 'echo so long' EXIT; trap); echo done");
+    assert_eq!(
+        output,
+        "trap -- 'echo so long' EXIT\nso long\ndone\nbye\n"
+    );
+}
+
+#[test]
 fn invalid_set_o_option_fails() {
     let (result, _) = run("set -o bad@option && echo BUG4");
     assert_eq!(
@@ -1454,9 +1490,11 @@ fn hash_output_can_be_redirected_in_pipeline() {
 }
 
 #[test]
-fn hashall_does_not_prehash_function_definition_body() {
+fn hashall_prehashes_function_definition_body() {
     let output = run_stdout("set -h\nhash -r\nf() {\n  ls\n  touch hi\n  rm hi\n}\nhash\n");
-    assert!(output.contains("empty"), "output: {output}");
+    assert!(output.contains("ls"), "output: {output}");
+    assert!(output.contains("touch"), "output: {output}");
+    assert!(output.contains("rm"), "output: {output}");
 }
 
 #[test]

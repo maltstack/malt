@@ -418,6 +418,11 @@ fn expand_brace_param(
             }
             return Ok(());
         }
+        if env.options().nounset && !env.is_set(name) && !"?!$#@*-0".contains(name) {
+            return Err(ExpandError::UndefinedVar {
+                name: name.to_string(),
+            });
+        }
         let val = env.get_str(name);
         result.push_str(&val.chars().count().to_string());
         return Ok(());
@@ -2274,6 +2279,9 @@ impl<'a> ArithParser<'a> {
                     }
                     _ => {
                         // Plain variable lookup
+                        if self.env.options().nounset && !self.env.is_set(&name) {
+                            return Err(ExpandError::UndefinedVar { name });
+                        }
                         self.var_value(&name)
                     }
                 }

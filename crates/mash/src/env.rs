@@ -1215,12 +1215,22 @@ impl Env {
     }
 
     pub fn fd_alias_env_spec(&self) -> Option<String> {
+        self.fd_alias_env_spec_filtered(|_| true)
+    }
+
+    pub fn nonstdio_fd_alias_env_spec(&self) -> Option<String> {
+        self.fd_alias_env_spec_filtered(|fd| fd > 2)
+    }
+
+    fn fd_alias_env_spec_filtered(&self, include: impl Fn(u32) -> bool) -> Option<String> {
         let aliases = self.fd_aliases_lock();
-        if aliases.is_empty() {
+        let mut entries: Vec<(u32, u32)> = aliases
+            .iter()
+            .filter_map(|(fd, target)| include(*fd).then_some((*fd, *target)))
+            .collect();
+        if entries.is_empty() {
             return None;
         }
-        let mut entries: Vec<(u32, u32)> =
-            aliases.iter().map(|(fd, target)| (*fd, *target)).collect();
         entries.sort_unstable_by_key(|(fd, _)| *fd);
         Some(
             entries
@@ -1236,14 +1246,22 @@ impl Env {
     }
 
     pub fn fd_snapshot_env_spec(&self) -> Option<String> {
+        self.fd_snapshot_env_spec_filtered(|_| true)
+    }
+
+    pub fn nonstdio_fd_snapshot_env_spec(&self) -> Option<String> {
+        self.fd_snapshot_env_spec_filtered(|fd| fd > 2)
+    }
+
+    fn fd_snapshot_env_spec_filtered(&self, include: impl Fn(u32) -> bool) -> Option<String> {
         let snapshots = self.fd_snapshots_lock();
-        if snapshots.is_empty() {
-            return None;
-        }
         let mut entries: Vec<(u32, PathBuf)> = snapshots
             .iter()
-            .map(|(fd, path)| (*fd, path.clone()))
+            .filter_map(|(fd, path)| include(*fd).then_some((*fd, path.clone())))
             .collect();
+        if entries.is_empty() {
+            return None;
+        }
         entries.sort_unstable_by_key(|(fd, _)| *fd);
         Some(
             entries

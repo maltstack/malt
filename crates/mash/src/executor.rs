@@ -173,7 +173,8 @@ fn execute_list_internal(
             let saved_exit_requested = env.exit_requested();
             env.set_loop_control(LoopControl::None);
             env.set_exit_requested(None);
-            let trap_result = execute_trap_action(&trap.action, env);
+            let mut trap_result = execute_trap_action(&trap.action, env);
+            flush_uncaptured_shell_output(&mut trap_result, &shell_capture, env);
             let trap_exit_requested = env.exit_requested();
             env.set_loop_control(saved_loop_control.clone());
             env.set_exit_requested(saved_exit_requested.or(trap_exit_requested));
@@ -322,7 +323,11 @@ fn flush_uncaptured_shell_output(
     shell_capture: &ShellStdioCapture,
     env: &Env,
 ) {
-    if shell_capture.stdout.is_none() && env.has_fd(1) && !result.stdout.is_empty() {
+    if shell_capture.stdout.is_none()
+        && env.fd_snapshot_path(1).is_none()
+        && env.has_fd(1)
+        && !result.stdout.is_empty()
+    {
         match env.open_fd_write(1) {
             Ok(mut stdout) => {
                 if let Err(e) = stdout.write_all(&result.stdout) {
@@ -343,7 +348,11 @@ fn flush_uncaptured_shell_output(
         }
     }
 
-    if shell_capture.stderr.is_none() && env.has_fd(2) && !result.stderr.is_empty() {
+    if shell_capture.stderr.is_none()
+        && env.fd_snapshot_path(2).is_none()
+        && env.has_fd(2)
+        && !result.stderr.is_empty()
+    {
         match env.open_fd_write(2) {
             Ok(mut stderr) => {
                 if stderr.write_all(&result.stderr).is_ok() {
@@ -622,6 +631,7 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
                 _ => (source.to_string(), body.as_ref().clone()),
             };
             env.define_function(func_name, stored_source.clone(), stored_body.clone());
+            hash_commands_in_function_body(&stored_body, &stored_source, env);
             ExecResult::success()
         }
 
@@ -684,6 +694,99 @@ fn variant_name(cmd: &Command) -> &'static str {
         Command::Coproc { .. } => "Coproc",
         Command::Time { .. } => "Time",
         Command::Redirected { .. } => "Redirected",
+    }
+}
+
+fn hash_commands_in_function_body(body: &Spanned<Command>, source: &str, env: &mut Env) {
+    if !env.options().hash_cmds {
+        return;
+    }
+    collect_hashed_commands(body, source, env);
+}
+
+fn collect_hashed_commands(cmd: &Spanned<Command>, source: &str, env: &mut Env) {
+    match &cmd.node {
+        Command::Simple { name, .. } => {
+            let name_text = name.text(source);
+            if let Ok(expanded) = expander::expand_word(name_text, env) {
+                if let Some(cmd_name) = expanded.first().filter(|name| !name.is_empty()) {
+                    let dispatch_name = explicit_internal_command_name(cmd_name)
+                        .unwrap_or_else(|| cmd_name.clone());
+                    let tools_registry = malt_tools::Registry::new();
+                    if BUILTIN_NAMES.contains(&dispatch_name.as_str())
+                        || tools_registry.contains(&dispatch_name)
+                    {
+                        record_hashed_command(env, cmd_name, &dispatch_name);
+                    } else if let Some(path) = find_in_path(cmd_name, env) {
+                        record_hashed_command(env, cmd_name, &path.to_string_lossy());
+                    }
+                }
+            }
+        }
+        Command::List { pairs, last } => {
+            for (left, _) in pairs {
+                collect_hashed_commands(left, source, env);
+            }
+            collect_hashed_commands(last, source, env);
+        }
+        Command::BraceGroup { body }
+        | Command::Subshell { body }
+        | Command::Pipeline { commands: body, .. } => {
+            for command in body {
+                collect_hashed_commands(command, source, env);
+            }
+        }
+        Command::Background(inner)
+        | Command::Redirected { cmd: inner, .. }
+        | Command::Time { command: inner, .. } => collect_hashed_commands(inner, source, env),
+        Command::If {
+            condition,
+            then_body,
+            elif_clauses,
+            else_body,
+        } => {
+            collect_hashed_commands(condition, source, env);
+            for command in then_body {
+                collect_hashed_commands(command, source, env);
+            }
+            for (elif_condition, elif_body) in elif_clauses {
+                collect_hashed_commands(elif_condition, source, env);
+                for command in elif_body {
+                    collect_hashed_commands(command, source, env);
+                }
+            }
+            if let Some(else_body) = else_body {
+                for command in else_body {
+                    collect_hashed_commands(command, source, env);
+                }
+            }
+        }
+        Command::While { condition, body } | Command::Until { condition, body } => {
+            collect_hashed_commands(condition, source, env);
+            for command in body {
+                collect_hashed_commands(command, source, env);
+            }
+        }
+        Command::For { body, .. }
+        | Command::ForArith { body, .. }
+        | Command::Select { body, .. } => {
+            for command in body {
+                collect_hashed_commands(command, source, env);
+            }
+        }
+        Command::Case { items, .. } => {
+            for item in items {
+                for command in &item.body {
+                    collect_hashed_commands(command, source, env);
+                }
+            }
+        }
+        Command::FunctionDef { body, .. } => collect_hashed_commands(body, source, env),
+        Command::Coproc { cmd, .. } => collect_hashed_commands(cmd, source, env),
+        Command::Empty
+        | Command::EnvAssign { .. }
+        | Command::Arithmetic { .. }
+        | Command::Conditional { .. } => {}
     }
 }
 
@@ -951,7 +1054,9 @@ fn execute_simple_with_io(
 ) -> ExecResult {
     // 1. Expand command name.
     let name_text = name_span.text(source);
-    let expanded_name = match expander::expand_word(name_text, env) {
+    let mut name_env = env.clone();
+    let _ = name_env.set("IFS", Variable::string(" \t\n"));
+    let expanded_name = match expander::expand_word(name_text, &mut name_env) {
         Ok(fields) => fields,
         Err(e) => return noninteractive_shell_error(env, format!("mash: {e}\n")),
     };
@@ -1249,7 +1354,9 @@ fn execute_simple(
 ) -> ExecResult {
     // 1. Expand the command name.
     let name_text = name_span.text(source);
-    let expanded_name = match expander::expand_word(name_text, env) {
+    let mut name_env = env.clone();
+    let _ = name_env.set("IFS", Variable::string(" \t\n"));
+    let expanded_name = match expander::expand_word(name_text, &mut name_env) {
         Ok(fields) => fields,
         Err(e) => return noninteractive_shell_error(env, format!("mash: {e}\n")),
     };
@@ -1793,7 +1900,7 @@ fn try_execute_builtin(
             }
             match crate::parser::parse(&input) {
                 Ok(cmds) => {
-                    let result = execute_list_no_exit_trap(&cmds, &input, env);
+                    let result = execute_list(&cmds, &input, env);
                     Some(result)
                 }
                 Err(e) => {
@@ -5411,12 +5518,12 @@ fn apply_exec_redirects(env: &Env, io: &mut ResolvedIo) {
 }
 
 fn add_runtime_spawn_env(config: &mut malt_platform::process::SpawnConfig, env: &Env) {
-    if let Some(fd_aliases) = env.fd_alias_env_spec() {
+    if let Some(fd_aliases) = env.nonstdio_fd_alias_env_spec() {
         config
             .env
             .push(("MASH_FD_ALIASES".into(), fd_aliases.into()));
     }
-    if let Some(fd_snapshots) = env.fd_snapshot_env_spec() {
+    if let Some(fd_snapshots) = env.nonstdio_fd_snapshot_env_spec() {
         config
             .env
             .push(("MASH_FD_SNAPSHOTS".into(), fd_snapshots.into()));

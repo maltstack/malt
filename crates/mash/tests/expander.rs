@@ -63,6 +63,22 @@ fn nounset_errors_on_unset() {
 }
 
 #[test]
+fn nounset_errors_on_length_of_unset_parameter() {
+    let mut env = Env::empty();
+    env.options_mut().nounset = true;
+    let result = expand_word_nosplit("${#NONEXISTENT}", &mut env);
+    assert!(result.is_err());
+}
+
+#[test]
+fn nounset_errors_on_plain_identifier_in_arithmetic() {
+    let mut env = Env::empty();
+    env.options_mut().nounset = true;
+    let result = expand_word_nosplit("$((NONEXISTENT + 1))", &mut env);
+    assert!(result.is_err());
+}
+
+#[test]
 fn special_var_question_mark() {
     let mut env = Env::empty();
     env.set_exit_code(42);
