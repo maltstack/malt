@@ -203,6 +203,13 @@ pub struct SpawnConfig {
     /// Override argv[0] (the process name as seen by the child). When `None`,
     /// argv[0] defaults to the program path. On Unix, uses `Command::arg0()`.
     pub argv0: Option<OsString>,
+    /// Additional file descriptors to map into the child process on Unix.
+    /// Each tuple is `(target_fd, source_file)`.
+    #[cfg(unix)]
+    pub extra_fds: Vec<(i32, std::fs::File)>,
+    /// File descriptors to close in the child process on Unix before `exec`.
+    #[cfg(unix)]
+    pub close_fds: Vec<i32>,
 }
 
 impl SpawnConfig {
@@ -221,6 +228,10 @@ impl SpawnConfig {
             stderr: Io::Inherit,
             process_group: ProcessGroup::Inherit,
             argv0: None,
+            #[cfg(unix)]
+            extra_fds: Vec::new(),
+            #[cfg(unix)]
+            close_fds: Vec::new(),
         }
     }
 

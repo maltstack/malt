@@ -208,6 +208,13 @@ impl<'a> Lexer<'a> {
                         // elided. Reset last_byte_end; if nothing follows, we'll
                         // produce a zero-length span which is fine (caller handles it).
                     }
+                    Some((_, '\r')) => {
+                        self.next_char();
+                        if self.peek_char() == Some('\n') {
+                            self.next_char();
+                        }
+                        // CRLF line continuation.
+                    }
                     Some((_, c)) => {
                         self.next_char();
                         last_byte_end = start + 1 + c.len_utf8();
@@ -255,6 +262,13 @@ impl<'a> Lexer<'a> {
                                     // Line continuation: consume backslash + newline, continue word.
                                     // Do NOT extend span to include the \\\n — they are elided.
                                     self.next_char();
+                                }
+                                Some((_, '\r')) => {
+                                    // CRLF line continuation: consume backslash + \r + optional \n.
+                                    self.next_char();
+                                    if self.peek_char() == Some('\n') {
+                                        self.next_char();
+                                    }
                                 }
                                 Some((_, c)) => {
                                     self.next_char();
@@ -369,7 +383,14 @@ impl<'a> Lexer<'a> {
                 Some((_, '\\')) => {
                     // Consume the escaped character (if any).
                     // Even if next char is `"`, it does NOT close the quote.
-                    let _ = self.next_char();
+                    if self.peek_char() == Some('\r') {
+                        self.next_char();
+                        if self.peek_char() == Some('\n') {
+                            self.next_char();
+                        }
+                    } else {
+                        let _ = self.next_char();
+                    }
                 }
                 Some((pos, '$')) => {
                     match self.peek_char() {
@@ -676,7 +697,14 @@ impl<'a> Lexer<'a> {
                 Some((pos, '`')) => return Ok(pos + 1),
                 Some((_, '\\')) => {
                     // `\` inside backticks escapes the next character.
-                    let _ = self.next_char();
+                    if self.peek_char() == Some('\r') {
+                        self.next_char();
+                        if self.peek_char() == Some('\n') {
+                            self.next_char();
+                        }
+                    } else {
+                        let _ = self.next_char();
+                    }
                 }
                 Some(_) => {}
                 None => {
@@ -1080,9 +1108,18 @@ impl<'a> Iterator for Lexer<'a> {
             _ => {
                 // Backslash-newline at the start of a token position is a line
                 // continuation — skip both characters and restart tokenization.
-                if ch == '\\' && self.peek_char() == Some('\n') {
-                    self.next_char();
-                    return self.next();
+                if ch == '\\' {
+                    if self.peek_char() == Some('\n') {
+                        self.next_char();
+                        return self.next();
+                    }
+                    if self.peek_char() == Some('\r') {
+                        self.next_char();
+                        if self.peek_char() == Some('\n') {
+                            self.next_char();
+                        }
+                        return self.next();
+                    }
                 }
 
                 // `[` at word start: check for `[[`

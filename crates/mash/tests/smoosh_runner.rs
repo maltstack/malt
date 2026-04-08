@@ -8,6 +8,9 @@
 //!
 //! Override mash path:
 //!   MASH=/path/to/mash cargo test -p mash --test smoosh_runner
+//!
+//! Override Smoosh corpus directory (expects `*.test` files):
+//!   MASH_SMOOSH_TEST_DIR=/path/to/smoosh/tests/shell cargo test -p mash --test smoosh_runner
 
 use std::env;
 use std::fs;
@@ -60,6 +63,12 @@ fn mash_binary() -> PathBuf {
 }
 
 fn test_data_dir() -> PathBuf {
+    if let Ok(path) = env::var("MASH_SMOOSH_TEST_DIR") {
+        let candidate = PathBuf::from(path);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
     let manifest = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest).join("tests/shell_suites/smoosh/shell")
 }

@@ -5,6 +5,7 @@
 //! We manage the process lifecycle ourselves via `nix::sys::wait::waitpid`.
 
 use super::{Child, ChildInner, ExitStatus, Io, ProcessGroup, SpawnConfig, SpawnError};
+use std::os::fd::AsRawFd;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::Stdio;
@@ -42,6 +43,8 @@ fn map_spawn_error(e: std::io::Error, program: &std::path::Path) -> SpawnError {
 }
 
 pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
+    let extra_fds = config.extra_fds;
+    let close_fds = config.close_fds;
     let mut cmd = std::process::Command::new(&config.program);
     cmd.args(&config.args);
 
@@ -76,7 +79,7 @@ pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
     };
 
     // SAFETY: This closure runs between fork() and exec() in the child process.
-    // We only call async-signal-safe functions here: setpgid is async-signal-safe.
+    // We only call async-signal-safe functions here.
     unsafe {
         cmd.pre_exec(move || {
             if let Some(pgid) = pg {
@@ -86,6 +89,21 @@ pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
                 );
                 if let Err(e) = result {
                     return Err(std::io::Error::from_raw_os_error(e as i32));
+                }
+            }
+            for fd in &close_fds {
+                if libc::close(*fd) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            for (target_fd, source_file) in &extra_fds {
+                let src_fd = source_file.as_raw_fd();
+                if src_fd != *target_fd && libc::dup2(src_fd, *target_fd) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let flags = libc::fcntl(*target_fd, libc::F_GETFD);
+                if flags >= 0 {
+                    let _ = libc::fcntl(*target_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
                 }
             }
             Ok(())

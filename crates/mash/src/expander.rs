@@ -138,6 +138,12 @@ fn expand_string_inner(
                                         chars.next();
                                         result.push(next);
                                     }
+                                    '\r' => {
+                                        chars.next();
+                                        if chars.peek() == Some(&'\n') {
+                                            chars.next();
+                                        }
+                                    }
                                     _ => {
                                         result.push('\\');
                                     }
@@ -190,6 +196,11 @@ fn expand_string_inner(
                 if let Some(&next) = chars.peek() {
                     if next == '\n' {
                         chars.next(); // line continuation
+                    } else if next == '\r' {
+                        chars.next();
+                        if chars.peek() == Some(&'\n') {
+                            chars.next();
+                        }
                     } else {
                         chars.next();
                         result.push(S_QUOTED);
@@ -205,6 +216,12 @@ fn expand_string_inner(
                     match next {
                         '\n' => {
                             chars.next();
+                        }
+                        '\r' => {
+                            chars.next();
+                            if chars.peek() == Some(&'\n') {
+                                chars.next();
+                            }
                         }
                         '$' | '`' | '\\' => {
                             chars.next();
@@ -1252,6 +1269,12 @@ fn expand_backtick(
                     }
                     '\n' => {
                         chars.next();
+                    }
+                    '\r' => {
+                        chars.next();
+                        if chars.peek() == Some(&'\n') {
+                            chars.next();
+                        }
                     }
                     _ => cmd.push('\\'),
                 }

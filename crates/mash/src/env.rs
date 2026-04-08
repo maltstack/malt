@@ -1150,6 +1150,7 @@ impl Env {
     }
 
     pub fn open_fd(&self, fd: u32) -> std::io::Result<File> {
+        let fd = self.resolve_fd_target(fd).unwrap_or(fd);
         if let Some(path) = self.fd_snapshot_path(fd) {
             return std::fs::OpenOptions::new()
                 .read(true)
@@ -1160,6 +1161,7 @@ impl Env {
     }
 
     pub fn open_fd_read(&self, fd: u32) -> std::io::Result<File> {
+        let fd = self.resolve_fd_target(fd).unwrap_or(fd);
         if let Some(path) = self.fd_snapshot_path(fd) {
             return std::fs::OpenOptions::new().read(true).open(path);
         }
@@ -1167,6 +1169,7 @@ impl Env {
     }
 
     pub fn open_fd_write(&self, fd: u32) -> std::io::Result<File> {
+        let fd = self.resolve_fd_target(fd).unwrap_or(fd);
         if let Some(path) = self.fd_snapshot_path(fd) {
             let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
             file.seek(SeekFrom::End(0))?;
@@ -1185,6 +1188,44 @@ impl Env {
         self.fd_registry.is_registered(fd)
             || self.fd_aliases_lock().contains_key(&fd)
             || self.fd_snapshots_lock().contains_key(&fd)
+    }
+
+    pub fn nonstdio_fds(&self) -> Vec<u32> {
+        let mut fds: Vec<u32> = self
+            .fd_registry
+            .list_fds()
+            .into_iter()
+            .filter(|fd| *fd > 2)
+            .collect();
+        fds.extend(
+            self.fd_aliases_lock()
+                .keys()
+                .copied()
+                .filter(|fd| *fd > 2),
+        );
+        fds.extend(
+            self.fd_snapshots_lock()
+                .keys()
+                .copied()
+                .filter(|fd| *fd > 2),
+        );
+        fds.sort_unstable();
+        fds.dedup();
+        fds
+    }
+
+    fn resolve_fd_target(&self, fd: u32) -> Option<u32> {
+        let mut current = fd;
+        for _ in 0..64 {
+            let Some(next) = self.fd_alias_target(current) else {
+                return Some(current);
+            };
+            if next == current {
+                return Some(next);
+            }
+            current = next;
+        }
+        Some(current)
     }
 
     fn history_lock(&self) -> MutexGuard<'_, Vec<String>> {

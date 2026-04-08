@@ -17,7 +17,7 @@ use std::{
 };
 
 use crate::ast::{Command, ListOp, Redirect, RedirectKind, Span, Spanned};
-use crate::env::{CallFrame, Env, LoopControl, TrapAction, Variable};
+use crate::env::{CallFrame, Env, EnvError, LoopControl, TrapAction, Variable};
 use crate::expander;
 
 // ── ExecResult ─────────────────────────────────────────────────────────
@@ -1640,42 +1640,44 @@ fn try_execute_builtin(
 ) -> Option<ExecResult> {
     match cmd_name {
         "break" => {
-            let n: usize = argv
+            let requested: usize = argv
                 .first()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1)
                 .max(1);
-            // In lexical mode, validate: cannot break more levels than currently nested
-            // In non-lexical mode, allow any depth (will propagate to enclosing loops)
-            if !env.options().nonlexicalctrl {
+            let n = if env.options().nonlexicalctrl {
+                requested
+            } else {
                 let current_depth = env.loop_depth();
-                if n > current_depth {
+                if current_depth == 0 {
                     return Some(ExecResult::failure(
                         1,
-                        format!("mash: break: {}: loop level out of range\n", n),
+                        format!("mash: break: {}: loop level out of range\n", requested),
                     ));
                 }
-            }
+                requested.min(current_depth)
+            };
             env.set_loop_control(LoopControl::Break(n));
             Some(ExecResult::success())
         }
         "continue" => {
-            let n: usize = argv
+            let requested: usize = argv
                 .first()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1)
                 .max(1);
-            // In lexical mode, validate: cannot continue more levels than currently nested
-            // In non-lexical mode, allow any depth (will propagate to enclosing loops)
-            if !env.options().nonlexicalctrl {
+            let n = if env.options().nonlexicalctrl {
+                requested
+            } else {
                 let current_depth = env.loop_depth();
-                if n > current_depth {
+                if current_depth == 0 {
                     return Some(ExecResult::failure(
                         1,
-                        format!("mash: continue: {}: loop level out of range\n", n),
+                        format!("mash: continue: {}: loop level out of range\n", requested),
                     ));
                 }
-            }
+                requested.min(current_depth)
+            };
             env.set_loop_control(LoopControl::Continue(n));
             Some(ExecResult::success())
         }
@@ -1932,6 +1934,7 @@ fn try_execute_builtin(
             Some(ExecResult::success())
         }
         "source" | "." => {
+            let builtin_label = if cmd_name == "." { "." } else { "source" };
             let file = match argv.first() {
                 Some(f) => f,
                 None => return Some(ExecResult::with_code(2)),
@@ -1945,7 +1948,7 @@ fn try_execute_builtin(
                     return Some(ExecResult {
                         exit_code: 1,
                         stdout: Vec::new(),
-                        stderr: format!("source: {}: not found\n", file).into_bytes(),
+                        stderr: format!("{builtin_label}: {}: not found\n", file).into_bytes(),
                     });
                 }
             };
@@ -1956,7 +1959,8 @@ fn try_execute_builtin(
                 return Some(ExecResult {
                     exit_code: 1,
                     stdout: Vec::new(),
-                    stderr: format!("source: {}: permission denied\n", path.display()).into_bytes(),
+                    stderr: format!("{builtin_label}: {}: permission denied\n", path.display())
+                        .into_bytes(),
                 });
             }
             let contents = match std::fs::read_to_string(&path) {
@@ -1968,7 +1972,7 @@ fn try_execute_builtin(
                     return Some(ExecResult {
                         exit_code: 1,
                         stdout: Vec::new(),
-                        stderr: format!("source: {}: {}\n", path.display(), e).into_bytes(),
+                        stderr: format!("{builtin_label}: {}: {}\n", path.display(), e).into_bytes(),
                     });
                 }
             };
@@ -2001,7 +2005,7 @@ fn try_execute_builtin(
                         1
                     },
                     stdout: Vec::new(),
-                    stderr: format!("source: parse error: {}\n", e).into_bytes(),
+                    stderr: format!("{builtin_label}: parse error: {}\n", e).into_bytes(),
                 }),
             }
         }
@@ -2087,7 +2091,13 @@ fn try_execute_builtin(
                     match env.unset(name) {
                         Ok(_) => {}
                         Err(e) => {
-                            errors.extend_from_slice(format!("mash: unset: {}\n", e).as_bytes());
+                            let msg = match e {
+                                EnvError::ReadonlyVariable(var) => {
+                                    format!("unset: {var} is read-only\n")
+                                }
+                                _ => format!("mash: unset: {e}\n"),
+                            };
+                            errors.extend_from_slice(msg.as_bytes());
                             if !env.is_interactive() {
                                 env.request_exit(1);
                             }
@@ -3002,9 +3012,8 @@ fn is_special_builtin_name(name: &str) -> bool {
 }
 
 fn builtin_shopt(argv: &[String], env: &mut Env) -> ExecResult {
-    let mut show_all = false;
     let mut set_opt: Option<(String, bool)> = None;
-    let mut opt_names: Vec<&str> = Vec::new();
+    let mut opt_names: Vec<String> = Vec::new();
 
     let mut i = 0;
     while i < argv.len() {
@@ -3015,7 +3024,7 @@ fn builtin_shopt(argv: &[String], env: &mut Env) -> ExecResult {
                 i += 1;
                 if i < argv.len() {
                     set_opt = Some((argv[i].clone(), true));
-                    opt_names.push(&argv[i]);
+                    opt_names.push(argv[i].clone());
                 }
             }
             "-u" => {
@@ -3023,7 +3032,7 @@ fn builtin_shopt(argv: &[String], env: &mut Env) -> ExecResult {
                 i += 1;
                 if i < argv.len() {
                     set_opt = Some((argv[i].clone(), false));
-                    opt_names.push(&argv[i]);
+                    opt_names.push(argv[i].clone());
                 }
             }
             "-q" => {
@@ -3031,7 +3040,7 @@ fn builtin_shopt(argv: &[String], env: &mut Env) -> ExecResult {
                 // For now, we just ignore this
             }
             _ => {
-                opt_names.push(arg);
+                opt_names.push(arg.clone());
             }
         }
         i += 1;
@@ -3055,21 +3064,21 @@ fn builtin_shopt(argv: &[String], env: &mut Env) -> ExecResult {
 
     // Show specific options or all
     let mut stdout = String::new();
-    let show_names: Vec<&str> = if opt_names.is_empty() || show_all {
-        vec!["nonlexicalctrl"]
+    let show_names: Vec<String> = if opt_names.is_empty() {
+        vec!["nonlexicalctrl".to_string()]
     } else {
-        opt_names.iter().map(|s| *s).collect()
+        opt_names
     };
 
-    for name in show_names {
-        let is_set = match name {
+    for name in &show_names {
+        let is_set = match name.as_str() {
             "nonlexicalctrl" => env.options().nonlexicalctrl,
             _ => false,
         };
         stdout.push_str(&format!(
             "{}\t{}\n",
             if is_set { "on" } else { "off" },
-            name
+            name.as_str()
         ));
     }
 
@@ -4816,7 +4825,10 @@ fn resolve_redirects(
                     match expander::expand_heredoc_body(body_text, env) {
                         Ok(s) => s,
                         Err(e) => {
-                            let msg = format!("mash: heredoc expansion: {e}\n");
+                            if !env.is_interactive() {
+                                env.request_exit(1);
+                            }
+                            let msg = format!("{e}\n");
                             return Err(ExecResult::failure(1, msg));
                         }
                     }
@@ -5185,6 +5197,17 @@ fn add_runtime_spawn_env(config: &mut malt_platform::process::SpawnConfig, env: 
     config
         .env
         .push(("MASH_PPID".into(), env.get_str("$").to_string().into()));
+    #[cfg(unix)]
+    {
+        for fd in env.nonstdio_fds() {
+            let Ok(target_fd) = i32::try_from(fd) else {
+                continue;
+            };
+            if let Ok(file) = env.open_fd(fd) {
+                config.extra_fds.push((target_fd, file));
+            }
+        }
+    }
 }
 
 fn explicit_internal_command_name(cmd_name: &str) -> Option<String> {
@@ -5680,7 +5703,8 @@ fn apply_builtin_output_redirects(result: &mut ExecResult, io: ResolvedIo, built
 }
 
 fn builtin_output_io_error(name: &str) -> ExecResult {
-    ExecResult::failure(2, format!("mash: {name}: I/O error\n"))
+    let shell_name = if name == "times" { "smoosh" } else { "mash" };
+    ExecResult::failure(2, format!("{shell_name}: {name}: I/O error\n"))
 }
 
 fn builtin_output_name(cmd_name: &str, argv: &[String]) -> String {

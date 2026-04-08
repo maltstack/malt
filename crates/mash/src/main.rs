@@ -54,7 +54,7 @@ fn main() {
     }
 
     if interactive && !malt_platform::io::is_tty(0) {
-        run_stdin(interactive, false);
+        run_stdin(interactive, true);
         return;
     }
 
@@ -184,16 +184,15 @@ fn run_stdin(interactive: bool, prompt: bool) {
 
     let stdin = io::stdin();
 
-    if prompt {
-        println!("MASH 0.1.0 -- POSIX Shell for MALT");
-        println!("Type 'exit' to quit");
-        println!();
-    }
-
     loop {
         if prompt {
-            print!("$ ");
-            let _ = io::stdout().flush();
+            let ps1 = env.get_str("PS1");
+            if ps1.is_empty() {
+                eprint!("$ ");
+            } else {
+                eprint!("{ps1}");
+            }
+            let _ = io::stderr().flush();
         }
 
         let mut line = String::new();
@@ -225,6 +224,7 @@ fn run_stdin(interactive: bool, prompt: bool) {
                     }
                     Err(e) => {
                         eprintln!("mash: parse error: {}", e);
+                        env.set_exit_code(1);
                         if !prompt {
                             exit(1);
                         }
@@ -238,7 +238,5 @@ fn run_stdin(interactive: bool, prompt: bool) {
         }
     }
 
-    if !prompt {
-        exit(env.exit_code());
-    }
+    exit(env.exit_code());
 }
