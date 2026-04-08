@@ -60,7 +60,11 @@ impl ExecResult {
 }
 
 fn noninteractive_shell_error(env: &mut Env, msg: impl Into<String>) -> ExecResult {
-    let result = ExecResult::failure(1, msg);
+    noninteractive_shell_failure(env, 1, msg)
+}
+
+fn noninteractive_shell_failure(env: &mut Env, code: i32, msg: impl Into<String>) -> ExecResult {
+    let result = ExecResult::failure(code, msg);
     if !env.is_interactive() {
         env.request_exit(result.exit_code);
     }
@@ -1622,7 +1626,9 @@ fn expand_prefix_assignments(
             Ok(v) => v,
             Err(e) => return Err(noninteractive_shell_error(env, format!("mash: {e}\n"))),
         };
-        let _ = assign_env.set(&key, Variable::string(val.clone()));
+        if let Err(e) = assign_env.set(&key, Variable::string(val.clone())) {
+            return Err(noninteractive_shell_failure(env, 2, format!("mash: {e}\n")));
+        }
         child_env.push((key, val));
     }
 
@@ -4452,10 +4458,10 @@ fn execute_env_assign(assigns: &[(Span, Span)], source: &str, env: &mut Env) -> 
                 };
                 v
             }
-            Err(e) => return ExecResult::failure(1, format!("mash: {e}\n")),
+            Err(e) => return noninteractive_shell_error(env, format!("mash: {e}\n")),
         };
         if let Err(e) = env.set(key, Variable::string(val)) {
-            return ExecResult::failure(1, format!("mash: {e}\n"));
+            return noninteractive_shell_failure(env, 2, format!("mash: {e}\n"));
         }
     }
     ExecResult::with_code(exit_code)
