@@ -87,9 +87,26 @@ pub fn expand_heredoc_body(body: &str, env: &mut Env) -> Result<String, ExpandEr
 
 /// Evaluate arithmetic expression.
 pub fn eval_arithmetic(expr: &str, env: &mut Env) -> Result<i64, ExpandError> {
-    let tokens = tokenize_arith(expr)?;
+    let trace = std::env::var_os("MASH_ARITH_TRACE").is_some();
+    let tokens = match tokenize_arith(expr) {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            if trace {
+                eprintln!("ARITH_TRACE tokenize expr={expr:?} err={err}");
+            }
+            return Err(err);
+        }
+    };
     let mut parser = ArithParser::new(&tokens, env);
-    let result = parser.parse_expr(0)?;
+    let result = match parser.parse_expr(0) {
+        Ok(result) => result,
+        Err(err) => {
+            if trace {
+                eprintln!("ARITH_TRACE parse expr={expr:?} err={err}");
+            }
+            return Err(err);
+        }
+    };
     Ok(result)
 }
 
@@ -134,7 +151,10 @@ fn expand_string_inner(
                             chars.next();
                             if let Some(&next) = chars.peek() {
                                 match next {
-                                    '$' | '`' | '"' | '\\' | '\n' => {
+                                    '\n' => {
+                                        chars.next();
+                                    }
+                                    '$' | '`' | '"' | '\\' => {
                                         chars.next();
                                         result.push(next);
                                     }
@@ -1346,11 +1366,31 @@ fn collect_until_double_paren(chars: &mut std::iter::Peekable<std::str::Chars>) 
 fn collect_until_close_paren(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
     let mut cmd = String::new();
     let mut depth = 1;
+    let mut at_word_start = true;
     while let Some(c) = chars.next() {
+        if c == '#' && at_word_start {
+            cmd.push(c);
+            while let Some(next) = chars.next() {
+                cmd.push(next);
+                if next == '\n' {
+                    at_word_start = true;
+                    break;
+                }
+                if next == '\r' {
+                    if chars.peek() == Some(&'\n') {
+                        cmd.push(chars.next().expect("peeked newline should exist"));
+                    }
+                    at_word_start = true;
+                    break;
+                }
+            }
+            continue;
+        }
         if c == '\\' {
             cmd.push(c);
             if let Some(next) = chars.next() {
                 cmd.push(next);
+                at_word_start = matches!(next, '\n' | '\r');
             }
             continue;
         }
@@ -1367,6 +1407,7 @@ fn collect_until_close_paren(chars: &mut std::iter::Peekable<std::str::Chars>) -
                     }
                 }
             }
+            at_word_start = false;
             continue;
         }
         if c == '"' {
@@ -1382,6 +1423,7 @@ fn collect_until_close_paren(chars: &mut std::iter::Peekable<std::str::Chars>) -
                     }
                 }
             }
+            at_word_start = false;
             continue;
         }
         if c == '(' {
@@ -1394,6 +1436,7 @@ fn collect_until_close_paren(chars: &mut std::iter::Peekable<std::str::Chars>) -
             }
         }
         cmd.push(c);
+        at_word_start = matches!(c, ' ' | '\t' | '\n' | '\r' | ';' | '&' | '|' | '<' | '>' | '(' | ')');
     }
     cmd
 }

@@ -42,6 +42,11 @@ fn map_spawn_error(e: std::io::Error, program: &std::path::Path) -> SpawnError {
     }
 }
 
+pub(super) fn parent_pid() -> Option<u32> {
+    let ppid = nix::unistd::getppid().as_raw();
+    (ppid > 0).then_some(ppid as u32)
+}
+
 pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
     let extra_fds = config.extra_fds;
     let close_fds = config.close_fds;

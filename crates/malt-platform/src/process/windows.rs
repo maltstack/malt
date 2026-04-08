@@ -24,6 +24,10 @@ use windows_sys::Win32::System::Threading::{
     INFINITE,
 };
 
+pub(super) fn parent_pid() -> Option<u32> {
+    None
+}
+
 const DUPLICATE_SAME_ACCESS: u32 = 0x0000_0002;
 
 enum StdioSpec {

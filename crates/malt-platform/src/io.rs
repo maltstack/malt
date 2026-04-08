@@ -63,7 +63,13 @@ pub fn into_file<T: std::os::windows::io::IntoRawHandle>(handle: T) -> std::fs::
 pub fn create_pipe() -> Result<(std::fs::File, std::fs::File), std::io::Error> {
     #[cfg(unix)]
     {
+        use nix::fcntl::{fcntl, FcntlArg, FdFlag};
+
         let (read_fd, write_fd) = nix::unistd::pipe()
+            .map_err(std::io::Error::from)?;
+        fcntl(&read_fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))
+            .map_err(std::io::Error::from)?;
+        fcntl(&write_fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))
             .map_err(std::io::Error::from)?;
         Ok((std::fs::File::from(read_fd), std::fs::File::from(write_fd)))
     }

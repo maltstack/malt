@@ -169,6 +169,14 @@ fn double_bracket() {
     );
 }
 
+#[test]
+fn posix_char_class_pattern_stays_word_token() {
+    let toks = spanned("[[:alnum:]]");
+    assert_eq!(toks[0].span.text("[[:alnum:]]"), "[[:alnum:]]");
+    assert!(matches!(toks[0].node, Token::Word(_)));
+    assert!(matches!(toks[1].node, Token::Eof));
+}
+
 // ---------------------------------------------------------------------------
 // Redirects
 // ---------------------------------------------------------------------------

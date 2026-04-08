@@ -1,8 +1,29 @@
 use std::process::Command;
 use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 fn shell_path(path: &std::path::Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> std::process::Output {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait().expect("poll child") {
+            Some(_) => return child.wait_with_output().expect("wait with output"),
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let output = child.wait_with_output().expect("collect timed out child");
+                panic!(
+                    "child timed out after {:?}\nstdout: {}\nstderr: {}",
+                    timeout,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
 }
 
 #[test]
@@ -85,6 +106,51 @@ fn parse_error_stderr_can_be_captured_via_two_to_one_before_stdout_redirect() {
         "stdout: {} stderr: {}",
         stdout,
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[cfg(not(windows))]
+fn command_substitution_captures_modernish_style_putln_pipeline() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("driver.sh");
+    let out = dir.path().join("captured.txt");
+    std::fs::write(
+        &script,
+        format!(
+            "SIGPIPESTATUS=141\n\
+             die() {{ :; }}\n\
+             putln() {{\n\
+               case $# in\n\
+               ( 0 ) PATH=/bin command printf '\\n' ;;\n\
+               ( * ) PATH=/bin command printf '%s\\n' \"$@\" ;;\n\
+               esac || {{ let \"$? > 125 && $? != SIGPIPESTATUS\" && die \"putln: internal error\"; }}\n\
+             }}\n\
+             x=$(putln abcxyz | tr '[:lower:]' '[:upper:]' 2>/dev/null)\n\
+             printf '%s' \"$x\" > {}\n",
+            shell_path(&out)
+        ),
+    )
+    .expect("write script");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_mash"))
+        .arg(shell_path(&script))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mash");
+    let output = wait_with_timeout(child, Duration::from_secs(2));
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&out).expect("read captured output"),
+        "ABCXYZ"
     );
 }
 
@@ -567,5 +633,280 @@ fn script_file_sets_special_parameter_zero_to_script_path() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         format!("{}\n", shell_path(&script))
+    );
+}
+
+#[test]
+#[cfg(not(windows))]
+fn script_file_sets_ppid_to_nonzero_parent_pid() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("ppid.sh");
+    std::fs::write(
+        &script,
+        "case ${PPID-} in\n( '' | 0* | *[!0123456789]* ) printf 'BAD:%s\\n' \"${PPID-}\" ;;\n( * ) printf '%s\\n' \"$PPID\" ;;\nesac\n",
+    )
+    .expect("write script");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mash"))
+        .arg(shell_path(&script))
+        .output()
+        .expect("run mash");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    assert!(
+        !trimmed.starts_with("BAD:"),
+        "stdout: {} stderr: {}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let ppid: u32 = trimmed
+        .parse()
+        .expect("PPID should be a non-zero decimal integer");
+    assert!(ppid > 0, "stdout: {stdout}");
+}
+
+#[test]
+#[cfg(not(windows))]
+fn stale_mash_ppid_env_does_not_override_actual_parent_pid() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let outer = dir.path().join("outer.sh");
+    let parent_file = dir.path().join("parent.txt");
+    let child_file = dir.path().join("child.txt");
+    std::fs::write(
+        &outer,
+        format!(
+            "printf '%s\\n' \"$$\" > \"{}\"\n{} -c 'printf \"%s\\n\" \"$PPID\"' > \"{}\"\n",
+            shell_path(&parent_file),
+            shell_path(std::path::Path::new(env!("CARGO_BIN_EXE_mash"))),
+            shell_path(&child_file),
+        ),
+    )
+    .expect("write outer script");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mash"))
+        .env("MASH_PPID", "11111")
+        .arg(shell_path(&outer))
+        .output()
+        .expect("run outer mash");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let parent = std::fs::read_to_string(&parent_file)
+        .expect("read parent pid")
+        .trim()
+        .to_string();
+    let child = std::fs::read_to_string(&child_file)
+        .expect("read child ppid")
+        .trim()
+        .to_string();
+
+    assert_eq!(child, parent, "child should see the actual outer shell pid");
+    assert_ne!(child, "11111", "stale MASH_PPID should not win on unix");
+}
+
+#[test]
+#[cfg(not(windows))]
+fn pipeline_spawn_overrides_stale_mash_ppid_for_child_shell() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let outer = dir.path().join("outer.sh");
+    let parent_file = dir.path().join("parent.txt");
+    let child_file = dir.path().join("child.txt");
+    std::fs::write(
+        &outer,
+        format!(
+            "printf '%s\\n' \"$$\" > \"{}\"\nprintf x | {} -c 'printf \"%s\\n\" \"$PPID\"' {} > \"{}\"\n",
+            shell_path(&parent_file),
+            shell_path(std::path::Path::new(env!("CARGO_BIN_EXE_mash"))),
+            shell_path(std::path::Path::new(env!("CARGO_BIN_EXE_mash"))),
+            shell_path(&child_file),
+        ),
+    )
+    .expect("write outer script");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mash"))
+        .env("MASH_PPID", "11111")
+        .arg(shell_path(&outer))
+        .output()
+        .expect("run outer mash");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let parent = std::fs::read_to_string(&parent_file)
+        .expect("read parent pid")
+        .trim()
+        .to_string();
+    let child = std::fs::read_to_string(&child_file)
+        .expect("read child ppid")
+        .trim()
+        .to_string();
+
+    assert_eq!(child, parent, "pipeline child should see the actual outer shell pid");
+    assert_ne!(child, "11111", "stale MASH_PPID should not leak through pipeline spawn");
+}
+
+#[test]
+#[cfg(not(windows))]
+fn cd_physical_option_with_double_dash_is_accepted() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mash"))
+        .args(["-c", "cd -P -- / && pwd", "mash"])
+        .output()
+        .expect("run mash");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "/\n");
+}
+
+#[test]
+#[cfg(not(windows))]
+fn modernish_min_posix_gate_succeeds() {
+    let min_posix =
+        "cd -P -- / && ! { ! case x in ( x ) : ${0##*/} || : $( : ) ;; esac; }";
+    let output = Command::new(env!("CARGO_BIN_EXE_mash"))
+        .args(["-c", min_posix, "mash"])
+        .output()
+        .expect("run mash");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[cfg(not(windows))]
+fn allexport_option_exports_subsequent_assignments() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mash"))
+        .args([
+            "-c",
+            "set -o allexport; FOO=bar; export -p",
+            "mash",
+        ])
+        .output()
+        .expect("run mash");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("export FOO=\"bar\""),
+        "stdout: {} stderr: {}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn sourced_function_wrapper_can_set_caller_variable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let helper = dir.path().join("helper.sh");
+    let script = dir.path().join("script.sh");
+    std::fs::write(&helper, "_Msh_testFn() { DEFPATH=ok; }\n_Msh_testFn\n").expect("helper");
+    std::fs::write(
+        &script,
+        format!(
+            ". {}\nprintf '<%s>\\n' \"$DEFPATH\"\n",
+            shell_path(&helper)
+        ),
+    )
+    .expect("script");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mash"))
+        .arg(shell_path(&script))
+        .output()
+        .expect("run mash");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "<ok>\n");
+}
+
+#[test]
+fn script_file_trap_zero_runs_at_shell_exit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("driver.sh");
+    std::fs::write(&script, "trap 'echo ZERO_OK' 0\n").expect("write script");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mash"))
+        .arg(shell_path(&script))
+        .output()
+        .expect("run mash");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ZERO_OK\n");
+}
+
+#[test]
+fn sourced_trap_zero_is_visible_as_exit_and_runs_at_shell_exit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sourced = dir.path().join("trap.sh");
+    let driver = dir.path().join("driver.sh");
+    std::fs::write(&sourced, "trap 'echo ZERO_OK' 0\n").expect("write sourced script");
+    std::fs::write(
+        &driver,
+        format!(
+            ". {}\necho AFTER\ntrap -p EXIT\n",
+            shell_path(&sourced)
+        ),
+    )
+    .expect("write driver");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mash"))
+        .arg(shell_path(&driver))
+        .output()
+        .expect("run mash");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "AFTER\ntrap -- 'echo ZERO_OK' EXIT\nZERO_OK\n"
     );
 }

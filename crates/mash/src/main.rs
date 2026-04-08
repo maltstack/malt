@@ -6,6 +6,12 @@
 use std::io::{self, BufRead, Write};
 use std::process::exit;
 
+#[derive(Clone, Copy)]
+struct StartupOption {
+    flag: char,
+    enabled: bool,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -16,6 +22,7 @@ fn main() {
     }
 
     let mut interactive = false;
+    let mut startup_options = Vec::new();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -34,39 +41,102 @@ fn main() {
                 } else {
                     Vec::new()
                 };
-                run_command(command, interactive, &arg0, &positional);
+                run_command(command, interactive, &arg0, &positional, &startup_options);
                 return;
             }
-            arg if !arg.starts_with('-') || arg == "-" => {
-                let positional = if i + 1 <= args.len() {
-                    args[i + 1..].to_vec()
-                } else {
-                    Vec::new()
-                };
-                run_script_file(arg, interactive, &positional);
-                return;
-            }
-            unknown => {
-                eprintln!("mash: unsupported option: {unknown}");
-                exit(2);
-            }
+            arg => match parse_startup_option_token(arg) {
+                Some(Ok(mut parsed)) => {
+                    startup_options.append(&mut parsed);
+                    i += 1;
+                }
+                Some(Err(unknown)) => {
+                    eprintln!("mash: unsupported option: {unknown}");
+                    exit(2);
+                }
+                None => {
+                    if !arg.starts_with('-') || arg == "-" {
+                        let positional = if i + 1 <= args.len() {
+                            args[i + 1..].to_vec()
+                        } else {
+                            Vec::new()
+                        };
+                        run_script_file(arg, interactive, &positional, &startup_options);
+                        return;
+                    }
+                    eprintln!("mash: unsupported option: {arg}");
+                    exit(2);
+                }
+            },
         }
     }
 
     if interactive && !malt_platform::io::is_tty(0) {
-        run_stdin(interactive, true);
+        run_stdin(interactive, true, &startup_options);
         return;
     }
 
-    run_interactive();
+    run_interactive(&startup_options);
 }
 
-fn run_command(command: &str, interactive: bool, arg0: &str, positional: &[String]) {
+fn parse_startup_option_token(arg: &str) -> Option<Result<Vec<StartupOption>, String>> {
+    if arg.len() < 2 {
+        return None;
+    }
+    let enabled = match arg.as_bytes()[0] {
+        b'-' => true,
+        b'+' => false,
+        _ => return None,
+    };
+
+    let mut parsed = Vec::new();
+    for flag in arg[1..].chars() {
+        match flag {
+            'a' | 'b' | 'C' | 'e' | 'f' | 'h' | 'm' | 'n' | 'u' | 'v' | 'x' => {
+                parsed.push(StartupOption { flag, enabled });
+            }
+            _ => return Some(Err(arg.to_string())),
+        }
+    }
+
+    if parsed.is_empty() {
+        return None;
+    }
+
+    Some(Ok(parsed))
+}
+
+fn apply_startup_options(env: &mut mash::env::Env, startup_options: &[StartupOption]) {
+    for option in startup_options {
+        match option.flag {
+            'a' => env.options_mut().allexport = option.enabled,
+            'b' => env.options_mut().notify = option.enabled,
+            'C' => env.options_mut().noclobber = option.enabled,
+            'e' => env.options_mut().errexit = option.enabled,
+            'f' => env.options_mut().noglob = option.enabled,
+            'h' => env.options_mut().hash_cmds = option.enabled,
+            'm' => env.options_mut().monitor = option.enabled,
+            'n' => env.options_mut().noexec = option.enabled,
+            'u' => env.options_mut().nounset = option.enabled,
+            'v' => env.options_mut().verbose = option.enabled,
+            'x' => env.options_mut().xtrace = option.enabled,
+            _ => {}
+        }
+    }
+}
+
+fn run_command(
+    command: &str,
+    interactive: bool,
+    arg0: &str,
+    positional: &[String],
+    startup_options: &[StartupOption],
+) {
     use mash::env::{Env, Variable};
     use mash::executor::execute_list;
 
     let mut env = Env::from_os();
     env.set_interactive(interactive);
+    apply_startup_options(&mut env, startup_options);
     env.set_positional_params(arg0, positional);
     if let Ok(self_exe) = std::env::current_exe() {
         let _ = env.set(
@@ -98,7 +168,12 @@ fn run_command(command: &str, interactive: bool, arg0: &str, positional: &[Strin
     }
 }
 
-fn run_script_file(path: &str, interactive: bool, positional: &[String]) {
+fn run_script_file(
+    path: &str,
+    interactive: bool,
+    positional: &[String],
+    startup_options: &[StartupOption],
+) {
     use mash::env::{Env, Variable};
     use mash::executor::execute_list;
 
@@ -118,6 +193,7 @@ fn run_script_file(path: &str, interactive: bool, positional: &[String]) {
 
     let mut env = Env::from_os();
     env.set_interactive(interactive);
+    apply_startup_options(&mut env, startup_options);
     env.set_positional_params(&path, positional);
     if let Ok(self_exe) = std::env::current_exe() {
         let _ = env.set(
@@ -165,16 +241,17 @@ fn resolve_script_path(path: &str) -> String {
     path.to_string()
 }
 
-fn run_interactive() {
-    run_stdin(true, true);
+fn run_interactive(startup_options: &[StartupOption]) {
+    run_stdin(true, true, startup_options);
 }
 
-fn run_stdin(interactive: bool, prompt: bool) {
+fn run_stdin(interactive: bool, prompt: bool, startup_options: &[StartupOption]) {
     use mash::env::{Env, Variable};
     use mash::executor::execute;
 
     let mut env = Env::from_os();
     env.set_interactive(interactive);
+    apply_startup_options(&mut env, startup_options);
     if let Ok(self_exe) = std::env::current_exe() {
         let _ = env.set(
             "MASH_SELF_EXE",

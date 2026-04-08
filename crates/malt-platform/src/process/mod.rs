@@ -470,3 +470,19 @@ pub fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
         )))
     }
 }
+
+/// Return the current process's parent PID when the platform can provide it.
+pub fn parent_pid() -> Option<u32> {
+    #[cfg(unix)]
+    {
+        unix::parent_pid()
+    }
+    #[cfg(windows)]
+    {
+        windows::parent_pid()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
+}

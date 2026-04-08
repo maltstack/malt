@@ -101,6 +101,20 @@ fn backslash_escape() {
 }
 
 #[test]
+fn double_quoted_backslash_newline_is_removed_in_words() {
+    let mut env = Env::empty();
+    let result = expand_word_nosplit("\"alpha \\\nomega\"", &mut env).unwrap();
+    assert_eq!(result, "alpha omega");
+}
+
+#[test]
+fn double_quoted_backslash_newline_is_removed_in_assignments() {
+    let mut env = Env::empty();
+    let result = expand_assignment_word_nosplit("alpha \\\nomega", &mut env).unwrap();
+    assert_eq!(result, "alpha omega");
+}
+
+#[test]
 fn case_pattern_expansion_preserves_backslash_newline_match() {
     let mut env = Env::empty();
     let word = expand_word_nosplit("'foo\\\nbar'", &mut env).unwrap();

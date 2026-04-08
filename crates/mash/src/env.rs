@@ -63,6 +63,7 @@ impl Variable {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellOptions {
+    pub allexport: bool,
     pub errexit: bool,
     pub nounset: bool,
     pub pipefail: bool,
@@ -82,6 +83,7 @@ pub struct ShellOptions {
 impl Default for ShellOptions {
     fn default() -> Self {
         Self {
+            allexport: false,
             errexit: false,
             nounset: false,
             pipefail: false,
@@ -103,6 +105,9 @@ impl Default for ShellOptions {
 impl ShellOptions {
     pub fn flags_string(&self) -> String {
         let mut s = String::new();
+        if self.allexport {
+            s.push('a');
+        }
         if self.errexit {
             s.push('e');
         }
@@ -300,6 +305,7 @@ pub struct Env {
     bg_pid_reporter: Option<Sender<u32>>,
     bg_pid_reporting_enabled: bool,
     current_job_id: Option<u32>,
+    last_command_substitution_status: Option<i32>,
 }
 
 impl Clone for Env {
@@ -340,6 +346,7 @@ impl Clone for Env {
             bg_pid_reporter: self.bg_pid_reporter.clone(),
             bg_pid_reporting_enabled: self.bg_pid_reporting_enabled,
             current_job_id: self.current_job_id,
+            last_command_substitution_status: self.last_command_substitution_status,
         }
     }
 }
@@ -375,11 +382,15 @@ impl Env {
             bg_pid_reporter: None,
             bg_pid_reporting_enabled: false,
             current_job_id: None,
+            last_command_substitution_status: None,
         };
         env.special
             .insert("$".to_string(), std::process::id().to_string());
         env.special.insert("?".to_string(), "0".to_string());
-        let ppid = std::env::var("MASH_PPID").unwrap_or_else(|_| "0".to_string());
+        let ppid = std::env::var("MASH_PPID")
+            .ok()
+            .or_else(|| malt_platform::process::parent_pid().map(|pid| pid.to_string()))
+            .unwrap_or_else(|| "0".to_string());
         env.special.insert("PPID".to_string(), ppid);
         env.scopes[0].insert(
             "IFS".to_string(),
@@ -468,11 +479,26 @@ impl Env {
         self.special.contains_key(name) || self.get(name).is_some()
     }
 
-    pub fn set(&mut self, name: &str, var: Variable) -> Result<(), EnvError> {
+    fn visible_scope_index_up_to(&self, name: &str, scope_count: usize) -> Option<usize> {
+        for i in (0..scope_count).rev() {
+            if self.unset_masks[i].contains(name) {
+                return None;
+            }
+            if self.scopes[i].contains_key(name) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    pub fn set(&mut self, name: &str, mut var: Variable) -> Result<(), EnvError> {
         if let Some(existing) = self.get(name) {
             if existing.readonly {
                 return Err(EnvError::ReadonlyVariable(name.to_string()));
             }
+        }
+        if self.options.allexport {
+            var.exported = true;
         }
         let top = self.scopes.last_mut().ok_or(EnvError::EmptyScopes)?;
         top.insert(name.to_string(), var);
@@ -483,14 +509,36 @@ impl Env {
         Ok(())
     }
 
-    pub fn set_global(&mut self, name: &str, var: Variable) -> Result<(), EnvError> {
+    pub fn set_global(&mut self, name: &str, mut var: Variable) -> Result<(), EnvError> {
         if let Some(existing) = self.scopes[0].get(name) {
             if existing.readonly {
                 return Err(EnvError::ReadonlyVariable(name.to_string()));
             }
         }
+        if self.options.allexport {
+            var.exported = true;
+        }
         self.scopes[0].insert(name.to_string(), var);
         self.unset_masks[0].remove(name);
+        Ok(())
+    }
+
+    pub fn set_local(&mut self, name: &str, mut var: Variable) -> Result<(), EnvError> {
+        if let Some(existing) = self.get(name) {
+            if existing.readonly {
+                return Err(EnvError::ReadonlyVariable(name.to_string()));
+            }
+        }
+        if self.options.allexport {
+            var.exported = true;
+        }
+        self.mark_local(name);
+        let top = self.scopes.last_mut().ok_or(EnvError::EmptyScopes)?;
+        top.insert(name.to_string(), var);
+        self.unset_masks
+            .last_mut()
+            .ok_or(EnvError::EmptyScopes)?
+            .remove(name);
         Ok(())
     }
 
@@ -573,6 +621,55 @@ impl Env {
         self.scopes.pop();
         self.unset_masks.pop();
         self.local_vars.pop();
+        Ok(())
+    }
+
+    pub fn pop_scope_with_merge(&mut self) -> Result<(), EnvError> {
+        if self.scopes.len() <= 1 {
+            return Err(EnvError::EmptyScopes);
+        }
+
+        let scope = self.scopes.pop().ok_or(EnvError::EmptyScopes)?;
+        let unset_mask = self.unset_masks.pop().ok_or(EnvError::EmptyScopes)?;
+        let local_vars = self.local_vars.pop().ok_or(EnvError::EmptyScopes)?;
+        let parent_idx = self.scopes.len() - 1;
+        let staged_names: HashSet<String> = scope.keys().cloned().collect();
+
+        for (name, var) in scope {
+            if local_vars.contains(&name) {
+                continue;
+            }
+            let target_idx = if self.scopes[parent_idx].contains_key(&name)
+                || self.local_vars[parent_idx].contains(&name)
+                || self.unset_masks[parent_idx].contains(&name)
+            {
+                parent_idx
+            } else {
+                self.visible_scope_index_up_to(&name, self.scopes.len())
+                    .unwrap_or(0)
+            };
+            self.scopes[target_idx].insert(name.clone(), var);
+            self.unset_masks[target_idx].remove(&name);
+        }
+
+        for name in unset_mask {
+            if local_vars.contains(&name) || staged_names.contains(&name) {
+                continue;
+            }
+            let target_idx = if self.scopes[parent_idx].contains_key(&name)
+                || self.local_vars[parent_idx].contains(&name)
+                || self.unset_masks[parent_idx].contains(&name)
+            {
+                Some(parent_idx)
+            } else {
+                self.visible_scope_index_up_to(&name, self.scopes.len())
+            };
+            if let Some(idx) = target_idx {
+                self.scopes[idx].remove(&name);
+                self.unset_masks[idx].insert(name);
+            }
+        }
+
         Ok(())
     }
 
@@ -682,6 +779,14 @@ impl Env {
 
     pub fn current_job_id(&self) -> Option<u32> {
         self.current_job_id
+    }
+
+    pub fn set_last_command_substitution_status(&mut self, status: Option<i32>) {
+        self.last_command_substitution_status = status;
+    }
+
+    pub fn take_last_command_substitution_status(&mut self) -> Option<i32> {
+        self.last_command_substitution_status.take()
     }
 
     pub fn take_pending_job_signal(&self) -> Option<(String, i32)> {

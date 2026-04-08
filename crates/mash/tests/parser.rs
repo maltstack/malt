@@ -686,6 +686,11 @@ mod regression {
     }
 
     #[test]
+    fn case_posix_char_class_patterns() {
+        parse("case x in\n( [[:alnum:]] )\n\tcase x in\n\t( [![:space:]] ) return 1 ;;\n\tesac ;;\nesac").unwrap();
+    }
+
+    #[test]
     fn nested_param_expansion_assign() {
         parse("echo ${X:=${Y:=default}}").unwrap();
     }

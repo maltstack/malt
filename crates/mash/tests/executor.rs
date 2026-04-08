@@ -55,6 +55,20 @@ fn builtin_echo_n_suppresses_trailing_newline() {
 }
 
 #[test]
+#[cfg(not(windows))]
+fn kill_dash_l_prints_signal_name() {
+    let output = run_stdout("command kill -l 1");
+    assert_eq!(output, "HUP\n");
+}
+
+#[test]
+#[cfg(not(windows))]
+fn command_substitution_captures_kill_dash_l_output() {
+    let output = run_stdout("sig=$(command kill -l 1); printf '%s' \"$sig\"");
+    assert_eq!(output, "HUP");
+}
+
+#[test]
 fn exit_code_zero() {
     let (result, _) = run("echo test");
     assert_eq!(result.exit_code, 0);
@@ -784,6 +798,36 @@ fn function_scope_positional_restore() {
 }
 
 #[test]
+fn function_assignment_persists_after_call() {
+    let output = run_stdout("f() { X=1; }; f; echo $X");
+    assert_eq!(output, "1\n");
+}
+
+#[test]
+fn function_prefix_assignment_does_not_persist_after_call() {
+    let output = run_stdout("X=outer; f() { echo $X; }; X=inner f; echo $X");
+    assert_eq!(output, "inner\nouter\n");
+}
+
+#[test]
+fn local_assignment_does_not_persist_after_call() {
+    let output = run_stdout("X=outer; f() { local X=inner; echo $X; }; f; echo $X");
+    assert_eq!(output, "inner\nouter\n");
+}
+
+#[test]
+fn for_loop_without_explicit_words_uses_function_positional_parameters() {
+    let output = run_stdout("f() { set -- a b c; for i do echo $i; done; }; f");
+    assert_eq!(output, "a\nb\nc\n");
+}
+
+#[test]
+fn function_named_which_overrides_in_process_tool_lookup() {
+    let output = run_stdout("which() { echo FUNC:$1; return 7; }; which -s foo; echo $?");
+    assert_eq!(output, "FUNC:-s\n7\n");
+}
+
+#[test]
 fn if_condition_does_not_trigger_errexit() {
     // With errexit, a failing condition in 'if' should not abort.
     let mut env = Env::from_os();
@@ -794,6 +838,17 @@ fn if_condition_does_not_trigger_errexit() {
     let output = String::from_utf8_lossy(&result.stdout);
     assert!(output.contains("yes"), "got: {output}");
     assert!(output.contains("after"), "got: {output}");
+}
+
+#[test]
+fn conditional_bad_substitution_fails_in_eval_probe() {
+    let (result, _) = run("eval '[[ -n ${.sh.version+s} ]]'; echo $?");
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "1\n");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("bad substitution"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 // ── Command substitution tests ───────────────────────────────────────
@@ -814,6 +869,25 @@ fn command_substitution_nested() {
 fn command_substitution_in_variable() {
     let (_, env) = run("x=$(echo captured)");
     assert_eq!(env.get_str("x"), "captured");
+}
+
+#[test]
+fn missing_command_honors_stderr_redirect() {
+    let (result, _) = run("PATH=/dev/null A09BB171-7AD4-4866-BED3-85D6E6A62288 2>/dev/null");
+    assert_eq!(result.exit_code, 127);
+    assert!(
+        result.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn command_substitution_ignores_apostrophe_in_comment() {
+    let output = run_stdout(
+        "x=$(\n  # comment with apostrophe's here\n  printf ok\n)\nprintf 'x=%s\\n' \"$x\"",
+    );
+    assert_eq!(output, "x=ok\n");
 }
 
 #[test]
@@ -1380,11 +1454,9 @@ fn hash_output_can_be_redirected_in_pipeline() {
 }
 
 #[test]
-fn hashall_records_commands_from_function_definition_body() {
+fn hashall_does_not_prehash_function_definition_body() {
     let output = run_stdout("set -h\nhash -r\nf() {\n  ls\n  touch hi\n  rm hi\n}\nhash\n");
-    assert!(output.contains("ls"), "output: {output}");
-    assert!(output.contains("touch"), "output: {output}");
-    assert!(output.contains("rm"), "output: {output}");
+    assert!(output.contains("empty"), "output: {output}");
 }
 
 #[test]
@@ -1961,6 +2033,22 @@ fn builtin_read_eof_returns_1() {
     );
 }
 
+#[test]
+fn builtin_read_uses_redirected_loop_stdin() {
+    let output = run_stdout(
+        "printf 'one\\ntwo\\n' > infile; while IFS='' read -r line; do printf '[%s]\\n' \"$line\"; done < infile",
+    );
+    assert_eq!(output, "[one]\n[two]\n");
+}
+
+#[test]
+fn builtin_read_uses_redirected_function_stdin() {
+    let output = run_stdout(
+        "printf 'one\\ntwo\\n' > infile; f() { while IFS='' read -r line; do printf '[%s]\\n' \"$line\"; done; }; f < infile",
+    );
+    assert_eq!(output, "[one]\n[two]\n");
+}
+
 // ── printf builtin ──────────────────────────────────────────────────
 
 #[test]
@@ -2072,6 +2160,24 @@ fn builtin_printf_no_trailing_newline() {
     assert_eq!(output, "no newline");
 }
 
+#[test]
+fn assignment_does_not_reuse_previous_command_status_for_unexecuted_command_substitution() {
+    let input = "command -@ 2>/dev/null; x=${v:=$(printf BAD)} || echo BUG; echo \"$x\"";
+    let cmds = parse(input).expect("parse failed");
+    let mut env = Env::from_os();
+    env.set("v", Variable::string("ok")).expect("set v");
+    let result = execute_list(&cmds, input, &mut env);
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "ok\n");
+    assert_eq!(String::from_utf8_lossy(&result.stderr), "");
+}
+
 // ── alias / unalias builtins ────────────────────────────────────────
 
 #[test]
@@ -2085,6 +2191,21 @@ fn builtin_alias_list_all() {
     let output = run_stdout("alias foo='bar'; alias baz='qux'; alias");
     assert!(output.contains("foo"), "got: {output}");
     assert!(output.contains("baz"), "got: {output}");
+}
+
+#[test]
+fn eval_uses_alias_expansion_with_reparsed_source_spans() {
+    let input = "fn() { echo BAD; return 7; }\nalias fn='echo OK'\neval fn";
+    let (result, _) = run(input);
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&result.stdout), "OK\n");
+    assert_eq!(String::from_utf8_lossy(&result.stderr), "");
 }
 
 #[test]
@@ -2146,6 +2267,27 @@ fn builtin_getopts_done_returns_1() {
     assert_ne!(result.exit_code, 0);
 }
 
+#[test]
+fn builtin_getopts_missing_arg_advances_optind() {
+    let (result, env) = run("set -- -x; getopts x: opt");
+    assert_eq!(result.exit_code, 0);
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("option requires an argument -- x"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(env.get_str("opt"), "?");
+    assert_eq!(env.get_str("OPTIND"), "2");
+}
+
+#[test]
+fn builtin_getopts_missing_arg_loop_runs_once() {
+    let output = run_stdout(
+        "f() { local OPTIND; i=0; while command getopts x: opt 2>/dev/null; do printf '%s:%s\\n' \"$opt\" \"$OPTIND\"; i=$((i+1)); [ \"$i\" -ge 3 ] && break; done; printf 'done:%s:%s\\n' \"$i\" \"$OPTIND\"; }; f -x",
+    );
+    assert_eq!(output, "?:2\ndone:1:2\n");
+}
+
 // ── umask builtin ───────────────────────────────────────────────────
 
 #[test]
@@ -2172,6 +2314,41 @@ fn builtin_umask_set_valid() {
 fn builtin_umask_set_invalid() {
     let (result, _) = run("umask xyz");
     assert_ne!(result.exit_code, 0);
+}
+
+#[test]
+fn builtin_ulimit_no_args_succeeds() {
+    let (result, _) = run("ulimit");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn builtin_ulimit_n_outputs_numeric_limit() {
+    let output = run_stdout("ulimit -n");
+    assert!(
+        output.trim().parse::<u64>().is_ok(),
+        "expected numeric limit, got: {output}"
+    );
+}
+
+#[test]
+fn command_builtin_can_run_ulimit() {
+    let (result, _) = run("command ulimit -t unlimited");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn builtin_let_evaluates_positional_count_expression() {
+    let (result, _) = run("set -- a b; let \"$# == 2\"");
+    assert_eq!(result.exit_code, 0);
+}
+
+#[test]
+fn builtin_let_supports_double_dash_and_assignments() {
+    let (result, env) = run(r"let -- -1\<0 X=1 Y=X+3");
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(env.get_str("X"), "1");
+    assert_eq!(env.get_str("Y"), "4");
 }
 
 // ── type builtin recognizes new builtins ────────────────────────────

@@ -1155,12 +1155,18 @@ impl<'a> Iterator for Lexer<'a> {
                 // `[` at word start: check for `[[`
                 if ch == '[' {
                     if self.peek_char() == Some('[') {
-                        self.next_char();
-                        let span = self.make_span(pos, pos + 2);
-                        return Some(Ok(Spanned {
-                            node: Token::LBracketBracket,
-                            span,
-                        }));
+                        let standalone = match self.input[pos + 2..].chars().next() {
+                            None => true,
+                            Some(next) => is_word_break(next),
+                        };
+                        if standalone {
+                            self.next_char();
+                            let span = self.make_span(pos, pos + 2);
+                            return Some(Ok(Spanned {
+                                node: Token::LBracketBracket,
+                                span,
+                            }));
+                        }
                     }
                     // Otherwise `[` starts a word -- fall through to word reading.
                 }
@@ -1168,12 +1174,18 @@ impl<'a> Iterator for Lexer<'a> {
                 // `]` at word start: check for `]]`
                 if ch == ']' {
                     if self.peek_char() == Some(']') {
-                        self.next_char();
-                        let span = self.make_span(pos, pos + 2);
-                        return Some(Ok(Spanned {
-                            node: Token::RBracketBracket,
-                            span,
-                        }));
+                        let standalone = match self.input[pos + 2..].chars().next() {
+                            None => true,
+                            Some(next) => is_word_break(next),
+                        };
+                        if standalone {
+                            self.next_char();
+                            let span = self.make_span(pos, pos + 2);
+                            return Some(Ok(Spanned {
+                                node: Token::RBracketBracket,
+                                span,
+                            }));
+                        }
                     }
                     // Bare `]` is a word.
                 }
