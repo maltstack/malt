@@ -1907,7 +1907,7 @@ fn try_execute_builtin(
             let preparsed = crate::parser::preparse_expanded(&input, &merged_aliases);
             match crate::parser::parse(&preparsed) {
                 Ok(cmds) => {
-                    let result = execute_list(&cmds, &preparsed, env);
+                    let result = execute_list_no_exit_trap(&cmds, &preparsed, env);
                     Some(result)
                 }
                 Err(e) => {
