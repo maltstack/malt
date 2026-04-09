@@ -146,12 +146,7 @@ fn run_command(
     }
 
     let cmd_aliases = mash::parser::collect_grammar_aliases_from_script(command);
-    let merged_aliases = {
-        let mut m = env.aliases().clone();
-        m.extend(cmd_aliases);
-        m
-    };
-    let preparsed = mash::parser::preparse_expanded(command, &merged_aliases);
+    let preparsed = mash::parser::preparse_expanded(command, &cmd_aliases);
     match mash::parser::parse(&preparsed) {
         Ok(commands) => {
             let result = execute_list(&commands, &preparsed, &mut env);
@@ -210,12 +205,7 @@ fn run_script_file(
     }
 
     let script_aliases = mash::parser::collect_grammar_aliases_from_script(&contents);
-    let merged_aliases = {
-        let mut m = env.aliases().clone();
-        m.extend(script_aliases);
-        m
-    };
-    let preparsed = mash::parser::preparse_expanded(&contents, &merged_aliases);
+    let preparsed = mash::parser::preparse_expanded(&contents, &script_aliases);
     match mash::parser::parse(&preparsed) {
         Ok(commands) => {
             let result = execute_list(&commands, &preparsed, &mut env);

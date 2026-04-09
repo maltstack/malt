@@ -2105,12 +2105,7 @@ fn try_execute_builtin(
                 contents.clone()
             } else {
                 let script_aliases = crate::parser::collect_grammar_aliases_from_script(&contents);
-                let merged_aliases = {
-                    let mut m = env.aliases().clone();
-                    m.extend(script_aliases);
-                    m
-                };
-                crate::parser::preparse_expanded(&contents, &merged_aliases)
+                crate::parser::preparse_expanded(&contents, &script_aliases)
             };
             match crate::parser::parse(&preparsed) {
                 Ok(cmds) => {

@@ -780,14 +780,18 @@ fn expand_brace_param(
     if let Some(pat_rep) = try_strip_op(&rest, "//") {
         let (pat, rep) = split_subst(&pat_rep);
         let expanded_pat = expand_string_inner(&pat, env, false, false)?;
-        result.push_str(&shell_replace_all(&val, &expanded_pat, &rep));
+        let expanded_rep = expand_string_inner(&rep, env, false, false)?;
+        let expanded_rep = strip_sentinels(&expanded_rep);
+        result.push_str(&shell_replace_all(&val, &expanded_pat, &expanded_rep));
         return Ok(());
     }
     // ${VAR/pattern/replacement} — first substitution
     if let Some(pat_rep) = try_strip_op(&rest, "/") {
         let (pat, rep) = split_subst(&pat_rep);
         let expanded_pat = expand_string_inner(&pat, env, false, false)?;
-        result.push_str(&shell_replace_first(&val, &expanded_pat, &rep));
+        let expanded_rep = expand_string_inner(&rep, env, false, false)?;
+        let expanded_rep = strip_sentinels(&expanded_rep);
+        result.push_str(&shell_replace_first(&val, &expanded_pat, &expanded_rep));
         return Ok(());
     }
 
