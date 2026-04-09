@@ -337,6 +337,11 @@ fn expand_dollar(
             // $var or special parameter
             expand_simple_var(chars, result, env, in_double_quote)?;
         }
+        Some(&'\'') => {
+            // $'...' — ANSI-C quoting
+            chars.next(); // consume opening quote
+            expand_ansi_c(chars, result)?;
+        }
         _ => {
             result.push('$'); // bare $ at end
         }
@@ -344,6 +349,99 @@ fn expand_dollar(
     Ok(())
 }
 
+
+/// Process ANSI-C quoted string ($'...').
+/// The opening `$'` has already been consumed by the caller.
+fn expand_ansi_c(
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+    result: &mut String,
+) -> Result<(), ExpandError> {
+    while let Some(&c) = chars.peek() {
+        chars.next();
+        match c {
+            '\'' => return Ok(()),
+            '\\' => match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('t') => result.push('\t'),
+                Some('r') => result.push('\r'),
+                Some('b') => result.push('\x08'),
+                Some('f') => result.push('\x0c'),
+                Some('v') => result.push('\x0b'),
+                Some('a') => result.push('\x07'),
+                Some('e') | Some('E') => result.push('\x1b'),
+                Some('\\') => result.push('\\'),
+                Some('\'') => result.push('\''),
+                Some('"') => result.push('"'),
+                Some('?') => result.push('?'),
+                Some('c') => {
+                    if let Some(&next) = chars.peek() {
+                        chars.next();
+                        result.push((next as u8 & 0x1f) as char);
+                    }
+                }
+                Some(d @ '0'..='7') => {
+                    let mut val = d as u8 - b'0';
+                    for _ in 0..2 {
+                        match chars.peek() {
+                            Some(c @ '0'..='7') => {
+                                val = val * 8 + (chars.next().unwrap() as u8 - b'0');
+                            }
+                            _ => break,
+                        }
+                    }
+                    result.push(val as char);
+                }
+                Some('x') => {
+                    let mut val: u8 = 0;
+                    for _ in 0..2 {
+                        match chars.peek() {
+                            Some(c) if c.is_ascii_hexdigit() => {
+                                val = val * 16 + chars.next().unwrap().to_digit(16).unwrap() as u8;
+                            }
+                            _ => break,
+                        }
+                    }
+                    result.push(val as char);
+                }
+                Some('u') => {
+                    let mut code: u32 = 0;
+                    for _ in 0..4 {
+                        match chars.peek() {
+                            Some(c) if c.is_ascii_hexdigit() => {
+                                code = code * 16 + chars.next().unwrap().to_digit(16).unwrap();
+                            }
+                            _ => break,
+                        }
+                    }
+                    if let Some(ch) = char::from_u32(code) {
+                        result.push(ch);
+                    }
+                }
+                Some('U') => {
+                    let mut code: u32 = 0;
+                    for _ in 0..8 {
+                        match chars.peek() {
+                            Some(c) if c.is_ascii_hexdigit() => {
+                                code = code * 16 + chars.next().unwrap().to_digit(16).unwrap();
+                            }
+                            _ => break,
+                        }
+                    }
+                    if let Some(ch) = char::from_u32(code) {
+                        result.push(ch);
+                    }
+                }
+                Some(other) => {
+                    result.push('\\');
+                    result.push(other);
+                }
+                None => result.push('\\'),
+            },
+            _ => result.push(c),
+        }
+    }
+    Err(ExpandError::BadSubstitution { expr: "unterminated $\'...\' string".into() })
+}
 // ── Placeholder functions (implemented in subsequent tasks) ──
 
 fn expand_brace_param(
