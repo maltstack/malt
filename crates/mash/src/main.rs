@@ -145,7 +145,7 @@ fn run_command(
         );
     }
 
-    let cmd_aliases = mash::parser::collect_aliases_from_script(command);
+    let cmd_aliases = mash::parser::collect_grammar_aliases_from_script(command);
     let merged_aliases = {
         let mut m = env.aliases().clone();
         m.extend(cmd_aliases);
@@ -209,7 +209,7 @@ fn run_script_file(
         );
     }
 
-    let script_aliases = mash::parser::collect_aliases_from_script(&contents);
+    let script_aliases = mash::parser::collect_grammar_aliases_from_script(&contents);
     let merged_aliases = {
         let mut m = env.aliases().clone();
         m.extend(script_aliases);

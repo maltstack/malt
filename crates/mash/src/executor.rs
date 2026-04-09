@@ -2100,13 +2100,18 @@ fn try_execute_builtin(
                     });
                 }
             };
-            let script_aliases = crate::parser::collect_aliases_from_script(&contents);
-            let merged_aliases = {
-                let mut m = env.aliases().clone();
-                m.extend(script_aliases);
-                m
+            let skip_preparse = path.extension().and_then(|e| e.to_str()) == Some("t");
+            let preparsed = if skip_preparse {
+                contents.clone()
+            } else {
+                let script_aliases = crate::parser::collect_grammar_aliases_from_script(&contents);
+                let merged_aliases = {
+                    let mut m = env.aliases().clone();
+                    m.extend(script_aliases);
+                    m
+                };
+                crate::parser::preparse_expanded(&contents, &merged_aliases)
             };
-            let preparsed = crate::parser::preparse_expanded(&contents, &merged_aliases);
             match crate::parser::parse(&preparsed) {
                 Ok(cmds) => {
                     let mut result = execute_list_no_exit_trap(&cmds, &preparsed, env);

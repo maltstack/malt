@@ -82,6 +82,12 @@ pub fn preparse_expanded(input: &str, aliases: &HashMap<String, String>) -> Stri
 /// Collect alias definitions from script text before execution.
 /// This scans for lines like `alias NAME='VALUE'` and builds a map
 /// that can be used for preparse expansion before the script executes.
+pub fn collect_grammar_aliases_from_script(input: &str) -> HashMap<String, String> {
+    let mut aliases = collect_aliases_from_script(input);
+    aliases.retain(|k, _| matches!(k.as_str(), "LOOP" | "DO" | "DONE"));
+    aliases
+}
+
 pub fn collect_aliases_from_script(input: &str) -> HashMap<String, String> {
     let mut aliases = HashMap::new();
     for line in input.lines() {
