@@ -1,1 +1,45 @@
 .worktrees/
+
+# Debug artifacts from development sessions
+__*.sh
+__*.out
+__*.err
+__latest_*.txt
+__upstream_*.txt
+__postcommit_*.txt
+__trace_*
+
+# Temp test files
+*.test
+infile
+out
+output
+
+# Stray build artifacts
+target2/
+target3/
+argvprobe
+fdcheck
+script
+scr
+
+# Module testing artifacts
+mod.rs
+bar/
+malt/
+scr/
+
+# Vexil output artifacts (when testing in malt repo)
+__vexil_out_*/
+__vexil_out_win/
+__tmp_vexil*/
+
+# Test suite copies/cache
+__modernish_upstream/
+__smoosh_upstream_win/
+
+# Windows exe artifacts
+*.exe
+
+# Rust target (use CARGO_TARGET_DIR=/tmp/... instead)
+target/
