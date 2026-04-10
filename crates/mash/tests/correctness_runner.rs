@@ -329,7 +329,7 @@ fn modernish_upstream_optional_smoke() {
         .unwrap_or(180);
 
     let cmd = format!(
-        "set -e; HOME='{}' timeout {}s bash -lc \"yes n | '{}' -s '{}'\"",
+        "unset CARGO_TARGET_DIR CARGO_BIN_EXE_mASH; HOME='{}' timeout {}s bash -lc \"yes n | '{}' -s '{}'\"",
         tmp_home.path().display(),
         timeout_secs,
         install.display(),

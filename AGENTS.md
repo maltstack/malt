@@ -56,42 +56,18 @@ The `modernish_upstream_optional_smoke` harness runs `bash -lc "yes n | install.
 The `install.sh` script relaunches itself as mash, which hangs (parse_for infinite loop — see below).
 **Once the parse_for guard is applied, the smoke test should pass.**
 
-## Critical Bug: parse_for Infinite Loop (NOT YET FIXED)
+## Critical Bug: parse_for Infinite Loop (PARTIALLY FIXED)
 
-**Symptom:** `mash bin/modernish --version` hangs (infinite loop in parser).
+**Symptom:** `mash -n /home/mamuk/work/.modernish_upstream/lib/modernish/mdl/var/local.mm` hangs (infinite loop in parser) without debug output.
 
-**Root cause:** The `in words...` collection loop in `parse_for` (parser.rs lines 595-608) has no
-span-advance guard. If the loop is entered with a token that matches `"do"` text, it breaks.
-But nested `for` loops or complex body parsing can cause recursive calls that never advance.
+**Root cause:** A timing-sensitive infinite loop in `parse_for` or callees. Adding `eprintln!` at the start of `parse_for` acts as a memory barrier and "fixes" the hang. Span guards and loop-count guards in the `in words` loop do NOT prevent the hang.
 
-**Fix needed:** Add a loop-count guard inside the `in words` collection loop:
+**Applied mitigations:**
+- Span-advance guard in `parse_for` "in words" loop (parser.rs ~596-614)
+- Loop-count guard (10,000 iterations) in same loop (parser.rs ~619-626)
+- Same guards applied to `parse_select` "in words" loop (parser.rs ~769-790)
 
-```rust
-loop {
-    let before_span = self.peek().span;
-    match &self.peek().node {
-        Token::Word(span) => {
-            let text = span.text(self.input);
-            if text == "do" { break; }
-            let s = *span;
-            self.advance()?;
-            ws.push(s);
-            // Guard: verify we advanced
-            if self.peek().span.start == before_span.start
-                && self.peek().span.end == before_span.end
-            {
-                return Err(ParseError::Unexpected {
-                    token: self.peek().node.clone(),
-                    span: self.peek().span,
-                });
-            }
-        }
-        _ => break,
-    }
-}
-```
-
-**Status:** Identified but NOT YET applied. This is the primary blocker for Modernish smoke test.
+**Status:** Guards applied but hang persists without debug output. The `eprintln!` workaround is needed for now. This is the primary blocker for Modernish smoke test.
 
 ## Environment Notes
 
@@ -162,7 +138,8 @@ cargo test -p mash --test smoosh_runner
 ```
 
 ## Next Steps
-1. **Apply parse_for span-advance guard** in `parser.rs` — this unblocks the Modernish smoke test.
-2. **Verify smoke test passes** after the guard is applied.
-3. **Update AGENTS.md to reflect GREEN state** once smoke test passes.
-4. **Then:** resume Modernish alias-grammar work (LOOP/DO/DONE alias expansion timing).
+1. **Debug timing-sensitive infinite loop** in `parse_for` — span guards don't catch it, but `eprintln!` does. Needs deeper investigation of `parse_body_until` or `parse_command_list_until` callees.
+2. **Apply `eprintln!` workaround temporarily** if root cause fix is complex — unblock Modernish testing.
+3. **Verify smoke test passes** once hang is resolved.
+4. **Update AGENTS.md to reflect GREEN state** once smoke test passes.
+5. **Then:** resume Modernish alias-grammar work (LOOP/DO/DONE alias expansion timing).

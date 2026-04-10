@@ -592,7 +592,9 @@ impl<'a> Parser<'a> {
         let words = if self.peek_keyword("in") {
             self.advance()?; // consume "in"
             let mut ws = Vec::new();
+            let mut loop_count = 0u64;
             loop {
+                let before_span = self.peek().span;
                 match &self.peek().node {
                     Token::Word(span) => {
                         let text = span.text(self.input);
@@ -602,8 +604,25 @@ impl<'a> Parser<'a> {
                         let s = *span;
                         self.advance()?;
                         ws.push(s);
+                        // Guard: verify we advanced to prevent infinite loop.
+                        if self.peek().span.start == before_span.start
+                            && self.peek().span.end == before_span.end
+                        {
+                            return Err(ParseError::Unexpected {
+                                token: self.peek().node.clone(),
+                                span: self.peek().span,
+                            });
+                        }
                     }
                     _ => break,
+                }
+                // Iteration count guard
+                loop_count += 1;
+                if loop_count > 10000 {
+                    return Err(ParseError::Unexpected {
+                        token: self.peek().node.clone(),
+                        span: self.peek().span,
+                    });
                 }
             }
             ws
@@ -617,7 +636,6 @@ impl<'a> Parser<'a> {
 
         let body = self.parse_body_until(&["done"])?;
         let end = self.expect_keyword("done")?;
-
         Ok(Spanned {
             node: Command::For { var, words, body },
             span: start.merge(end),
@@ -757,6 +775,7 @@ impl<'a> Parser<'a> {
             self.advance()?;
             let mut ws = Vec::new();
             loop {
+                let before_span = self.peek().span;
                 match &self.peek().node {
                     Token::Word(span) => {
                         let text = span.text(self.input);
@@ -766,6 +785,15 @@ impl<'a> Parser<'a> {
                         let s = *span;
                         self.advance()?;
                         ws.push(s);
+                        // Guard: verify we advanced to prevent infinite loop.
+                        if self.peek().span.start == before_span.start
+                            && self.peek().span.end == before_span.end
+                        {
+                            return Err(ParseError::Unexpected {
+                                token: self.peek().node.clone(),
+                                span: self.peek().span,
+                            });
+                        }
                     }
                     _ => break,
                 }
