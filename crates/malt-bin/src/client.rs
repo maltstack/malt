@@ -1,12 +1,42 @@
 use anyhow::{Context, Result};
 use reqwest::blocking::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 pub struct ApiEnvelope<T> {
     pub ok: bool,
     pub data: Option<T>,
-    pub error: Option<String>,
+    pub error: Option<ApiError>,
+}
+
+impl<T> ApiEnvelope<T> {
+    fn into_data(self, operation: &str) -> Result<T> {
+        let error_message = self.error.map(ApiError::into_message);
+        match (self.ok, self.data) {
+            (true, Some(data)) => Ok(data),
+            (true, None) => Err(anyhow::anyhow!("{operation} response contained no data")),
+            (false, _) => Err(anyhow::anyhow!(
+                "{}",
+                error_message.unwrap_or_else(|| format!("{operation} failed"))
+            )),
+        }
+    }
+}
+
+/// Error representations returned by gateway endpoints.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ApiError {
+    Message(String),
+    Detail { message: String },
+}
+
+impl ApiError {
+    fn into_message(self) -> String {
+        match self {
+            Self::Message(message) | Self::Detail { message } => message,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -16,6 +46,21 @@ pub struct SessionData {
     pub pane_count: u32,
     pub isolation: String,
     pub state: String,
+}
+
+/// Payload sent to the existing create-session endpoint.
+#[derive(Debug, Serialize)]
+struct CreateSessionRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    isolation: Option<&'a str>,
+}
+
+impl<'a> CreateSessionRequest<'a> {
+    fn new(name: Option<&'a str>, isolation: Option<&'a str>) -> Self {
+        Self { name, isolation }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,9 +101,7 @@ impl MaltClient {
             .send()
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<HealthData> = resp.json().context("invalid health response")?;
-        envelope
-            .data
-            .ok_or_else(|| anyhow::anyhow!("no data in health response"))
+        envelope.into_data("health")
     }
 
     pub fn shutdown(&self) -> Result<()> {
@@ -77,24 +120,22 @@ impl MaltClient {
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<Vec<SessionData>> =
             resp.json().context("invalid session list response")?;
-        envelope
-            .data
-            .ok_or_else(|| anyhow::anyhow!("no data in session list response"))
+        envelope.into_data("session list")
     }
 
-    pub fn create_session(&self, name: Option<&str>) -> Result<SessionData> {
-        let mut req = self.http.post(self.url("/sessions"));
-        if let Some(n) = name {
-            req = req.json(&serde_json::json!({ "name": n }));
-        } else {
-            req = req.json(&serde_json::json!({}));
-        }
+    pub fn create_session(
+        &self,
+        name: Option<&str>,
+        isolation: Option<&str>,
+    ) -> Result<SessionData> {
+        let req = self
+            .http
+            .post(self.url("/sessions"))
+            .json(&CreateSessionRequest::new(name, isolation));
         let resp = req.send().context("failed to reach daemon")?;
         let envelope: ApiEnvelope<SessionData> =
             resp.json().context("invalid create session response")?;
-        envelope
-            .data
-            .ok_or_else(|| anyhow::anyhow!("no data in create session response"))
+        envelope.into_data("create session")
     }
 
     pub fn destroy_session(&self, id: u32) -> Result<()> {
@@ -105,14 +146,8 @@ impl MaltClient {
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<serde_json::Value> =
             resp.json().context("invalid destroy session response")?;
-        if envelope.ok {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(
-                "{}",
-                envelope.error.unwrap_or_else(|| "unknown error".into())
-            ))
-        }
+        let _: serde_json::Value = envelope.into_data("destroy session")?;
+        Ok(())
     }
 
     pub fn exec_command(&self, id: u32, cmd: &str) -> Result<ExecResultData> {
@@ -123,9 +158,7 @@ impl MaltClient {
             .send()
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<ExecResultData> = resp.json().context("invalid exec response")?;
-        envelope
-            .data
-            .ok_or_else(|| anyhow::anyhow!("no data in exec response"))
+        envelope.into_data("exec")
     }
 
     pub fn send_input(&self, id: u32, input: &str) -> Result<()> {
@@ -137,14 +170,8 @@ impl MaltClient {
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<serde_json::Value> =
             resp.json().context("invalid send response")?;
-        if envelope.ok {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(
-                "{}",
-                envelope.error.unwrap_or_else(|| "unknown error".into())
-            ))
-        }
+        let _: serde_json::Value = envelope.into_data("send input")?;
+        Ok(())
     }
 }
 
@@ -166,6 +193,45 @@ mod tests {
     fn api_url_trailing_slash() {
         let client = MaltClient::new("http://127.0.0.1:7700/");
         assert_eq!(client.url("/health"), "http://127.0.0.1:7700/health");
+    }
+
+    #[test]
+    fn create_session_payload_preserves_legacy_and_selected_tier_shapes() {
+        let empty = CreateSessionRequest::new(None, None);
+        assert_eq!(serde_json::to_value(empty).unwrap(), serde_json::json!({}));
+
+        let named = CreateSessionRequest::new(Some("build"), None);
+        assert_eq!(
+            serde_json::to_value(named).unwrap(),
+            serde_json::json!({ "name": "build" })
+        );
+
+        let tier_only = CreateSessionRequest::new(None, Some("restricted"));
+        assert_eq!(
+            serde_json::to_value(tier_only).unwrap(),
+            serde_json::json!({ "isolation": "restricted" })
+        );
+
+        let named_tier = CreateSessionRequest::new(Some("build"), Some("capped"));
+        assert_eq!(
+            serde_json::to_value(named_tier).unwrap(),
+            serde_json::json!({ "name": "build", "isolation": "capped" })
+        );
+    }
+
+    #[test]
+    fn failed_create_session_response_preserves_gateway_message() {
+        let json = r#"{
+            "ok": false,
+            "data": null,
+            "error": {
+                "code": "bad_request",
+                "message": "requested isolation tier is unavailable"
+            }
+        }"#;
+        let envelope: ApiEnvelope<SessionData> = serde_json::from_str(json).unwrap();
+        let error = envelope.into_data("create session").unwrap_err();
+        assert_eq!(error.to_string(), "requested isolation tier is unavailable");
     }
 
     #[test]

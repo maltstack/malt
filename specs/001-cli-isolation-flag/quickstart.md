@@ -67,3 +67,11 @@ cargo test --workspace
 This validates the CLI request and reported session tier. It does not prove
 OS-level containment, the deferred PTY/compat isolation path, or live Windows
 Container behavior; those require their own platform-specific evidence.
+
+## Latest Local Verification
+
+On 2026-07-24, an isolated local daemon accepted all four canonical CLI values.
+Each creation result and subsequent `list` result reported the matching tier;
+an invalid value exited with command-validation failure before session creation.
+The daemon and its temporary data directory were removed after verification.
+This remains CLI/request evidence only and does not prove OS-level containment.

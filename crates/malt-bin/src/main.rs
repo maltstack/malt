@@ -6,8 +6,8 @@ mod output;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Command};
-use client::MaltClient;
+use cli::{Cli, Command, IsolationTierArg};
+use client::{MaltClient, SessionData};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -20,7 +20,7 @@ fn main() -> Result<()> {
         Some(Command::Start) => handle_start(),
         Some(Command::Stop) => handle_stop(&client),
         Some(Command::List) => handle_list(&client),
-        Some(Command::New { name }) => handle_new(&client, name.as_deref()),
+        Some(Command::New { name, isolation }) => handle_new(&client, name.as_deref(), isolation),
         Some(Command::Attach { session_id }) => handle_attach(&cli.api_addr, session_id),
         Some(Command::Kill { session_id }) => handle_kill(&client, session_id),
         Some(Command::Exec {
@@ -57,7 +57,7 @@ fn handle_default(api_addr: &str, client: &MaltClient) -> Result<()> {
     let session_id = if sessions.is_empty() {
         // Create a new session
         eprintln!("creating session...");
-        let session = client.create_session(None)?;
+        let session = client.create_session(None, None)?;
         // Give shell a moment to start
         std::thread::sleep(std::time::Duration::from_millis(500));
         session.id
@@ -112,14 +112,45 @@ fn handle_list(client: &MaltClient) -> Result<()> {
     Ok(())
 }
 
-fn handle_new(client: &MaltClient, name: Option<&str>) -> Result<()> {
-    let session = client.create_session(name)?;
-    println!(
-        "created session {} ({})",
-        session.id,
-        session.name.as_deref().unwrap_or("-")
-    );
+fn handle_new(
+    client: &MaltClient,
+    name: Option<&str>,
+    isolation: Option<IsolationTierArg>,
+) -> Result<()> {
+    let expected_tier = expected_isolation_tier(isolation);
+    let session = client.create_session(name, isolation.map(IsolationTierArg::request_value))?;
+    validate_created_session(&session, expected_tier)?;
+    println!("{}", creation_message(&session));
     Ok(())
+}
+
+fn expected_isolation_tier(isolation: Option<IsolationTierArg>) -> IsolationTierArg {
+    isolation.unwrap_or(IsolationTierArg::Bare)
+}
+
+fn validate_created_session(session: &SessionData, expected_tier: IsolationTierArg) -> Result<()> {
+    if session
+        .isolation
+        .eq_ignore_ascii_case(expected_tier.request_value())
+    {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "session {} was created with isolation {}, not requested {}",
+        session.id,
+        session.isolation,
+        expected_tier.display_value()
+    );
+}
+
+fn creation_message(session: &SessionData) -> String {
+    format!(
+        "created session {} ({}) [{}]",
+        session.id,
+        session.name.as_deref().unwrap_or("-"),
+        session.isolation
+    )
 }
 
 fn handle_attach(api_addr: &str, session_id: Option<u32>) -> Result<()> {
@@ -202,4 +233,57 @@ fn handle_send(client: &MaltClient, session_id: u32, input: &str) -> Result<()> 
     client.send_input(session_id, input)?;
     println!("sent to session {session_id}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::IsolationTierArg;
+
+    fn session_with_isolation(isolation: &str) -> SessionData {
+        SessionData {
+            id: 42,
+            name: Some("build".to_string()),
+            pane_count: 1,
+            isolation: isolation.to_string(),
+            state: "Active".to_string(),
+        }
+    }
+
+    #[test]
+    fn matching_selected_tiers_validate_and_format_successfully() {
+        for tier in [
+            IsolationTierArg::Bare,
+            IsolationTierArg::Restricted,
+            IsolationTierArg::Capped,
+            IsolationTierArg::Contained,
+        ] {
+            let session = session_with_isolation(tier.display_value());
+            validate_created_session(&session, tier).unwrap();
+            assert_eq!(
+                creation_message(&session),
+                format!("created session 42 (build) [{}]", tier.display_value())
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_isolation_defaults_to_bare() {
+        assert_eq!(expected_isolation_tier(None), IsolationTierArg::Bare);
+        assert_eq!(
+            expected_isolation_tier(Some(IsolationTierArg::Restricted)),
+            IsolationTierArg::Restricted
+        );
+    }
+
+    #[test]
+    fn mismatched_reported_tier_is_an_actionable_error() {
+        let session = session_with_isolation("Bare");
+        let error = validate_created_session(&session, IsolationTierArg::Restricted).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "session 42 was created with isolation Bare, not requested Restricted"
+        );
+        assert!(!error.to_string().contains("created session"));
+    }
 }

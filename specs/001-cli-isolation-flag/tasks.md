@@ -38,10 +38,10 @@ three user stories.
 **⚠️ CRITICAL**: Complete this phase before changing `malt new` dispatch or
 output behavior.
 
-- [ ] T001 [P] Add failing parser tests for all four canonical tiers, a missing value, an invalid value, and an omitted value in `crates/malt-bin/src/cli.rs`.
-- [ ] T002 [P] Add failing request-payload serialization tests for name-only, empty, tier-only, and name-plus-tier creation requests in `crates/malt-bin/src/client.rs`.
-- [ ] T003 [P] Implement the typed `bare`, `restricted`, `capped`, and `contained` command argument plus canonical request/display helpers in `crates/malt-bin/src/cli.rs`.
-- [ ] T004 [P] Implement a serializable create-session payload and extend `MaltClient::create_session` to accept optional canonical isolation while preserving omitted-field payloads in `crates/malt-bin/src/client.rs`.
+- [X] T001 [P] Add failing parser tests for all four canonical tiers, a missing value, an invalid value, and an omitted value in `crates/malt-bin/src/cli.rs`.
+- [X] T002 [P] Add failing request-payload serialization tests for name-only, empty, tier-only, and name-plus-tier creation requests in `crates/malt-bin/src/client.rs`.
+- [X] T003 [P] Implement the typed `bare`, `restricted`, `capped`, and `contained` command argument plus canonical request/display helpers in `crates/malt-bin/src/cli.rs`.
+- [X] T004 [P] Implement a serializable create-session payload and extend `MaltClient::create_session` to accept optional canonical isolation while preserving omitted-field payloads in `crates/malt-bin/src/client.rs`.
 
 **Checkpoint**: The CLI accepts only the contract values and the client can
 prove exactly what it will send, without changing any command behavior yet.
@@ -59,11 +59,11 @@ value and success text identify the same tier. Run the focused CLI test suite.
 
 ### Tests for User Story 1
 
-- [ ] T005 [US1] Add failing unit tests for matching selected-tier result validation and creation-line formatting across all four tiers in `crates/malt-bin/src/main.rs`.
+- [X] T005 [US1] Add failing unit tests for matching selected-tier result validation and creation-line formatting across all four tiers in `crates/malt-bin/src/main.rs`.
 
 ### Implementation for User Story 1
 
-- [ ] T006 [US1] Update `Command::New` dispatch and `handle_new` to send the selected tier, verify the matching response, and print the session identifier, name fallback, and reported tier in `crates/malt-bin/src/main.rs`.
+- [X] T006 [US1] Update `Command::New` dispatch and `handle_new` to send the selected tier, verify the matching response, and print the session identifier, name fallback, and reported tier in `crates/malt-bin/src/main.rs`.
 
 **Checkpoint**: `malt new --isolation <tier>` satisfies the command contract
 for every canonical tier when the session authority returns the matching tier.
@@ -81,11 +81,11 @@ parsing no subcommand still selects no explicit command.
 
 ### Tests for User Story 2
 
-- [ ] T007 [US2] Add regression tests for omitted-isolation Bare expectation, named creation without isolation, and no-subcommand parsing in `crates/malt-bin/src/cli.rs` and `crates/malt-bin/src/main.rs`.
+- [X] T007 [US2] Add regression tests for omitted-isolation Bare expectation, named creation without isolation, and no-subcommand parsing in `crates/malt-bin/src/cli.rs` and `crates/malt-bin/src/main.rs`.
 
 ### Implementation for User Story 2
 
-- [ ] T008 [US2] Update the no-subcommand and no-option `create_session` call sites to pass no isolation selection while retaining Bare expectation and all existing workflow choices in `crates/malt-bin/src/main.rs`.
+- [X] T008 [US2] Update the no-subcommand and no-option `create_session` call sites to pass no isolation selection while retaining Bare expectation and all existing workflow choices in `crates/malt-bin/src/main.rs`.
 
 **Checkpoint**: Existing `malt new`, `malt new --name <name>`, and bare
 `malt` workflows retain their prior behavior, with explicit creation results
@@ -104,13 +104,13 @@ verify each produces an actionable error and no successful creation line.
 
 ### Tests for User Story 3
 
-- [ ] T009 [P] [US3] Add failing tests that preserve a create-session error message from an unsuccessful response envelope in `crates/malt-bin/src/client.rs`.
-- [ ] T010 [P] [US3] Add failing tests that reject a reported-tier mismatch and suppress the success line in `crates/malt-bin/src/main.rs`.
+- [X] T009 [P] [US3] Add failing tests that preserve a create-session error message from an unsuccessful response envelope in `crates/malt-bin/src/client.rs`.
+- [X] T010 [P] [US3] Add failing tests that reject a reported-tier mismatch and suppress the success line in `crates/malt-bin/src/main.rs`.
 
 ### Implementation for User Story 3
 
-- [ ] T011 [P] [US3] Make `MaltClient::create_session` return the gateway-provided failure reason when its create-session response is unsuccessful in `crates/malt-bin/src/client.rs`.
-- [ ] T012 [US3] Make `handle_new` return an actionable requested-versus-reported tier error without retrying or deleting a session in `crates/malt-bin/src/main.rs`.
+- [X] T011 [P] [US3] Make `MaltClient::create_session` return the gateway-provided failure reason when its create-session response is unsuccessful in `crates/malt-bin/src/client.rs`.
+- [X] T012 [US3] Make `handle_new` return an actionable requested-versus-reported tier error without retrying or deleting a session in `crates/malt-bin/src/main.rs`.
 
 **Checkpoint**: Invalid input, creation rejection, unreadable error response,
 and reported-tier mismatch all terminate unsuccessfully without a successful
@@ -123,9 +123,9 @@ creation line.
 **Purpose**: Verify the completed command behavior without expanding the
 feature into gateway or platform-isolation work.
 
-- [ ] T013 Run formatting and the focused command-client test suite in `crates/malt-bin/` with `cargo fmt --check` and `cargo test -p malt-bin`.
-- [ ] T014 Run full workspace regression in `Cargo.toml` with `cargo test --workspace` and investigate any failure before completion.
-- [ ] T015 Execute the isolated daemon validation scenarios and record their result against `specs/001-cli-isolation-flag/quickstart.md`, including the stated platform-evidence boundary.
+- [X] T013 Run targeted Rust 2021 formatter verification and the focused command-client test suite in `crates/malt-bin/`; record whole-workspace `cargo fmt --check` drift without mass-reformatting unrelated files.
+- [X] T014 Run full workspace regression in `Cargo.toml` with `cargo test --workspace` and investigate any failure before completion.
+- [X] T015 Execute the isolated daemon validation scenarios and record their result against `specs/001-cli-isolation-flag/quickstart.md`, including the stated platform-evidence boundary.
 
 ---
 
@@ -187,3 +187,15 @@ feature into gateway or platform-isolation work.
 3. Deliver US3 to fail closed in command reporting and preserve service error
    reasons.
 4. Finish with focused, workspace, and isolated-daemon validation.
+
+## Implementation Record
+
+- 2026-07-24: `cargo test -p malt-bin` passed 16 tests; the full
+  `cargo test --workspace` regression passed.
+- 2026-07-24: Rust 2021 formatter checks passed for the modified `malt-bin`
+  files. Whole-workspace `cargo fmt --check` still reports pre-existing
+  formatting drift in unrelated crates, which was intentionally not rewritten
+  as part of this focused feature.
+- 2026-07-24: An isolated daemon created and listed Bare, Restricted, Capped,
+  and Contained sessions through the new CLI flag; invalid input exited before
+  session creation. The temporary daemon and its data were removed afterward.
