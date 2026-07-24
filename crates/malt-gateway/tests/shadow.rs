@@ -13,6 +13,7 @@ fn default_style() -> Box<ResolvedStyle> {
         strikethrough: false,
         reverse: false,
         blink: false,
+        token_name: None,
         _unknown: Vec::new(),
     })
 }

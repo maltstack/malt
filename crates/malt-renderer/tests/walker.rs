@@ -16,6 +16,7 @@ fn default_style() -> ResolvedStyle {
         strikethrough: false,
         reverse: false,
         blink: false,
+        token_name: None,
         _unknown: Vec::new(),
     }
 }
@@ -169,6 +170,7 @@ fn capability_degradation_basic256() {
             strikethrough: false,
             reverse: false,
             blink: false,
+            token_name: None,
             _unknown: Vec::new(),
         }),
     };

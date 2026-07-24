@@ -13,6 +13,7 @@ fn make_style(fg: (u8, u8, u8), bg: (u8, u8, u8)) -> ResolvedStyle {
         strikethrough: false,
         reverse: false,
         blink: false,
+        token_name: None,
         _unknown: Vec::new(),
     }
 }

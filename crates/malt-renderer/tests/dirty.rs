@@ -17,6 +17,7 @@ fn draw_text(x: u16, y: u16, text: &str) -> RenderCommand {
             strikethrough: false,
             reverse: false,
             blink: false,
+            token_name: None,
             _unknown: Vec::new(),
         },
     }
