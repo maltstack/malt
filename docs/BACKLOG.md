@@ -9,7 +9,7 @@ Link to a findings doc or ADR for the "how do we know this" evidence instead
 of restating it here.
 
 For larger, multi-week feature phases (plugin system completion, full
-cross-platform isolation enforcement, etc.), see CLAUDE.md's "Implementation
+cross-platform isolation enforcement, etc.), see AGENTS.md's "Implementation
 Roadmap" (Phase B2 through Phase I) — this backlog tracks concrete,
 near-term, evidence-based items, not the whole product roadmap.
 
