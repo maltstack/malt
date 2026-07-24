@@ -54,6 +54,8 @@ pub enum IsolationError {
     SandboxError(String),
     /// macOS rlimit operation failed.
     RlimitError(String),
+    /// Windows HCS (Host Compute System) operation failed.
+    HcsError(String),
     /// IO error during isolation setup.
     IoError(std::io::Error),
 }
@@ -74,6 +76,7 @@ impl fmt::Display for IsolationError {
             IsolationError::TokenError(msg) => write!(f, "token error: {msg}"),
             IsolationError::SandboxError(msg) => write!(f, "sandbox error: {msg}"),
             IsolationError::RlimitError(msg) => write!(f, "rlimit error: {msg}"),
+            IsolationError::HcsError(msg) => write!(f, "hcs error: {msg}"),
             IsolationError::IoError(err) => write!(f, "io error: {err}"),
         }
     }
@@ -325,6 +328,9 @@ mod tests {
 
         let err = IsolationError::RlimitError("test".to_string());
         assert!(err.to_string().contains("rlimit error"));
+
+        let err = IsolationError::HcsError("test".to_string());
+        assert!(err.to_string().contains("hcs error"));
     }
 
     #[test]

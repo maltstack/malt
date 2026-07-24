@@ -21,6 +21,8 @@ pub mod seccomp;
 
 // Windows isolation primitives
 #[cfg(target_os = "windows")]
+pub mod hcs;
+#[cfg(target_os = "windows")]
 pub mod job_objects;
 #[cfg(target_os = "windows")]
 pub mod tokens;
@@ -34,8 +36,10 @@ pub mod sandbox;
 // Cross-platform capability detection
 pub mod probe;
 
+mod capability_report;
 mod tier;
 
+pub use capability_report::{CapabilityReasonCode, CapabilityReport, CapabilityStatus};
 pub use probe::IsolationCapabilities;
 pub use tier::{IsolationContext, IsolationError, IsolationTier};
 
