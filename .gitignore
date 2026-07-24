@@ -63,3 +63,4 @@ release/
 .agents/settings.local.json
 .agents/*.token
 .agents/credentials*
+/.claude/worktrees
