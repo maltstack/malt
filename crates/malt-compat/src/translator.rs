@@ -26,19 +26,19 @@ impl CompatTranslator {
     }
 
     /// Feed raw bytes through the VT parser, updating the grid and storing
-    /// the raw data for later passthrough via `frame_element()`.
+    /// the most recent chunk for delta passthrough via `frame_element()`.
     ///
     /// An empty slice is a no-op and does not mark the translator as dirty.
     pub fn feed(&mut self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
-        self.last_data.extend_from_slice(data);
+        self.last_data = data.to_vec();
         let mut performer = GridPerformer::new(&mut self.grid);
         self.parser.advance(&mut performer, data);
     }
 
-    /// Return a `FrameElement::VtPassthrough` containing the accumulated raw data.
+    /// Return a `FrameElement::VtPassthrough` containing the most recent fed chunk.
     pub fn frame_element(&self) -> FrameElement {
         FrameElement::VtPassthrough {
             data: self.last_data.clone(),

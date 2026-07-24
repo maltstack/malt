@@ -15,23 +15,27 @@ near-term, evidence-based items, not the whole product roadmap.
 
 ## P0 — blocks daily-driver usability
 
-- **Terminal grid rendering: cursor-position "staircase" bug — now has a
-  confirmed, fixable lead.** `crates/malt-compat/src/translator.rs:36` does
-  `self.last_data.extend_from_slice(data)` on every `feed()` call, instead
-  of replacing it (`self.last_data = data.to_vec()`) as both the original
-  design doc and its own implementation plan specify. The buffer grows
-  forever; `frame_element()` returns the whole thing every time, so
-  `DirtyTracker` treats it as changed every frame and every `RenderBatch`
-  re-sends the session's entire raw VT history instead of just new bytes.
-  Concrete, self-contained bug with a known correct fix — not proven
-  identical to the reported staircase symptom (`/output`'s `StyledGrid`
-  route may read `TerminalGrid` directly, bypassing this pipeline), but a
-  strong, fixable lead either way. Secondary lead if this doesn't fully
-  explain it: check whether the PTY layer is missing ONLCR translation
-  (bare `\n` without `\r`) — `TerminalGrid`'s VT100 linefeed/carriage-return
-  handling is spec-correct, so a byte stream missing `\r` would reproduce
-  the same growing-offset pattern from a completely different, upstream
-  cause.
+- **Terminal grid rendering "staircase" bug — RESOLVED 2026-07-24.**
+  `crates/malt-compat/src/translator.rs:36` did
+  `self.last_data.extend_from_slice(data)` on every `feed()` call instead of
+  replacing it. Fixed to `self.last_data = data.to_vec()`, matching the
+  original design doc and implementation plan. Added a regression test
+  (`feed_replaces_previous_data_instead_of_accumulating`) exercising
+  multiple `feed()` calls, which the prior test suite never did. Full
+  `malt-compat` suite green.
+  Follow-on gap noted, not fixed here (would be scope creep on a one-line
+  bug fix): `RegisterVnpClient` (`crates/malt-daemon/src/executor/session_thread.rs:334`)
+  now hands a newly-attaching client only the most recent chunk via
+  `frame_element()`, not the full current-screen state. Per
+  `docs/design/architecture.md`'s attach-sync section, a new client should
+  receive "the current FrameElement tree (current visible state)" — for a
+  `VtPassthrough` pane that means enough VT bytes to reconstruct the
+  visible screen, which the compat translator doesn't currently retain
+  anywhere (the grid itself has it, but nothing serializes grid state back
+  to VT bytes for replay). Only matters once a client can attach mid-session
+  to a pane with existing output; today's single-client-per-session flow
+  doesn't exercise it. Same underlying gap as the Phase B3 scrollback item
+  below — likely worth solving together.
   See: `docs/findings/2026-07-24-live-daemon-session.md` (original report),
   `docs/findings/2026-07-24-plan-implementation-audit.md#1-compattranslatorfeed-accumulates-instead-of-replacing--strong-lead-for-the-p0-rendering-bug`
 
@@ -94,12 +98,23 @@ near-term, evidence-based items, not the whole product roadmap.
   returns empty output and no process survives afterward. This needs
   original design work, not "find where this broke."
   See: `docs/findings/2026-07-24-live-daemon-session.md#2-backgrounded-commands--dont-appear-to-survive-through-exec--medium-priority-not-root-caused`
-- **`crates/malt-protocol/src/codec.rs` has wrong constants and
-  tautological tests.** `MSG_*`/`DOMAIN_*` values don't match the real
-  schema `@type()` values (e.g. `MSG_COMMAND_OUTPUT=0x01` vs. the real
-  `OutputChunk@0x04`), and some referenced message types don't exist in
-  their claimed domain at all. Its own tests just assert the constants
-  equal themselves. Fix or delete — confirm nothing depends on it first.
+- **`crates/malt-protocol/src/codec.rs` wrong constants — FIXED 2026-07-24.**
+  Cross-checked every `MSG_*` constant against its real `@type(N)` in
+  `schemas/*.vexil`: only Handshake, Render, and part of Input/Session were
+  correct. Shell, Mux, Task, and System were substantially fabricated —
+  `MSG_PING`/`MSG_PONG`/`MSG_SHUTDOWN`/`MSG_PASTE`/`MSG_TASK_FAIL`/etc. don't
+  correspond to any message in any schema file at all. Confirmed via grep
+  that only the already-correct constants (Hello/HelloAck, AttachSession,
+  DetachSession, KeyEvent, Resize, FrameAck, RenderBatch, InitialState) are
+  used by the live wire path (`malt-tui::connection`,
+  `malt-daemon::vnp_listener`) — those needed zero call-site changes.
+  Rewrote `codec.rs` with one constant per real schema message (renamed
+  where the old name didn't match: `MSG_ERROR`→`MSG_VERSION_SKEW` for
+  Handshake domain 0, `MSG_COMMAND_OUTPUT`→`MSG_OUTPUT_CHUNK`, etc.),
+  dropped fabricated ones, and rewrote the test file to check every
+  constant against its schema message name plus a dedicated
+  `live_wire_path_constants_are_unchanged` regression test. All
+  `malt-protocol`/`malt-tui`/`malt-daemon` tests green.
 - **Two dead-code architecture detours, either finish or remove:**
   `crates/mash/src/builtins.rs`'s `Builtin` trait/`BuiltinRegistry` is
   never referenced anywhere (all builtins actually run through an inline

@@ -32,6 +32,24 @@ fn empty_feed_not_dirty() {
 }
 
 #[test]
+fn feed_replaces_previous_data_instead_of_accumulating() {
+    let mut t = CompatTranslator::new(80, 24);
+    t.feed(b"first chunk");
+    t.feed(b"second");
+    let elem = t.frame_element();
+    match elem {
+        FrameElement::VtPassthrough { data } => {
+            assert_eq!(
+                data, b"second",
+                "frame_element() must return only the most recently fed chunk, \
+                 not the accumulated history of every feed() call"
+            );
+        }
+        other => panic!("expected VtPassthrough, got {other:?}"),
+    }
+}
+
+#[test]
 fn resize_updates_dimensions() {
     let mut t = CompatTranslator::new(80, 24);
     t.resize(40, 12);
