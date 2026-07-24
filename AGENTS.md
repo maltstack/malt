@@ -63,11 +63,15 @@ MALT depends on `vexil-lang` for schema compilation and `vexil-runtime` for enco
 ```
 specs/                        # GitHub Spec Kit territory (adopted 2026-07-24) — per-feature
                                # specs/NNN-feature-name/{spec,plan,tasks}.md, created by
-                               # /speckit-specify. Empty until the first feature uses it.
+                               # /speckit-specify (Claude) or $speckit-specify (Codex).
+                               # Empty until the first feature uses it.
 .specify/                     # Spec Kit config, templates, constitution (.specify/memory/constitution.md)
 .claude/skills/speckit-*/     # Spec Kit's Claude Code skills — /speckit-constitution,
                                # /speckit-specify, /speckit-plan, /speckit-tasks, /speckit-implement,
                                # /speckit-converge, plus optional clarify/analyze/checklist/taskstoissues
+.agents/skills/speckit-*/     # The same Spec Kit workflows for Codex — invoke as
+                               # $speckit-constitution, $speckit-specify, $speckit-plan,
+                               # $speckit-tasks, $speckit-implement, and $speckit-converge.
 docs/
   design/
     architecture.md            # Single source of truth (~2,380 lines) — moved from specs/
