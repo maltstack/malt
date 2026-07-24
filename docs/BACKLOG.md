@@ -259,6 +259,32 @@ original ten, in order. Each links to its detail below.
   picks the first pane in `persisted.panes` by map order instead of
   consulting `persisted.focus` — harmless under today's single-pane model,
   a real bug waiting for Phase F multi-pane work (§2 caveat, recommendation 6).
+- **Windows Job Object tier differentiation — FIXED 2026-07-24, HCS
+  wiring deliberately NOT attempted (see below).** `apply_session_isolation`
+  now calls `create_job_object` with real, tier-specific
+  `(memory_limit_mb, cpu_rate)` — Restricted stays uncapped (group-kill
+  only), Capped/Contained get real limits (2048 MB / 200% CPU, placeholder
+  defaults pending a real config surface) instead of the previous
+  identical-to-Restricted `(0, 0)` for all three non-Bare tiers. Extracted
+  as a pure `job_object_limits_for_tier()` function with direct unit tests
+  (`bare_and_restricted_get_uncapped_job_objects`,
+  `capped_and_contained_get_real_nonzero_limits`,
+  `restricted_and_capped_are_actually_different`).
+  **Deliberately did not attempt real HCS container wiring for Contained**
+  even though `hcs::create_compute_system` would compile and could be
+  called: the function exists regardless of the `hcs` feature flag (it
+  cleanly errors via `ensure_hcs_runtime()` if the feature isn't compiled
+  in, which it isn't for `malt-daemon` today), but creating a compute
+  system that no process actually launches inside is worse than not
+  creating one — real HCS containment needs
+  `malt_platform::process::spawn`/mash's external-command spawn path to
+  become HCS-aware (launch via `hcs::create_process`, not a normal OS
+  spawn), which is genuinely new engineering, not a parameter change. That
+  remains open — Contained gets the same Job-Object-only containment as
+  Capped today, nothing more. Restricted tokens (`tokens.rs`) are unwired
+  for the same underlying reason (using a token means
+  `CreateProcessAsUser` in the actual spawn path) and remain a separate
+  open item.
 - **Isolation policy: implement `required`/`preferred`/`disabled`
   per the project owner's request, as a new field alongside
   `IsolationTier`, not folded into it.** Concrete proposal from the audit:

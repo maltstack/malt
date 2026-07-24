@@ -20,13 +20,56 @@ use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 use tracing::{info, warn};
 
+/// Placeholder Job Object resource caps for the Capped/Contained tiers,
+/// pending a real per-session/group configuration surface (see
+/// `docs/BACKLOG.md`'s isolation-policy item). Deliberately conservative-but-
+/// generous rather than tuned: the point of this pass is that Capped and
+/// Contained sessions actually get *some* real, different-from-Restricted
+/// resource limit, not that these specific numbers are load-bearing.
+#[cfg(windows)]
+const CAPPED_MEMORY_LIMIT_MB: u64 = 2048;
+#[cfg(windows)]
+const CAPPED_CPU_RATE_PERCENT: u32 = 200;
+
+/// Job Object `(memory_limit_mb, cpu_rate)` for a given tier. `Bare` is
+/// never passed in (callers return before reaching this); `Restricted` gets
+/// an uncapped Job Object (group-kill only); `Capped`/`Contained` get real
+/// limits. Pulled out as a pure function so it's unit-testable without
+/// creating a real Windows Job Object.
+#[cfg(windows)]
+fn job_object_limits_for_tier(isolation: IsolationTier) -> (u64, u32) {
+    match isolation {
+        IsolationTier::Bare | IsolationTier::Restricted => (0, 0),
+        IsolationTier::Capped | IsolationTier::Contained => {
+            (CAPPED_MEMORY_LIMIT_MB, CAPPED_CPU_RATE_PERCENT)
+        }
+    }
+}
+
 /// Apply a session's isolation tier to its MASH environment: sets the opaque
 /// isolation context token, and on Windows, creates a Job Object every
 /// externally-spawned command in this session gets assigned to (see
 /// `mash::executor`'s spawn call site). Best-effort — if job object creation
 /// fails, the session still runs, just without process containment.
 ///
-/// Bare tier does nothing (no job object needed).
+/// Bare tier does nothing (no job object needed). Restricted gets an
+/// uncapped Job Object (group-kill only). Capped and Contained get the same
+/// Job Object with real memory/CPU limits — previously all three non-Bare
+/// tiers got an identical, uncapped Job Object, so Capped's "resource
+/// enforcement" promise and Contained's went unfulfilled even on the
+/// success path (see `docs/BACKLOG.md`).
+///
+/// This does **not** yet give Contained anything beyond Capped-level Job
+/// Object containment. Real HCS container isolation for Contained requires
+/// launching processes *inside* the compute system
+/// (`malt_platform::isolation::hcs::create_process`), not just creating one
+/// — that needs the actual process spawn path
+/// (`malt_platform::process::spawn`, `mash`'s external-command call sites)
+/// to become HCS-aware, which is real design work, not a parameter change.
+/// Creating an HCS compute system here that no process ever actually runs
+/// inside would be exactly the "looks done but isn't" pattern this project
+/// is trying to stop repeating — tracked as a separate, larger item in
+/// `docs/BACKLOG.md` rather than half-wired here.
 fn apply_session_isolation(env: &mut Env, session_id: SessionId, isolation: IsolationTier) {
     env.set_isolation_context(malt_platform::isolation::IsolationContext::from(isolation));
 
@@ -35,8 +78,13 @@ fn apply_session_isolation(env: &mut Env, session_id: SessionId, isolation: Isol
         if isolation == IsolationTier::Bare {
             return;
         }
+        let (memory_limit_mb, cpu_rate) = job_object_limits_for_tier(isolation);
         let job_name = format!("malt-session-{}", session_id.0);
-        match malt_platform::isolation::job_objects::create_job_object(&job_name, 0, 0) {
+        match malt_platform::isolation::job_objects::create_job_object(
+            &job_name,
+            memory_limit_mb,
+            cpu_rate,
+        ) {
             Ok(job) => env.set_job_object(std::sync::Arc::new(job)),
             Err(error) => warn!(
                 ?session_id,
@@ -712,5 +760,48 @@ fn build_persisted_session(
         group: None,
         isolation,
         _unknown: vec![],
+    }
+}
+
+#[cfg(all(test, windows))]
+mod isolation_tier_tests {
+    use super::*;
+
+    #[test]
+    fn bare_and_restricted_get_uncapped_job_objects() {
+        assert_eq!(job_object_limits_for_tier(IsolationTier::Bare), (0, 0));
+        assert_eq!(
+            job_object_limits_for_tier(IsolationTier::Restricted),
+            (0, 0),
+            "Restricted should be group-kill only, no resource caps"
+        );
+    }
+
+    #[test]
+    fn capped_and_contained_get_real_nonzero_limits() {
+        let capped = job_object_limits_for_tier(IsolationTier::Capped);
+        let contained = job_object_limits_for_tier(IsolationTier::Contained);
+        assert_ne!(
+            capped,
+            (0, 0),
+            "Capped must get a real resource limit, not the same uncapped \
+             treatment as Restricted -- that was the confirmed tier-blind bug"
+        );
+        assert_eq!(
+            capped, contained,
+            "Contained doesn't yet get anything beyond Capped-level Job \
+             Object containment (see the doc comment on apply_session_isolation) \
+             -- this test pins that honestly rather than silently drifting"
+        );
+    }
+
+    #[test]
+    fn restricted_and_capped_are_actually_different() {
+        assert_ne!(
+            job_object_limits_for_tier(IsolationTier::Restricted),
+            job_object_limits_for_tier(IsolationTier::Capped),
+            "this is the core tier-blindness fix: Restricted and Capped must \
+             no longer produce identical Job Object parameters"
+        );
     }
 }
