@@ -15,30 +15,73 @@ near-term, evidence-based items, not the whole product roadmap.
 
 ## P0 — blocks daily-driver usability
 
-- **Terminal grid rendering: cursor-position "staircase" bug.** Successive
-  output lines render with growing left-padding instead of resetting to
-  column 0. Shell logic is correct; the rendered grid is not. This is
-  plausibly the single biggest gap between "the shell works" and "this is
-  usable day to day." Not yet root-caused — candidates are
-  `malt-renderer`'s `FrameWalker`/`DirtyTracker`, `malt-compat`'s VT-to-grid
-  translation, or `mash`'s own cursor tracking.
-  See: `docs/findings/2026-07-24-live-daemon-session.md#1-terminal-grid-rendering-cursor-position-staircase-bug--high-priority`
+- **Terminal grid rendering: cursor-position "staircase" bug — now has a
+  confirmed, fixable lead.** `crates/malt-compat/src/translator.rs:36` does
+  `self.last_data.extend_from_slice(data)` on every `feed()` call, instead
+  of replacing it (`self.last_data = data.to_vec()`) as both the original
+  design doc and its own implementation plan specify. The buffer grows
+  forever; `frame_element()` returns the whole thing every time, so
+  `DirtyTracker` treats it as changed every frame and every `RenderBatch`
+  re-sends the session's entire raw VT history instead of just new bytes.
+  Concrete, self-contained bug with a known correct fix — not proven
+  identical to the reported staircase symptom (`/output`'s `StyledGrid`
+  route may read `TerminalGrid` directly, bypassing this pipeline), but a
+  strong, fixable lead either way. Secondary lead if this doesn't fully
+  explain it: check whether the PTY layer is missing ONLCR translation
+  (bare `\n` without `\r`) — `TerminalGrid`'s VT100 linefeed/carriage-return
+  handling is spec-correct, so a byte stream missing `\r` would reproduce
+  the same growing-offset pattern from a completely different, upstream
+  cause.
+  See: `docs/findings/2026-07-24-live-daemon-session.md` (original report),
+  `docs/findings/2026-07-24-plan-implementation-audit.md#1-compattranslatorfeed-accumulates-instead-of-replacing--strong-lead-for-the-p0-rendering-bug`
 
 ## P1 — real gaps, worth fixing soon
 
+- **Compat-pane session restore is a confirmed stub.**
+  `coordinator.rs:547-551` explicitly returns
+  `DaemonError::RestoreFailed(id, "compat pane restore not yet
+  implemented")` for any Dormant session with a Compat pane; the design's
+  `spawn_compat` function was never written (zero grep hits). Shell-session
+  restore, by contrast, is real and tested (26 tests). Phase B2 is further
+  along than "in design" suggested — just not for Compat panes.
 - **Backgrounded commands (`&`) don't appear to survive through the daemon's
-  `/exec` route.** `ping -n 30 127.0.0.1 &` returned empty output and no
-  process was found afterward, even though `mash`'s own background-job
-  tests pass standalone. Not yet root-caused — could be daemon-side
-  process/job bookkeeping, or a client-side timing artifact against a
-  short-lived check. Needs a proper trace before concluding either way.
+  `/exec` route — confirmed to need new design, not a regression fix.** The
+  process-supervisor's original design never covered detached background
+  jobs surviving past their pane's lifecycle at all; it's scoped to
+  interactive foreground processes tied to a PTY. `ping -n 30 127.0.0.1 &`
+  returns empty output and no process survives afterward. This needs
+  original design work, not "find where this broke."
   See: `docs/findings/2026-07-24-live-daemon-session.md#2-backgrounded-commands--dont-appear-to-survive-through-exec--medium-priority-not-root-caused`
+- **`crates/malt-protocol/src/codec.rs` has wrong constants and
+  tautological tests.** `MSG_*`/`DOMAIN_*` values don't match the real
+  schema `@type()` values (e.g. `MSG_COMMAND_OUTPUT=0x01` vs. the real
+  `OutputChunk@0x04`), and some referenced message types don't exist in
+  their claimed domain at all. Its own tests just assert the constants
+  equal themselves. Fix or delete — confirm nothing depends on it first.
+- **Two dead-code architecture detours, either finish or remove:**
+  `crates/mash/src/builtins.rs`'s `Builtin` trait/`BuiltinRegistry` is
+  never referenced anywhere (all builtins actually run through an inline
+  match in `executor.rs`); `crates/malt-compat/src/parser.rs`'s second VT
+  parser API (`VtEvent`/`CsiParams`/`EventCollector`, ~150 lines) is `pub`
+  but unused and not re-exported, likely orphaned scaffolding for the
+  never-wired Phase H out-of-process compat worker.
+- **`malt-renderer`: two designed safety mechanisms aren't actually wired
+  in.** `WalkConfig.max_output_bytes` (1 MiB cap) is defaulted but never
+  read in `walker.rs` despite the design calling it "Enforced".
+  `ClientState::should_shed()` (10s-no-ack disconnect) exists and is
+  unit-tested, but `RendererHost::process_frame` never calls it.
 - **`malt new` has no `--isolation` flag.** The gateway API and daemon-side
   wiring both support it (confirmed working via direct gateway calls); the
   primary CLI just doesn't expose it. Small, mechanical fix.
 - **`exec` responses always show `"exit_code": null`.** Observed on every
   call this session, including successful ones. Might be intentional
   (async result delivered elsewhere) — confirm before treating as a bug.
+- **Test-coverage gaps on functionally-complete code.** `malt-session`'s
+  `GroupManager` (create_group, add_session with max_sessions enforcement,
+  on_oom) has zero tests anywhere in the crate. `malt-platform`'s `env.rs`
+  has zero tests. Neither is a confirmed bug, but given that two real bugs
+  in `job_objects.rs` were found specifically by writing real tests for
+  under-tested code, treat these as real risk, not tidiness.
 
 ## P2 — deliberately deferred, not forgotten
 
@@ -69,6 +112,19 @@ near-term, evidence-based items, not the whole product roadmap.
   vexil-lang.** External dependency — vexil-lang's own docs defer this to
   their package-manager milestone. Tracked, not actionable from this repo.
 
+## Not a gap — resolved by cross-referencing, noted so it doesn't get re-flagged
+
+- **Session persistence API "missing" was a false alarm from checking only
+  one crate.** `phase2-malt-session.md` specified
+  `SessionRuntime::to_persisted()`/`from_persisted()` and a `PersistedSession`
+  type living in `malt-session` — grepping that crate alone finds nothing.
+  But the functionality is real: `PersistedSession`/`PersistedPane` are
+  schema-generated types from `malt_protocol::persist::session`, and the
+  conversion logic (`build_persisted_session`, `SessionCommand::Snapshot`)
+  lives in `malt-daemon`'s `session_thread.rs` instead. Relocated during
+  implementation, not abandoned. See
+  `docs/findings/2026-07-24-plan-implementation-audit.md#4-session-persistence-api-exists-but-not-wherehow-originally-specced`.
+
 ## Done (for context — remove once stale)
 
 - 2026-07-24: Reverted the uncommitted malt-stack (carboy/keg) dependency
@@ -90,3 +146,14 @@ near-term, evidence-based items, not the whole product roadmap.
   genuinely solid. Added missing success-path tests to `signals/windows.rs`.
   Fixed a `CWD_LOCK` poison-cascade bug and unguarded env-var races causing
   intermittent test failures in `mash`'s and `malt-platform`'s test suites.
+- 2026-07-24: Consolidated `CLAUDE.md`/`AGENTS.md` into a single `AGENTS.md`
+  (Claude Code only reads `CLAUDE.md`, which is now a one-line `@AGENTS.md`
+  import — official supported pattern). Adopted GitHub Spec Kit for future
+  feature specs, moved `specs/` to `docs/design/`. Deprecated
+  `docs/superpowers/`.
+- 2026-07-24: Full plan-vs-code audit — 6 parallel agents cross-referenced
+  all 44 historical planning documents against actual current code. Result:
+  the large majority checked out as accurate; findings folded into this
+  backlog (P0 rendering-bug lead, compat-pane restore stub, dead-code
+  items, codec.rs bug, test-coverage gaps). See
+  `docs/findings/2026-07-24-plan-implementation-audit.md`.

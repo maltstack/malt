@@ -82,6 +82,9 @@ docs/
                                 # picking up new work
 docs/superpowers/              # DEPRECATED 2026-07-24 — no longer used, no new content goes here.
                                 # Historical specs/plans left as point-in-time record.
+plans/                          # RETIRED 2026-07-24 — original Phase 0-2 implementation plans,
+                                # historical record. Audited against current code, see
+                                # docs/findings/2026-07-24-plan-implementation-audit.md.
 crates/
   malt-protocol/               # L0: VNP types, framing, envelope, codec (60 tests)
   malt-platform/               # L0: PTY, process, signals, sockets, isolation (78 tests; session
