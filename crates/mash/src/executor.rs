@@ -991,11 +991,12 @@ fn execute_with_io(
                 );
             }
 
-            let resolved_io = match resolve_redirects(redirects, source, env) {
+            let mut resolved_io = match resolve_redirects(redirects, source, env) {
                 Ok(io) => io,
                 Err(err_result) => return err_result,
             };
 
+            apply_exec_redirects(env, &mut resolved_io);
             let mut result = execute(inner, source, env);
 
             if let Some(mut pipe_out) = resolved_io.stdout.or(stdout_file) {
@@ -1124,8 +1125,7 @@ fn execute_simple_with_io(
     } else {
         Vec::new()
     };
-    if let Some(mut result) =
-        try_execute_builtin(resolved_dispatch_name, &argv, env, builtin_stdin)
+    if let Some(mut result) = try_execute_builtin(resolved_dispatch_name, &argv, env, builtin_stdin)
     {
         let builtin_name = builtin_output_name(resolved_dispatch_name, &argv);
         apply_builtin_output_redirects(&mut result, resolved_io, &builtin_name);
@@ -1196,19 +1196,23 @@ fn execute_simple_with_io(
     }
     if tools_registry.contains(resolved_dispatch_name) {
         record_hashed_command(env, &resolved_cmd_name, resolved_dispatch_name);
-        let stdin_bytes: Vec<u8> =
-            if let Some(mut file) = resolved_io.stdin.take().or(stdin_file.take()) {
-                let mut buf = Vec::new();
-                if let Err(e) = std::io::Read::read_to_end(&mut file, &mut buf) {
-                    return ExecResult::failure(
-                        1,
-                        format!("mash: {resolved_dispatch_name}: read stdin failed: {e}\n"),
-                    );
-                }
-                buf
-            } else {
-                Vec::new()
-            };
+        let stdin_bytes: Vec<u8> = if let Some(mut file) = resolved_io
+            .stdin
+            .take()
+            .or(stdin_file.take())
+            .or_else(|| env.open_fd_read(0).ok())
+        {
+            let mut buf = Vec::new();
+            if let Err(e) = std::io::Read::read_to_end(&mut file, &mut buf) {
+                return ExecResult::failure(
+                    1,
+                    format!("mash: {resolved_dispatch_name}: read stdin failed: {e}\n"),
+                );
+            }
+            buf
+        } else {
+            Vec::new()
+        };
 
         let tool_fn = tools_registry.get(resolved_dispatch_name).unwrap();
         let tool_result = tool_fn(&argv, &stdin_bytes);
@@ -1306,6 +1310,7 @@ fn execute_simple_with_io(
         }
     };
     env.report_bg_pid(child.pid());
+    assign_child_to_session_job(env, &child);
 
     // Read captured output.
     let mut stdout_bytes = Vec::new();
@@ -1678,6 +1683,7 @@ fn execute_simple(
         }
     };
     env.report_bg_pid(child.pid());
+    assign_child_to_session_job(env, &child);
 
     // Read stdout and stderr (only populated when fd is Pipe, not File).
     let mut stdout_bytes = Vec::new();
@@ -2096,7 +2102,8 @@ fn try_execute_builtin(
                     return Some(ExecResult {
                         exit_code: 1,
                         stdout: Vec::new(),
-                        stderr: format!("{builtin_label}: {}: {}\n", path.display(), e).into_bytes(),
+                        stderr: format!("{builtin_label}: {}: {}\n", path.display(), e)
+                            .into_bytes(),
                     });
                 }
             };
@@ -3080,7 +3087,11 @@ fn builtin_wait(argv: &[String], env: &mut Env) -> ExecResult {
     }
 }
 
-fn resolve_job_target(argv: &[String], env: &Env, builtin: &str) -> Result<crate::env::JobEntry, ExecResult> {
+fn resolve_job_target(
+    argv: &[String],
+    env: &Env,
+    builtin: &str,
+) -> Result<crate::env::JobEntry, ExecResult> {
     if argv.len() > 1 {
         return Err(ExecResult::failure(
             1,
@@ -3090,7 +3101,10 @@ fn resolve_job_target(argv: &[String], env: &Env, builtin: &str) -> Result<crate
 
     let jobs = env.jobs();
     if jobs.is_empty() {
-        return Err(ExecResult::failure(1, format!("mash: {builtin}: no current job\n")));
+        return Err(ExecResult::failure(
+            1,
+            format!("mash: {builtin}: no current job\n"),
+        ));
     }
 
     if argv.is_empty() {
@@ -3104,9 +3118,9 @@ fn resolve_job_target(argv: &[String], env: &Env, builtin: &str) -> Result<crate
             format!("mash: {builtin}: {}: no such job\n", spec),
         ));
     };
-    jobs.into_iter().find(|job| job.pid == pid).ok_or_else(|| {
-        ExecResult::failure(1, format!("mash: {builtin}: {}: no such job\n", spec))
-    })
+    jobs.into_iter()
+        .find(|job| job.pid == pid)
+        .ok_or_else(|| ExecResult::failure(1, format!("mash: {builtin}: {}: no such job\n", spec)))
 }
 
 fn builtin_bg(argv: &[String], env: &mut Env) -> ExecResult {
@@ -3131,7 +3145,7 @@ fn builtin_fg(argv: &[String], env: &mut Env) -> ExecResult {
 
     let _ = env.signal_job(job.pid, "CONT".to_string(), 0);
     let mut stderr = Vec::new();
-    let mut exit_code = 0;
+    let exit_code;
 
     match env.wait_for_job(job.pid) {
         Some(code) => {
@@ -3527,6 +3541,7 @@ fn builtin_command(
         }
         match malt_platform::process::spawn(config) {
             Ok(mut child) => {
+                assign_child_to_session_job(env, &child);
                 let mut stdout_bytes = Vec::new();
                 let mut stderr_bytes = Vec::new();
                 if let Some(mut out) = child.take_stdout() {
@@ -4229,10 +4244,7 @@ fn builtin_ulimit(argv: &[String]) -> ExecResult {
             return ExecResult::failure(2, "mash: ulimit: too many arguments\n");
         }
         if value != "unlimited" && value.parse::<u64>().is_err() {
-            return ExecResult::failure(
-                2,
-                format!("mash: ulimit: {value}: invalid limit\n"),
-            );
+            return ExecResult::failure(2, format!("mash: ulimit: {value}: invalid limit\n"));
         }
         return ExecResult::success();
     }
@@ -4780,10 +4792,7 @@ fn unquote_conditional(s: &str) -> String {
     }
 }
 
-fn expand_conditional_operand(
-    token: &str,
-    env: &mut Env,
-) -> Result<String, expander::ExpandError> {
+fn expand_conditional_operand(token: &str, env: &mut Env) -> Result<String, expander::ExpandError> {
     let unquoted = unquote_conditional(token);
     expander::expand_word_nosplit(&unquoted, env)
 }
@@ -4913,7 +4922,6 @@ fn redirect_to_text(r: &Spanned<Redirect>, source: &str) -> String {
         RedirectKind::HereString => "<<<",
         RedirectKind::HereDoc => "<<",
         RedirectKind::HereDocStrip => "<<-",
-        _ => "",
     };
     format!("{}{} {}", fd_prefix, op, redirect.target.text(source))
 }
@@ -5180,7 +5188,7 @@ fn resolve_redirects(
                             if !env.is_interactive() {
                                 env.request_exit(1);
                             }
-                            let msg = format!("{e}\n");
+                            let msg = format!("mash: heredoc expansion: {e}\n");
                             return Err(ExecResult::failure(1, msg));
                         }
                     }
@@ -5244,9 +5252,6 @@ fn resolve_redirects(
                 } else {
                     target.to_string()
                 };
-                // For small heredocs, wait until the writer has populated the pipe.
-                // This avoids a Windows race where the reader can observe EOF before
-                // the background writer runs.
                 if data.len() <= 8192 {
                     let (tx, rx) = std::sync::mpsc::sync_channel(1);
                     std::thread::spawn(move || {
@@ -5269,9 +5274,26 @@ fn resolve_redirects(
                         }
                     }
                 } else {
+                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
                     std::thread::spawn(move || {
-                        let _ = write.write_all(data.as_bytes());
+                        let result = write.write_all(data.as_bytes());
+                        let _ = tx.send(result);
                     });
+                    match rx.recv() {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            return Err(ExecResult::failure(
+                                1,
+                                format!("mash: heredoc write failed: {e}\n"),
+                            ));
+                        }
+                        Err(e) => {
+                            return Err(ExecResult::failure(
+                                1,
+                                format!("mash: heredoc writer failed: {e}\n"),
+                            ));
+                        }
+                    }
                 }
                 assign_resolved_fd(&mut io, fd, read);
             }
@@ -5535,6 +5557,29 @@ fn apply_exec_redirects(env: &Env, io: &mut ResolvedIo) {
     }
 }
 
+/// Assign a freshly-spawned child to the session's Job Object, if the
+/// session has isolation active (see `Env::set_job_object`, wired by
+/// `malt-daemon`'s `session_thread::apply_session_isolation`). Best-effort:
+/// a failure here doesn't fail the command — the child still runs, just
+/// outside containment — but it's logged so the gap is visible rather than
+/// silent.
+#[cfg(windows)]
+fn assign_child_to_session_job(env: &Env, child: &malt_platform::process::Child) {
+    if let Some(job) = env.job_object() {
+        if let Err(error) =
+            malt_platform::isolation::job_objects::assign_process_to_job(job, child.pid())
+        {
+            tracing::warn!(
+                pid = child.pid(),
+                %error,
+                "failed to assign spawned process to session job object"
+            );
+        }
+    }
+}
+#[cfg(not(windows))]
+fn assign_child_to_session_job(_env: &Env, _child: &malt_platform::process::Child) {}
+
 fn add_runtime_spawn_env(config: &mut malt_platform::process::SpawnConfig, env: &Env) {
     if let Some(fd_aliases) = env.nonstdio_fd_alias_env_spec() {
         config
@@ -5679,6 +5724,7 @@ fn execute_shell_script_with_io(
         }
     };
     env.report_bg_pid(child.pid());
+    assign_child_to_session_job(env, &child);
 
     let mut stdout_bytes = Vec::new();
     let mut stderr_bytes = Vec::new();
@@ -5874,6 +5920,7 @@ fn execute_expanded_command(
         }
     };
     env.report_bg_pid(child.pid());
+    assign_child_to_session_job(env, &child);
 
     let mut stdout_bytes = Vec::new();
     let mut stderr_bytes = Vec::new();
@@ -6011,10 +6058,7 @@ fn execute_interruptible_sleep(argv: &[String], env: &mut Env) -> ExecResult {
         let seconds = match arg.parse::<f64>() {
             Ok(seconds) if seconds.is_finite() && seconds >= 0.0 => seconds,
             _ => {
-                return ExecResult::failure(
-                    1,
-                    format!("sleep: invalid time interval '{}'\n", arg),
-                );
+                return ExecResult::failure(1, format!("sleep: invalid time interval '{}'\n", arg));
             }
         };
         total_seconds += seconds;
@@ -6242,6 +6286,68 @@ fn is_path_search_match(path: &Path) -> bool {
 mod tests {
     use super::find_in_path;
     use crate::env::{Env, Variable};
+
+    /// Proves `assign_child_to_session_job` actually contains a spawned
+    /// process, not just that it compiles. Spawns a real ~29s-long process
+    /// (`ping -n 30`), assigns it to a session job object via the function
+    /// under test, then terminates the job and confirms the process dies
+    /// within ~2s. If the wiring were broken (e.g. `assign_process_to_job`
+    /// never called), the process would still be running at the 2s mark —
+    /// this test would fail, not silently pass.
+    #[test]
+    #[cfg(windows)]
+    fn assign_child_to_session_job_actually_terminates_process_via_job() {
+        use super::assign_child_to_session_job;
+        use malt_platform::isolation::job_objects;
+        use malt_platform::process::{Io, SpawnConfig};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let mut config = SpawnConfig::new("ping");
+        config.args = vec!["-n".into(), "30".into(), "127.0.0.1".into()];
+        config.stdout = Io::Pipe;
+        config.stderr = Io::Pipe;
+        let mut child = malt_platform::process::spawn(config)
+            .expect("spawn ping (must be present on any Windows host)");
+
+        // Sanity: it should still be running immediately after spawn — this
+        // is what makes "dies within 2s after termination" meaningful rather
+        // than a coincidence.
+        assert!(
+            child.try_wait().expect("try_wait should not error").is_none(),
+            "ping should still be running right after spawn"
+        );
+
+        let job = job_objects::create_job_object("test-assign-child-job", 0, 0)
+            .expect("create job object");
+
+        let mut env = Env::empty();
+        env.set_job_object(Arc::new(job));
+
+        assign_child_to_session_job(&env, &child);
+
+        // Terminate via the job, not by killing the child directly — this is
+        // the actual thing under test: was the child really in the job?
+        job_objects::terminate_job_object(env.job_object().expect("job was set"))
+            .expect("terminate job object");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut exited = false;
+        while Instant::now() < deadline {
+            if child.try_wait().expect("try_wait should not error").is_some() {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        assert!(
+            exited,
+            "process should have been terminated via the job object within 2s; \
+             it was spawned to run for ~29s, so still-running here means \
+             assign_child_to_session_job did not actually put it in the job"
+        );
+    }
 
     #[test]
     #[cfg(windows)]

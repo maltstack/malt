@@ -6,19 +6,50 @@ use malt_layout::resolve::compute_resolved_panes;
 use malt_layout::{LayoutConfig, Rect};
 use malt_protocol::common::{ClientCapabilities, IsolationTier, PaneId, ResolvedPane, SessionId};
 use malt_protocol::input::KeyEvent;
+use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
 use malt_protocol::priority::Priority;
 use malt_protocol::render::{InitialState, RenderBatch};
 use malt_renderer::host::{PaneFrame, RendererHost};
 use malt_session::session::SessionRuntime;
+use malt_term::{EditMode, EditResult, Editor};
 use mash::env::{Env, Variable};
-use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
 use mash::executor::execute_list;
 use mash::parser;
-use malt_term::{EditMode, EditResult, Editor};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 use tracing::{info, warn};
+
+/// Apply a session's isolation tier to its MASH environment: sets the opaque
+/// isolation context token, and on Windows, creates a Job Object every
+/// externally-spawned command in this session gets assigned to (see
+/// `mash::executor`'s spawn call site). Best-effort — if job object creation
+/// fails, the session still runs, just without process containment.
+///
+/// Bare tier does nothing (no job object needed).
+fn apply_session_isolation(env: &mut Env, session_id: SessionId, isolation: IsolationTier) {
+    env.set_isolation_context(malt_platform::isolation::IsolationContext::from(isolation));
+
+    #[cfg(windows)]
+    {
+        if isolation == IsolationTier::Bare {
+            return;
+        }
+        let job_name = format!("malt-session-{}", session_id.0);
+        match malt_platform::isolation::job_objects::create_job_object(&job_name, 0, 0) {
+            Ok(job) => env.set_job_object(std::sync::Arc::new(job)),
+            Err(error) => warn!(
+                ?session_id,
+                %error,
+                "failed to create job object for session isolation; session will run without process containment"
+            ),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = session_id;
+    }
+}
 
 /// Commands sent from the coordinator to a session executor.
 pub enum SessionCommand {
@@ -43,9 +74,7 @@ pub enum SessionCommand {
     /// Write input to PTY stdin.
     WriteInput { data: Vec<u8> },
     /// Get the current output snapshot (requester sends back via channel).
-    GetOutput {
-        reply: mpsc::Sender<String>,
-    },
+    GetOutput { reply: mpsc::Sender<String> },
     /// Register a VNP client with this session's renderer.
     RegisterVnpClient {
         client_id: u64,
@@ -75,7 +104,10 @@ impl std::fmt::Debug for SessionCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Deliver(m) => f.debug_tuple("Deliver").field(m).finish(),
-            Self::AttachClient { client_id, authority } => f
+            Self::AttachClient {
+                client_id,
+                authority,
+            } => f
                 .debug_struct("AttachClient")
                 .field("client_id", client_id)
                 .field("authority", authority)
@@ -112,7 +144,10 @@ impl std::fmt::Debug for SessionCommand {
                 .field("client_id", client_id)
                 .finish(),
             Self::KeyInput { .. } => f.debug_struct("KeyInput").finish(),
-            Self::AckFrame { client_id, frame_seq } => f
+            Self::AckFrame {
+                client_id,
+                frame_seq,
+            } => f
                 .debug_struct("AckFrame")
                 .field("client_id", client_id)
                 .field("frame_seq", frame_seq)
@@ -152,6 +187,7 @@ impl SessionExecutor {
             .spawn(move || {
                 let mut env = Env::from_os();
                 env.set_interactive(true);
+                apply_session_isolation(&mut env, session_id.clone(), isolation);
                 let mut executor = SessionExecutor {
                     session: SessionRuntime::new(session_id, first_pane, isolation),
                     bus: Bus::new(BusConfig::default()),
@@ -186,6 +222,7 @@ impl SessionExecutor {
             .spawn(move || {
                 let mut env = Env::from_os();
                 env.set_interactive(true);
+                apply_session_isolation(&mut env, session_id.clone(), isolation);
 
                 if initial_cwd.is_dir() {
                     let cwd_str = initial_cwd.to_string_lossy().to_string();
@@ -267,7 +304,7 @@ impl SessionExecutor {
                     }
                     // Publish output to bus for subscribers
                     self.bus.publish(BusMessage {
-                        domain: 1, // Shell
+                        domain: 1,   // Shell
                         msg_type: 4, // OutputChunk
                         priority: Priority::Normal,
                         producer_id: 0,
@@ -302,9 +339,14 @@ impl SessionExecutor {
                     let pane_id = self.session.focused_pane().clone();
                     let panes = vec![PaneFrame { pane_id, element }];
                     let layout = self.resolved_panes.clone();
-                    let initial = self.renderer.snapshot_initial_state(&panes, &layout, client_id);
+                    let initial = self
+                        .renderer
+                        .snapshot_initial_state(&panes, &layout, client_id);
                     if initial_reply.send(initial).is_err() {
-                        warn!(client_id, "RegisterVnpClient: initial_reply receiver dropped before send");
+                        warn!(
+                            client_id,
+                            "RegisterVnpClient: initial_reply receiver dropped before send"
+                        );
                     }
                 }
                 Ok(SessionCommand::UnregisterVnpClient { client_id }) => {
@@ -312,9 +354,7 @@ impl SessionExecutor {
                     self.render_pushers.remove(&client_id);
                 }
                 Ok(SessionCommand::KeyInput { key }) => {
-                    if let Some(input_event) =
-                        crate::input_bridge::vnp_key_to_input_event(&key)
-                    {
+                    if let Some(input_event) = crate::input_bridge::vnp_key_to_input_event(&key) {
                         match self.editor.feed(input_event) {
                             EditResult::Accept(line) => {
                                 let _ = self.run_mash_command(&line);
@@ -338,10 +378,17 @@ impl SessionExecutor {
                         }
                     }
                 }
-                Ok(SessionCommand::AckFrame { client_id, frame_seq }) => {
+                Ok(SessionCommand::AckFrame {
+                    client_id,
+                    frame_seq,
+                }) => {
                     self.renderer.ack_frame(client_id, frame_seq);
                 }
-                Ok(SessionCommand::Snapshot { reply, name, isolation }) => {
+                Ok(SessionCommand::Snapshot {
+                    reply,
+                    name,
+                    isolation,
+                }) => {
                     let persisted = build_persisted_session(
                         self.session.id(),
                         self.session.focused_pane(),
@@ -410,7 +457,7 @@ impl SessionExecutor {
             }
             // Publish output to bus
             self.bus.publish(BusMessage {
-                domain: 1, // Shell
+                domain: 1,   // Shell
                 msg_type: 4, // OutputChunk
                 priority: Priority::Normal,
                 producer_id: 0,
@@ -498,9 +545,10 @@ impl SessionExecutor {
         while rows_json.last().map_or(false, |r| {
             r.as_array().map_or(true, |a| {
                 a.len() == 1
-                    && a[0].get("t").and_then(|t| t.as_str()).map_or(false, |s| {
-                        s.trim().is_empty()
-                    })
+                    && a[0]
+                        .get("t")
+                        .and_then(|t| t.as_str())
+                        .map_or(false, |s| s.trim().is_empty())
             })
         }) {
             rows_json.pop();
@@ -525,9 +573,13 @@ fn build_persisted_session(
         let s = env.get_str("SHELL");
         if s.is_empty() {
             #[cfg(unix)]
-            { "/bin/sh".to_string() }
+            {
+                "/bin/sh".to_string()
+            }
             #[cfg(not(unix))]
-            { "cmd.exe".to_string() }
+            {
+                "cmd.exe".to_string()
+            }
         } else {
             s.to_string()
         }
@@ -535,7 +587,11 @@ fn build_persisted_session(
 
     let cwd = {
         let s = env.get_str("PWD");
-        if s.is_empty() { ".".to_string() } else { s.to_string() }
+        if s.is_empty() {
+            ".".to_string()
+        } else {
+            s.to_string()
+        }
     };
 
     let pane = PersistedPane {
@@ -555,7 +611,9 @@ fn build_persisted_session(
         schema_version: 1,
         id: session_id.clone(),
         name: name.map(|s| s.to_string()),
-        layout: malt_protocol::common::LayoutNode::Leaf { pane_id: focused_pane.clone() },
+        layout: malt_protocol::common::LayoutNode::Leaf {
+            pane_id: focused_pane.clone(),
+        },
         focus: focused_pane.clone(),
         panes,
         theme: None,

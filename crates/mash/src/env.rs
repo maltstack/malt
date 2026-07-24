@@ -299,6 +299,12 @@ pub struct Env {
     /// Opaque isolation context token passed through from daemon.
     /// MASH does not interpret this; it's passed to platform spawn traits.
     isolation_context: Option<malt_platform::isolation::IsolationContext>,
+    /// Windows Job Object every externally-spawned child in this session gets
+    /// assigned to, if the session's isolation tier is above Bare. Shared
+    /// (`Arc`) across `Env::clone()` (subshells) so the whole session's
+    /// process tree lives in one job — killing the job kills all of it.
+    #[cfg(windows)]
+    job_object: Option<Arc<malt_platform::isolation::job_objects::JobObject>>,
     fd_registry: malt_platform::vfs::SharedFdRegistry,
     fd_aliases: Arc<Mutex<HashMap<u32, u32>>>,
     fd_snapshots: Arc<Mutex<HashMap<u32, PathBuf>>>,
@@ -340,6 +346,8 @@ impl Clone for Env {
             jobs: self.jobs.clone(),
             job_tasks: self.job_tasks.clone(),
             isolation_context: self.isolation_context.clone(),
+            #[cfg(windows)]
+            job_object: self.job_object.clone(),
             fd_registry,
             fd_aliases: Arc::new(Mutex::new(self.fd_aliases_lock().clone())),
             fd_snapshots: Arc::new(Mutex::new(self.fd_snapshots_lock().clone())),
@@ -376,6 +384,8 @@ impl Env {
             jobs: Arc::new(Mutex::new(Vec::new())),
             job_tasks: Arc::new(Mutex::new(HashMap::new())),
             isolation_context: None,
+            #[cfg(windows)]
+            job_object: None,
             fd_registry: malt_platform::vfs::SharedFdRegistry::new(),
             fd_aliases: Arc::new(Mutex::new(HashMap::new())),
             fd_snapshots: Arc::new(Mutex::new(HashMap::new())),
@@ -411,6 +421,24 @@ impl Env {
             if key == "IFS" {
                 continue;
             }
+            #[cfg(windows)]
+            let key = if key.eq_ignore_ascii_case("PATH")
+                || key.eq_ignore_ascii_case("HOME")
+                || key.eq_ignore_ascii_case("TEMP")
+                || key.eq_ignore_ascii_case("TMP")
+                || key.eq_ignore_ascii_case("COMSPEC")
+                || key.eq_ignore_ascii_case("SYSTEMROOT")
+                || key.eq_ignore_ascii_case("WINDIR")
+                || key.eq_ignore_ascii_case("USERPROFILE")
+                || key.eq_ignore_ascii_case("HOMEDRIVE")
+                || key.eq_ignore_ascii_case("HOMEPATH")
+                || key.eq_ignore_ascii_case("PSMODULEPATH")
+                || key.eq_ignore_ascii_case("PATHEXT")
+            {
+                key.to_ascii_uppercase()
+            } else {
+                key
+            };
             env.scopes[0].insert(key, Variable::exported_string(value));
         }
         if let Ok(alias_spec) = std::env::var(MASH_FD_ALIASES_ENV) {
@@ -596,10 +624,15 @@ impl Env {
 
     pub fn readonly_vars(&self) -> HashMap<String, String> {
         let mut result = HashMap::new();
-        for scope in &self.scopes {
+        let mut masked = HashSet::new();
+        for (i, scope) in self.scopes.iter().enumerate().rev() {
+            for name in &self.unset_masks[i] {
+                masked.insert(name.clone());
+            }
             for (name, var) in scope {
-                if var.readonly {
+                if !masked.contains(name) && var.readonly {
                     result.insert(name.clone(), var.as_str().to_string());
+                    masked.insert(name.clone());
                 }
             }
         }
@@ -677,10 +710,15 @@ impl Env {
 
     pub fn exported_vars(&self) -> HashMap<String, String> {
         let mut result = HashMap::new();
-        for scope in &self.scopes {
+        let mut masked = HashSet::new();
+        for (i, scope) in self.scopes.iter().enumerate().rev() {
+            for name in &self.unset_masks[i] {
+                masked.insert(name.clone());
+            }
             for (name, var) in scope {
-                if var.exported {
+                if !masked.contains(name) && var.exported {
                     result.insert(name.clone(), var.as_str().to_string());
+                    masked.insert(name.clone());
                 }
             }
         }
@@ -689,9 +727,16 @@ impl Env {
 
     pub fn all_variables(&self) -> HashMap<String, &Variable> {
         let mut result = HashMap::new();
-        for scope in &self.scopes {
+        let mut masked = HashSet::new();
+        for (i, scope) in self.scopes.iter().enumerate().rev() {
+            for name in &self.unset_masks[i] {
+                masked.insert(name.clone());
+            }
             for (name, var) in scope {
-                result.entry(name.clone()).or_insert(var);
+                if !masked.contains(name) {
+                    result.insert(name.clone(), var);
+                    masked.insert(name.clone());
+                }
             }
         }
         result
@@ -1192,6 +1237,21 @@ impl Env {
         self.isolation_context.take()
     }
 
+    /// Set the Windows Job Object every externally-spawned child in this
+    /// session should be assigned to. Called once by the daemon at session
+    /// startup when the isolation tier is above Bare; shared across
+    /// subshells via `Env::clone()`.
+    #[cfg(windows)]
+    pub fn set_job_object(&mut self, job: Arc<malt_platform::isolation::job_objects::JobObject>) {
+        self.job_object = Some(job);
+    }
+
+    /// Get the session's Job Object, if isolation is active.
+    #[cfg(windows)]
+    pub fn job_object(&self) -> Option<&Arc<malt_platform::isolation::job_objects::JobObject>> {
+        self.job_object.as_ref()
+    }
+
     pub fn register_fd(&self, fd: u32, file: File) {
         self.clear_fd_alias(fd);
         self.clear_fd_snapshot(fd);
@@ -1320,12 +1380,7 @@ impl Env {
             .into_iter()
             .filter(|fd| *fd > 2)
             .collect();
-        fds.extend(
-            self.fd_aliases_lock()
-                .keys()
-                .copied()
-                .filter(|fd| *fd > 2),
-        );
+        fds.extend(self.fd_aliases_lock().keys().copied().filter(|fd| *fd > 2));
         fds.extend(
             self.fd_snapshots_lock()
                 .keys()
@@ -1348,7 +1403,7 @@ impl Env {
             }
             current = next;
         }
-        Some(current)
+        None
     }
 
     fn history_lock(&self) -> MutexGuard<'_, Vec<String>> {
