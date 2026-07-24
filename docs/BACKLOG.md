@@ -178,12 +178,19 @@ near-term, evidence-based items, not the whole product roadmap.
   dispatches another `SessionCommand::RunCommand` — the P1 item below about
   its forwarding behavior being "unconfirmed, suspected wrong" is now
   **confirmed** wrong, not just suspected.
-- **Test-coverage gaps on functionally-complete code.** `malt-session`'s
-  `GroupManager` (create_group, add_session with max_sessions enforcement,
-  on_oom) has zero tests anywhere in the crate. `malt-platform`'s `env.rs`
-  has zero tests. Neither is a confirmed bug, but given that two real bugs
-  in `job_objects.rs` were found specifically by writing real tests for
-  under-tested code, treat these as real risk, not tidiness.
+- **Test-coverage gaps — CLOSED 2026-07-24, and the `job_objects.rs`
+  precedent repeated: a real bug was found.** `malt-session`'s
+  `GroupManager` (`crates/malt-session/tests/group.rs`, 18 new tests) and
+  `malt-platform`'s `env.rs` (`crates/malt-platform/tests/env.rs`, 4 new
+  tests) both had zero coverage despite being functionally complete, not
+  stubs — `group.rs`'s own header comment claiming "Stub module" was stale
+  and has been removed. Writing real tests against `add_session` found a
+  genuine bug: it never checked whether a session id was already a member
+  before pushing, so calling it twice with the same `SessionId` (e.g. a
+  caller retrying after a lost reply) silently consumed two slots against
+  `max_sessions` instead of being a no-op. Fixed to check membership first;
+  covered by `add_session_is_idempotent_for_the_same_session_id`, which
+  fails against the old code and passes against the fix.
 
 ## P2 — deliberately deferred, not forgotten
 

@@ -1,6 +1,4 @@
 //! Group management and policy enforcement.
-//!
-//! Stub module — full implementation in a follow-up task.
 
 use std::collections::HashMap;
 
@@ -51,6 +49,11 @@ impl GroupManager {
     }
 
     /// Add a session to a group, enforcing `max_sessions`.
+    ///
+    /// Idempotent: adding a session id that's already a member is a no-op
+    /// success, not a second slot consumed against `max_sessions` — a
+    /// caller retrying a message after a lost reply must not be able to
+    /// double-count the same session.
     pub fn add_session(
         &mut self,
         group_id: GroupId,
@@ -60,6 +63,10 @@ impl GroupManager {
             .groups
             .get_mut(&group_id.0)
             .ok_or_else(|| SessionError::PolicyViolation("group not found".into()))?;
+
+        if group.sessions.contains(&session_id) {
+            return Ok(());
+        }
 
         if group.sessions.len() >= group.policy.max_sessions as usize {
             return Err(SessionError::PolicyViolation(
