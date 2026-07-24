@@ -37,6 +37,28 @@ near-term, evidence-based items, not the whole product roadmap.
 
 ## P1 — real gaps, worth fixing soon
 
+- **Agent-facing `get_output` returns the wrong representation — the human
+  rendering pipeline, not something built for a program to parse.** It
+  returns `StyledGrid` (character cells with RGB/bold flags, the same
+  representation built for `malt-tui`/`maltty`), not plain text or
+  structured stdout/stderr/status. Confirmed firsthand 2026-07-24: driving
+  a session as an agent required writing a throwaway script to flatten
+  grid cells back into readable text. `exec`'s response shape (plain
+  `{"output": "...", "exit_code": ...}`) already gets this right for the
+  synchronous case — `get_output` (used for monitoring ongoing/backgrounded
+  sessions) doesn't. Fix: add a plain-text/structured variant of
+  `get_output` alongside the existing grid one, not a replacement — the
+  grid representation is correct and needed for the human clients.
+  Distinct from the P0 rendering bug above: that's the renderer being
+  *wrong*; this is the API being the *wrong shape for its audience* even
+  once the renderer is correct. Also recording a considered non-decision
+  here so it doesn't get re-litigated later: Agent Client Protocol (ACP)
+  was evaluated as a possible fix for this and doesn't apply — ACP's
+  client is the editor/terminal hosting an embedded agent's own UI
+  (control flows editor→agent), whereas malt's actual relationship is an
+  external agent remotely driving a persistent session (control flows
+  agent→malt). Different actor model; adopting ACP wouldn't address this
+  gap.
 - **Compat-pane session restore is a confirmed stub.**
   `coordinator.rs:547-551` explicitly returns
   `DaemonError::RestoreFailed(id, "compat pane restore not yet
@@ -157,3 +179,15 @@ near-term, evidence-based items, not the whole product roadmap.
   backlog (P0 rendering-bug lead, compat-pane restore stub, dead-code
   items, codec.rs bug, test-coverage gaps). See
   `docs/findings/2026-07-24-plan-implementation-audit.md`.
+- 2026-07-24: Landscape check against current (mid-2026) agentic-tooling
+  reality, not just the March 2026 design-time assumptions. Verdict: the
+  core architectural bet (daemon-owned session, structured protocol
+  instead of raw VT codes) is directionally validated by where the market
+  independently went (Warp, Ghostty, Microsoft Intelligent Terminal are
+  all "agent-aware terminal" products now). Concrete finding folded into
+  P1 above: `get_output` serves agents the human-rendering representation
+  instead of a plain/structured one. ACP was evaluated and doesn't apply
+  (wrong actor model — see the P1 entry). MCP's 2026-07-28 spec revision
+  (stateless core) is a compatibility check `malt-mcp` will need soon, not
+  yet added as a backlog item pending confirmation of what actually
+  breaks.
