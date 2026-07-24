@@ -37,6 +37,26 @@ near-term, evidence-based items, not the whole product roadmap.
 
 ## P1 — real gaps, worth fixing soon
 
+- **`command_id`/`exit_code` in the Gateway's `exec` response are literal
+  hardcoded values, and the command-history data model that should back
+  them is completely unwired.** `gateway_backend.rs:111` hardcodes
+  `command_id: 0` and `exit_code: None` — not a missed read of data the
+  daemon already has. Separately, `malt-session::pane::CommandBlock` (a
+  fully-built per-command record with exactly the fields needed:
+  `command_id`, `started_at`, `finished_at`, `exit_code`) is never
+  constructed or pushed anywhere outside tests — `grep` for `CommandBlock
+  {` and `push_command_block` outside `tests/` returns zero hits. Sessions
+  track no command history today despite having the model built for it.
+  Real work on both ends: capture the exit code in the daemon's
+  `RunCommand` path, and wire `CommandBlock` construction into it. See
+  `docs/adr/ADR-0002-gateway-canonical-mcp-adapter.md` for the full
+  context — this is Phase 3/4 of that decision.
+- **`send_input`'s actual forwarding behavior is unconfirmed and suspected
+  wrong.** Suspected to dispatch another `RunCommand` rather than writing
+  raw bytes to an already-running process's stdin — would explain why
+  simple standalone commands work in testing while genuinely interactive
+  cases (REPLs, password prompts) might not. Not yet verified against the
+  code. Confirm before Phase 3 work in ADR-0002 begins.
 - **Agent-facing `get_output` returns the wrong representation — the human
   rendering pipeline, not something built for a program to parse.** It
   returns `StyledGrid` (character cells with RGB/bold flags, the same
@@ -193,3 +213,12 @@ near-term, evidence-based items, not the whole product roadmap.
   (stateless core) is a compatibility check `malt-mcp` will need soon, not
   yet added as a backlog item pending confirmation of what actually
   breaks.
+- 2026-07-24: ADR-0002 — Gateway is the canonical agent control plane,
+  MCP is a replaceable adapter, phased migration plan. Investigated where
+  execution events should actually live: not `Bus`/`RingBuffer` (drops
+  messages under pressure, destructive `drain()`, no sequence numbers —
+  wrong for a durable log), but `malt-session::pane::CommandBlock`
+  extended (right shape, currently unwired — see P1). Found two concrete
+  bugs/gaps in the process: hardcoded `command_id`/`exit_code` in the
+  Gateway, and `CommandBlock` never actually constructed anywhere outside
+  tests.
