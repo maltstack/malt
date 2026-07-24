@@ -244,3 +244,52 @@ fn unregister_vnp_client_does_not_crash() {
     cmd_tx.send(SessionCommand::Shutdown).unwrap();
     handle.join().expect("session thread panicked");
 }
+
+#[test]
+fn control_observation_and_snapshot_remain_prompt_during_a_long_command() {
+    use std::time::{Duration, Instant};
+
+    let (cmd_tx, handle) =
+        SessionExecutor::spawn(SessionId(1), PaneId(1), IsolationTier::Bare).unwrap();
+    let (reply, result) = std::sync::mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RunCommand {
+            command: "sleep 1; echo complete".to_string(),
+            reply,
+        })
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+
+    let started = Instant::now();
+    let (styled_reply, styled) = std::sync::mpsc::channel();
+    let (plain_reply, plain) = std::sync::mpsc::channel();
+    let (snapshot_reply, snapshot) = std::sync::mpsc::channel();
+    cmd_tx.send(SessionCommand::GetOutput { reply: styled_reply }).unwrap();
+    cmd_tx
+        .send(SessionCommand::GetOutputText { reply: plain_reply })
+        .unwrap();
+    cmd_tx
+        .send(SessionCommand::Snapshot {
+            reply: snapshot_reply,
+            name: Some("busy".to_string()),
+            isolation: IsolationTier::Bare,
+        })
+        .unwrap();
+    let _ = styled.recv_timeout(Duration::from_secs(1)).unwrap();
+    let _ = plain.recv_timeout(Duration::from_secs(1)).unwrap();
+    let _ = snapshot.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+
+    // A dropped initiating receiver does not cancel or poison later control.
+    let (dropped, dropped_result) = std::sync::mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RunCommand {
+            command: "echo survives-drop".to_string(),
+            reply: dropped,
+        })
+        .unwrap();
+    drop(dropped_result);
+    assert!(result.recv_timeout(Duration::from_secs(2)).unwrap().output.contains("complete"));
+    cmd_tx.send(SessionCommand::Shutdown).unwrap();
+    handle.join().unwrap();
+}

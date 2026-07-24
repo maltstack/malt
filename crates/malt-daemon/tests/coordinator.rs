@@ -1,7 +1,8 @@
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
 use malt_daemon::store::{DebouncedStore, SessionStore};
-use malt_protocol::common::{IsolationTier, SessionId};
+use malt_protocol::common::{IsolationTier, SessionId, SessionState};
+use std::sync::mpsc;
 
 fn make_store(dir: &tempfile::TempDir) -> DebouncedStore {
     DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
@@ -823,4 +824,68 @@ fn error_variants_are_distinct() {
     assert!(format!("{e1}").contains("not supported"));
     assert!(format!("{e2}").contains("1"));
     assert!(format!("{e3}").contains("dormant"));
+}
+#[test]
+fn zero_execution_capacity_is_rejected_by_checked_construction() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let config = PoolConfig { session_channel_size: 0, ..PoolConfig::default() };
+    assert!(Coordinator::try_new(config, store).is_err());
+}
+
+#[test]
+fn default_execution_capacity_is_256_waiting_requests() {
+    assert_eq!(PoolConfig::default().session_channel_size, 256);
+}
+
+#[test]
+fn last_detach_while_execution_is_busy_keeps_the_session_active() {
+    use malt_daemon::executor::session_thread::SessionCommand;
+    use malt_protocol::common::{ClientCapabilities, ColorDepth, ImageProtocol, UnicodeLevel};
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
+    let id = coord.create_session(None, IsolationTier::Bare, None).unwrap();
+    let capabilities = ClientCapabilities {
+        color_depth: ColorDepth::TrueColor,
+        unicode: UnicodeLevel::Full,
+        image_protocol: ImageProtocol::None,
+        overlay: false,
+        vt_passthrough: true,
+        max_fps: 60,
+        _unknown: Vec::new(),
+    };
+    let (render_tx, _render_rx) = mpsc::sync_channel(4);
+    coord.register_vnp_client(id.clone(), 1, capabilities, render_tx).unwrap();
+    let receiver = coord.submit_execution(id.clone(), "sleep 1; echo retained".to_string()).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    coord.unregister_vnp_client(id.clone(), 1).unwrap();
+    assert!(coord.list_sessions().iter().any(|session| {
+        session.session_id == id && session.state == SessionState::Active
+    }));
+    assert!(receiver.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+    let _ = SessionCommand::Shutdown;
+}
+
+#[test]
+fn destroy_closes_intake_promptly_but_finalizes_active_work_once() {
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let mut coord = Coordinator::new(PoolConfig { session_channel_size: 1, ..PoolConfig::default() }, store);
+    let id = coord.create_session(None, IsolationTier::Bare, None).unwrap();
+    let active = coord.submit_execution(id.clone(), "sleep 1; echo active".to_string()).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let pending = coord.submit_execution(id.clone(), "echo pending".to_string()).unwrap();
+    let started = Instant::now();
+    coord.destroy_session(id);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(active.recv_timeout(Duration::from_secs(2)).unwrap().unwrap().output.contains("active"));
+    assert!(matches!(
+        pending.recv_timeout(Duration::from_secs(2)).unwrap(),
+        Err(malt_daemon::DaemonError::SessionShuttingDown(_))
+    ));
 }

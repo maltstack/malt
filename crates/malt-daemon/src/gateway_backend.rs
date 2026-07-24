@@ -1,5 +1,5 @@
 use crate::executor::coordinator::Coordinator;
-use crate::executor::session_thread::SessionCommand;
+use crate::DaemonError;
 use malt_gateway::backend::GatewayBackend;
 use malt_gateway::error::GatewayError;
 use malt_gateway::types::{ExecResult, PaneResponse, SessionResponse};
@@ -18,6 +18,17 @@ impl DaemonBackend {
 
     pub fn coordinator(&self) -> &Arc<Mutex<Coordinator>> {
         &self.coordinator
+    }
+}
+
+fn map_execution_error(error: DaemonError) -> GatewayError {
+    let message = error.to_string();
+    match error {
+        DaemonError::ExecutionQueueFull { .. } => GatewayError::ExecutionQueueFull(message),
+        DaemonError::ExecutionUnavailable(_) => GatewayError::ExecutionUnavailable(message),
+        DaemonError::SessionShuttingDown(_) => GatewayError::SessionShuttingDown(message),
+        DaemonError::SessionNotFound(id) => GatewayError::SessionNotFound(id.0),
+        other => GatewayError::Internal(other.to_string()),
     }
 }
 
@@ -100,23 +111,17 @@ impl GatewayBackend for DaemonBackend {
     }
 
     fn exec_command(&self, session_id: u32, command: String) -> Result<ExecResult, GatewayError> {
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        {
+        let reply_rx = {
             let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
             coord
-                .send_command(
-                    SessionId(session_id),
-                    SessionCommand::RunCommand {
-                        command,
-                        reply: reply_tx,
-                    },
-                )
-                .map_err(|e| GatewayError::Internal(e.to_string()))?;
-        } // Release lock before waiting
+                .submit_execution(SessionId(session_id), command)
+                .map_err(map_execution_error)?
+        };
 
         let result = reply_rx
             .recv_timeout(std::time::Duration::from_secs(30))
             .map_err(|_| GatewayError::Internal("command timed out".to_string()))?;
+        let result = result.map_err(map_execution_error)?;
 
         Ok(ExecResult {
             command_id: result.command_id,
@@ -127,29 +132,31 @@ impl GatewayBackend for DaemonBackend {
     }
 
     fn send_input(&self, session_id: u32, input: String) -> Result<(), GatewayError> {
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        {
+        let reply_rx = {
             let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
             coord
-                .send_command(
-                    SessionId(session_id),
-                    SessionCommand::RunCommand {
-                        command: input,
-                        reply: reply_tx,
-                    },
-                )
-                .map_err(|e| GatewayError::Internal(e.to_string()))?;
-        }
+                .submit_execution(SessionId(session_id), input)
+                .map_err(map_execution_error)?
+        };
         // Wait for completion but discard output
-        let _ = reply_rx.recv_timeout(std::time::Duration::from_secs(30));
+        match reply_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => return Err(map_execution_error(error)),
+            Err(_) => return Err(GatewayError::Internal("command timed out".to_string())),
+        }
         Ok(())
     }
 
     fn get_output(&self, session_id: u32) -> Result<serde_json::Value, GatewayError> {
-        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
-        let raw = coord
-            .get_session_output(SessionId(session_id))
-            .map_err(|e| GatewayError::Internal(e.to_string()))?;
+        let reply = {
+            let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+            coord
+                .begin_get_session_output(SessionId(session_id))
+                .map_err(map_execution_error)?
+        };
+        let raw = reply
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| GatewayError::Internal("session output timed out".to_string()))?;
         // raw is a JSON string (array of rows with styled spans)
         let rows: serde_json::Value =
             serde_json::from_str(&raw).unwrap_or(serde_json::Value::Array(vec![]));
@@ -160,10 +167,15 @@ impl GatewayBackend for DaemonBackend {
     }
 
     fn get_output_text(&self, session_id: u32) -> Result<String, GatewayError> {
-        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
-        coord
-            .get_session_output_text(SessionId(session_id))
-            .map_err(|e| GatewayError::Internal(e.to_string()))
+        let reply = {
+            let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+            coord
+                .begin_get_session_output_text(SessionId(session_id))
+                .map_err(map_execution_error)?
+        };
+        reply
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| GatewayError::Internal("session output timed out".to_string()))
     }
 
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError> {

@@ -1,8 +1,10 @@
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
 use malt_daemon::gateway_backend::DaemonBackend;
+use malt_daemon::executor::session_thread::SessionCommand;
 use malt_daemon::store::{DebouncedStore, SessionStore};
 use malt_gateway::backend::GatewayBackend;
+use malt_gateway::error::GatewayError;
 use std::sync::{Arc, Mutex};
 
 fn make_backend() -> DaemonBackend {
@@ -16,6 +18,16 @@ fn make_backend_with_store(dir: &tempfile::TempDir) -> DaemonBackend {
     let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
     let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
     DaemonBackend::new(coordinator)
+}
+
+fn make_backend_with_config(config: PoolConfig) -> DaemonBackend {
+    let dir = tempfile::tempdir().unwrap();
+    // Deliberately leak this test directory for the short test lifetime: the
+    // daemon owns asynchronous worker threads, so removing it early would be
+    // a test-only race unrelated to execution ordering.
+    let path = dir.keep();
+    let store = DebouncedStore::new(SessionStore::new(path));
+    DaemonBackend::new(Arc::new(Mutex::new(Coordinator::try_new(config, store).unwrap())) )
 }
 
 fn test_caps() -> malt_protocol::common::ClientCapabilities {
@@ -274,4 +286,162 @@ fn shell_env_state_survives_dormant_restore_via_env_snapshot() {
         result.output,
         result.stderr
     );
+}
+
+#[test]
+fn busy_session_output_remains_prompt_and_another_session_is_not_delayed() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let backend = Arc::new(make_backend());
+    let busy = backend.create_session(None, None).unwrap();
+    let other = backend.create_session(None, None).unwrap();
+    let command_backend = Arc::clone(&backend);
+    let command_session = busy.id;
+    let command = std::thread::spawn(move || {
+        command_backend.exec_command(command_session, "sleep 1; echo finished".to_string())
+    });
+    std::thread::sleep(Duration::from_millis(50));
+
+    let started = Instant::now();
+    let _ = backend.get_output_text(busy.id).unwrap();
+    let _ = backend.get_output_text(other.id).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(command.join().unwrap().is_ok());
+}
+
+#[test]
+fn capacity_one_keeps_one_active_and_one_pending_in_fifo_order() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let config = PoolConfig { session_channel_size: 1, ..PoolConfig::default() };
+    let backend = Arc::new(make_backend_with_config(config));
+    let session = backend.create_session(None, None).unwrap();
+
+    let first_backend = Arc::clone(&backend);
+    let first_id = session.id;
+    let first = std::thread::spawn(move || {
+        first_backend.exec_command(first_id, "export MALT_FIFO=ready; sleep 1; echo first".to_string())
+    });
+    std::thread::sleep(Duration::from_millis(50));
+
+    let second_backend = Arc::clone(&backend);
+    let second_id = session.id;
+    let second = std::thread::spawn(move || {
+        second_backend.exec_command(second_id, "echo second-$MALT_FIFO".to_string())
+    });
+    std::thread::sleep(Duration::from_millis(50));
+
+    let overflow = backend.exec_command(session.id, "echo overflow".to_string());
+    assert!(matches!(overflow, Err(GatewayError::ExecutionQueueFull(_))));
+    assert!(first.join().unwrap().unwrap().output.contains("first"));
+    assert!(second.join().unwrap().unwrap().output.contains("second-ready"));
+}
+
+#[test]
+fn snapshot_during_execution_uses_the_last_finalized_env_snapshot() {
+    use malt_protocol::common::{IsolationTier, SessionId};
+    use malt_protocol::persist::session::PersistedPaneType;
+    use std::time::Duration;
+
+    let backend = make_backend();
+    let created = backend.create_session(None, None).unwrap();
+    backend
+        .exec_command(created.id, "export MALT_BOUNDARY=old".to_string())
+        .unwrap();
+    let receiver = {
+        let coordinator = backend.coordinator().lock().unwrap();
+        coordinator
+            .submit_execution(
+                SessionId(created.id),
+                "export MALT_BOUNDARY=new; sleep 1".to_string(),
+            )
+            .unwrap()
+    };
+    std::thread::sleep(Duration::from_millis(50));
+    let (reply, snapshot) = std::sync::mpsc::channel();
+    {
+        let coordinator = backend.coordinator().lock().unwrap();
+        coordinator
+            .send_command(
+                SessionId(created.id),
+                SessionCommand::Snapshot {
+                    reply,
+                    name: Some("snapshot".to_string()),
+                    isolation: IsolationTier::Bare,
+                },
+            )
+            .unwrap();
+    }
+    let persisted = snapshot.recv_timeout(Duration::from_secs(1)).unwrap();
+    let pane = persisted.panes.values().next().unwrap();
+    let PersistedPaneType::Shell { env_snapshot: Some(env), .. } = &pane.pane_type else {
+        panic!("snapshot must retain the shell environment");
+    };
+    let value = env.variables.get("MALT_BOUNDARY").unwrap();
+    assert!(matches!(
+        value.value,
+        malt_protocol::persist::session::PersistedVarValue::Str { ref value } if value == "old"
+    ));
+    assert!(receiver.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+}
+
+#[test]
+fn concurrent_exec_and_send_share_the_same_session_fifo() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let backend = Arc::new(make_backend());
+    let created = backend.create_session(None, None).unwrap();
+    let first_backend = Arc::clone(&backend);
+    let id = created.id;
+    let first = std::thread::spawn(move || {
+        first_backend.exec_command(id, "export MALT_PRODUCER=ordered; sleep 1".to_string())
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    let send_backend = Arc::clone(&backend);
+    let sent = std::thread::spawn(move || {
+        send_backend.send_input(id, "echo send-$MALT_PRODUCER".to_string())
+    });
+    std::thread::sleep(Duration::from_millis(20));
+    let observed = backend
+        .exec_command(created.id, "echo exec-$MALT_PRODUCER".to_string())
+        .unwrap();
+    assert!(first.join().unwrap().is_ok());
+    assert!(sent.join().unwrap().is_ok());
+    assert!(observed.output.contains("exec-ordered"));
+}
+
+/// Explicit acceptance soak from the feature quickstart. It is ignored for
+/// normal developer feedback because it deliberately occupies one worker for
+/// ten minutes; the implementation workflow runs it before completion.
+#[test]
+#[ignore = "10-minute cross-session responsiveness soak"]
+fn ten_minute_cross_session_soak() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let backend = Arc::new(make_backend());
+    let busy = backend.create_session(None, None).unwrap();
+    let independent = backend.create_session(None, None).unwrap();
+    let runner = Arc::clone(&backend);
+    let busy_id = busy.id;
+    let command = std::thread::spawn(move || {
+        runner.exec_command(busy_id, "sleep 600; echo soak-complete".to_string())
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let deadline = Instant::now() + Duration::from_secs(600);
+    while Instant::now() < deadline {
+        let started = Instant::now();
+        let _ = backend.get_output_text(independent.id).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The command remains accepted after the Gateway's documented 30-second
+    // synchronous wait expires; caller timeout is not cancellation.
+    assert!(matches!(
+        command.join().unwrap(),
+        Err(GatewayError::Internal(message)) if message == "command timed out"
+    ));
 }

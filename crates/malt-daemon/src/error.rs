@@ -43,4 +43,19 @@ pub enum DaemonError {
 
     #[error("session {0:?} is dormant — attach to restore it")]
     SessionDormant(malt_protocol::common::SessionId),
+
+    #[error("session {session_id:?} execution queue is full (capacity {capacity})")]
+    ExecutionQueueFull {
+        session_id: malt_protocol::common::SessionId,
+        capacity: usize,
+    },
+
+    #[error("session {0:?} execution worker is unavailable")]
+    ExecutionUnavailable(malt_protocol::common::SessionId),
+
+    #[error("session {0:?} is shutting down and no longer accepts execution")]
+    SessionShuttingDown(malt_protocol::common::SessionId),
+
+    #[error("invalid pool configuration: {0}")]
+    InvalidPoolConfig(String),
 }

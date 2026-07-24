@@ -1,5 +1,8 @@
 use crate::bus::{Bus, BusConfig, BusMessage};
 use crate::connection::authority::AuthorityTracker;
+use crate::executor::command_worker::{
+    spawn_command_worker, ExecutionCompletion, ExecutionIngress,
+};
 use crate::DaemonError;
 use malt_compat::CompatTranslator;
 use malt_layout::resolve::compute_resolved_panes;
@@ -12,12 +15,11 @@ use malt_protocol::render::{InitialState, RenderBatch};
 use malt_renderer::host::{PaneFrame, RendererHost};
 use malt_session::session::SessionRuntime;
 use malt_term::{EditMode, EditResult, Editor};
-use mash::env::{Env, Variable};
-use mash::executor::execute_list;
-use mash::parser;
+use mash::env::{Env, EnvSnapshot, Variable};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 use tracing::{info, warn};
 
 /// Placeholder Job Object resource caps for the Capped/Contained tiers,
@@ -110,6 +112,29 @@ pub struct CommandOutput {
     pub exit_code: i32,
 }
 
+/// The control and worker handles created for an active session.  Keeping
+/// these separate makes ownership explicit: the control thread owns UI,
+/// persistence, and lifecycle state; the worker alone owns MASH state.
+pub struct SessionSpawn {
+    pub control_tx: mpsc::Sender<SessionCommand>,
+    pub ingress: ExecutionIngress,
+    pub control_thread: JoinHandle<()>,
+    pub worker_thread: JoinHandle<()>,
+}
+
+const FINALIZATION_SLICE_BYTES: usize = 128 * 1024;
+
+struct Finalization {
+    sequence: u64,
+    output: CommandOutput,
+    snapshot: EnvSnapshot,
+    reply: mpsc::Sender<Result<CommandOutput, DaemonError>>,
+    finalized: mpsc::Sender<()>,
+    staged_compat: Option<CompatTranslator>,
+    stdout_offset: usize,
+    stderr_offset: usize,
+}
+
 /// Commands sent from the coordinator to a session executor.
 pub enum SessionCommand {
     /// Deliver a message to the session's bus.
@@ -130,6 +155,9 @@ pub enum SessionCommand {
         command: String,
         reply: mpsc::Sender<CommandOutput>,
     },
+    /// A result sent by the sole MASH owner. It is committed on this actor
+    /// before the worker may take another request.
+    ExecutionCompleted(ExecutionCompletion),
     /// Write input to PTY stdin.
     WriteInput { data: Vec<u8> },
     /// Get the current output snapshot as styled-grid JSON (requester sends
@@ -196,6 +224,7 @@ impl std::fmt::Debug for SessionCommand {
                 .debug_struct("RunCommand")
                 .field("command", command)
                 .finish(),
+            Self::ExecutionCompleted(_) => f.debug_struct("ExecutionCompleted").finish(),
             Self::WriteInput { data } => f
                 .debug_struct("WriteInput")
                 .field("len", &data.len())
@@ -233,17 +262,16 @@ pub struct SessionExecutor {
     terminal_size: Rect,
     layout_config: LayoutConfig,
     compat: Option<CompatTranslator>,
-    mash_env: Env,
+    /// Full shell state as of the last finalized command. The worker's live
+    /// Env is never shared or read by this actor.
+    env_snapshot: EnvSnapshot,
+    ingress: ExecutionIngress,
     renderer: RendererHost,
     editor: Editor,
     render_pushers: HashMap<u64, SyncSender<RenderBatch>>,
     resolved_panes: Vec<ResolvedPane>,
-    /// Monotonically increasing id assigned to each command run via
-    /// `run_mash_command`, starting at 1 (0 is reserved to mean "no real id
-    /// assigned yet" for any response path that hasn't been wired to this
-    /// counter). Does not survive a session restore — see
-    /// `docs/BACKLOG.md`'s persistent-execution-history item.
-    next_command_id: u32,
+    finalization: Option<Finalization>,
+    expected_completion_sequence: u64,
 }
 
 impl SessionExecutor {
@@ -254,31 +282,22 @@ impl SessionExecutor {
         first_pane: PaneId,
         isolation: IsolationTier,
     ) -> Result<(mpsc::Sender<SessionCommand>, JoinHandle<()>), DaemonError> {
-        let (tx, rx) = mpsc::channel();
-        let handle = thread::Builder::new()
-            .name(format!("session-{}", session_id.0))
-            .spawn(move || {
-                let mut env = Env::from_os();
-                env.set_interactive(true);
-                apply_session_isolation(&mut env, session_id.clone(), isolation);
-                let mut executor = SessionExecutor {
-                    session: SessionRuntime::new(session_id, first_pane, isolation),
-                    bus: Bus::new(BusConfig::default()),
-                    authority: AuthorityTracker::new(),
-                    terminal_size: Rect::new(0, 0, 80, 24),
-                    layout_config: LayoutConfig::default(),
-                    compat: None,
-                    mash_env: env,
-                    renderer: RendererHost::new(),
-                    editor: Editor::new(EditMode::Emacs),
-                    render_pushers: HashMap::new(),
-                    resolved_panes: Vec::new(),
-                    next_command_id: 0,
-                };
-                executor.run(rx);
-            })
-            .map_err(DaemonError::Io)?;
-        Ok((tx, handle))
+        let spawned = Self::spawn_with_capacity(session_id, first_pane, isolation, 256)?;
+        Ok((spawned.control_tx, spawned.control_thread))
+    }
+
+    /// Start the split control/worker architecture with an explicit bounded
+    /// pending-execution capacity.
+    pub fn spawn_with_capacity(
+        session_id: SessionId,
+        first_pane: PaneId,
+        isolation: IsolationTier,
+        capacity: usize,
+    ) -> Result<SessionSpawn, DaemonError> {
+        let mut env = Env::from_os();
+        env.set_interactive(true);
+        apply_session_isolation(&mut env, session_id.clone(), isolation);
+        Self::spawn_with_env(session_id, first_pane, isolation, capacity, env)
     }
 
     /// Spawn a new session executor on a dedicated thread, setting the working
@@ -301,37 +320,70 @@ impl SessionExecutor {
         shell_path: Option<String>,
         env_snapshot: Option<mash::env::EnvSnapshot>,
     ) -> Result<(mpsc::Sender<SessionCommand>, JoinHandle<()>), DaemonError> {
-        let (tx, rx) = mpsc::channel();
-        let handle = thread::Builder::new()
-            .name(format!("session-{}", session_id.0))
+        let spawned = Self::spawn_with_cwd_and_capacity(
+            session_id,
+            first_pane,
+            isolation,
+            initial_cwd,
+            shell_path,
+            env_snapshot,
+            256,
+        )?;
+        Ok((spawned.control_tx, spawned.control_thread))
+    }
+
+    pub fn spawn_with_cwd_and_capacity(
+        session_id: SessionId,
+        first_pane: PaneId,
+        isolation: IsolationTier,
+        initial_cwd: std::path::PathBuf,
+        shell_path: Option<String>,
+        env_snapshot: Option<EnvSnapshot>,
+        capacity: usize,
+    ) -> Result<SessionSpawn, DaemonError> {
+        let mut env = Env::from_os();
+        env.set_interactive(true);
+        apply_session_isolation(&mut env, session_id.clone(), isolation);
+        if let Some(snapshot) = &env_snapshot {
+            env.apply_snapshot(snapshot);
+        }
+        if let Some(shell_path) = shell_path {
+            if let Err(error) = env.set_global("SHELL", Variable::exported_string(shell_path)) {
+                warn!(%error, "spawn_with_cwd: failed to restore SHELL in mash env");
+            }
+        }
+        if initial_cwd.is_dir() {
+            let cwd = initial_cwd.to_string_lossy().to_string();
+            if let Err(error) = env.set_global("PWD", Variable::exported_string(cwd)) {
+                warn!(%error, "spawn_with_cwd: failed to restore PWD in mash env");
+            }
+        } else {
+            warn!(?initial_cwd, "spawn_with_cwd: directory no longer exists; falling back to OS cwd");
+        }
+        Self::spawn_with_env(session_id, first_pane, isolation, capacity, env)
+    }
+
+    fn spawn_with_env(
+        session_id: SessionId,
+        first_pane: PaneId,
+        isolation: IsolationTier,
+        capacity: usize,
+        env: Env,
+    ) -> Result<SessionSpawn, DaemonError> {
+        let snapshot = env.to_snapshot();
+        let (control_tx, control_rx) = mpsc::channel();
+        let (ingress, requests) = ExecutionIngress::new(session_id.clone(), capacity)?;
+        let worker_thread = spawn_command_worker(
+            session_id.clone(),
+            env,
+            requests,
+            control_tx.clone(),
+            ingress.clone(),
+        )?;
+        let control_ingress = ingress.clone();
+        let control_thread = thread::Builder::new()
+            .name(format!("session-control-{}", session_id.0))
             .spawn(move || {
-                let mut env = Env::from_os();
-                env.set_interactive(true);
-                apply_session_isolation(&mut env, session_id.clone(), isolation);
-
-                if let Some(snapshot) = &env_snapshot {
-                    env.apply_snapshot(snapshot);
-                }
-
-                if let Some(shell_path) = shell_path {
-                    if let Err(e) = env.set_global("SHELL", Variable::exported_string(shell_path))
-                    {
-                        warn!(error = %e, "spawn_with_cwd: failed to restore SHELL in mash env");
-                    }
-                }
-
-                if initial_cwd.is_dir() {
-                    let cwd_str = initial_cwd.to_string_lossy().to_string();
-                    if let Err(e) = env.set_global("PWD", Variable::exported_string(cwd_str)) {
-                        warn!(?initial_cwd, error = %e, "spawn_with_cwd: failed to set PWD in mash env");
-                    }
-                } else {
-                    warn!(
-                        ?initial_cwd,
-                        "spawn_with_cwd: directory no longer exists; falling back to OS cwd"
-                    );
-                }
-
                 let mut executor = SessionExecutor {
                     session: SessionRuntime::new(session_id, first_pane, isolation),
                     bus: Bus::new(BusConfig::default()),
@@ -339,17 +391,24 @@ impl SessionExecutor {
                     terminal_size: Rect::new(0, 0, 80, 24),
                     layout_config: LayoutConfig::default(),
                     compat: None,
-                    mash_env: env,
+                    env_snapshot: snapshot,
+                    ingress: control_ingress,
                     renderer: RendererHost::new(),
                     editor: Editor::new(EditMode::Emacs),
                     render_pushers: HashMap::new(),
                     resolved_panes: Vec::new(),
-                    next_command_id: 0,
+                    finalization: None,
+                    expected_completion_sequence: 1,
                 };
-                executor.run(rx);
+                executor.run(control_rx);
             })
             .map_err(DaemonError::Io)?;
-        Ok((tx, handle))
+        Ok(SessionSpawn {
+            control_tx,
+            ingress,
+            control_thread,
+            worker_thread,
+        })
     }
 
     /// Initialize the compat translator for this session.
@@ -365,9 +424,15 @@ impl SessionExecutor {
         self.recompute_layout();
 
         loop {
-            match rx.recv() {
+            let next = if self.finalization.is_some() {
+                rx.recv_timeout(Duration::from_millis(1))
+            } else {
+                rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+            };
+            match next {
                 Ok(SessionCommand::Shutdown) => {
                     info!(session = ?self.session.id(), "session executor shutting down");
+                    self.ingress.close();
                     break;
                 }
                 Ok(SessionCommand::Deliver(msg)) => {
@@ -392,18 +457,9 @@ impl SessionExecutor {
                     self.recompute_layout();
                 }
                 Ok(SessionCommand::RunCommand { command, reply }) => {
-                    let output = self.run_mash_command(&command);
-                    let _ = reply.send(output);
-                    // Gateway/agent-driven execution previously never
-                    // notified attached VNP clients that anything changed
-                    // -- "both see the same authoritative state" didn't
-                    // hold. Partial fix: push one frame once the command
-                    // completes. True incremental streaming during a
-                    // long-running command needs the session executor to
-                    // stop blocking its own command queue on execution
-                    // (see docs/BACKLOG.md's 0b) -- not attempted here.
-                    self.dispatch_render();
+                    self.submit_legacy_command(command, reply);
                 }
+                Ok(SessionCommand::ExecutionCompleted(completion)) => self.begin_finalization(completion),
                 Ok(SessionCommand::PtyOutput { data, .. }) => {
                     if let Some(compat) = &mut self.compat {
                         compat.feed(&data);
@@ -422,8 +478,7 @@ impl SessionExecutor {
                     let input = String::from_utf8_lossy(&data);
                     let input = input.trim();
                     if !input.is_empty() {
-                        let _ = self.run_mash_command(input);
-                        self.dispatch_render();
+                        self.submit_discarded_command(input.to_string());
                     }
                 }
                 Ok(SessionCommand::GetOutput { reply }) => {
@@ -469,7 +524,7 @@ impl SessionExecutor {
                     if let Some(input_event) = crate::input_bridge::vnp_key_to_input_event(&key) {
                         match self.editor.feed(input_event) {
                             EditResult::Accept(line) => {
-                                let _ = self.run_mash_command(&line);
+                                self.submit_discarded_command(line);
                                 self.editor.reset();
                                 self.dispatch_render();
                             }
@@ -506,15 +561,17 @@ impl SessionExecutor {
                         self.session.focused_pane(),
                         name.as_deref(),
                         isolation,
-                        &self.mash_env,
+                        &self.env_snapshot,
                     );
                     let _ = reply.send(persisted);
                 }
-                Err(_) => {
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
                     warn!(session = ?self.session.id(), "command channel closed");
                     break;
                 }
             }
+            self.advance_finalization();
         }
     }
 
@@ -557,72 +614,141 @@ impl SessionExecutor {
         }
     }
 
-    /// Parse and execute a command string via mash, feeding output through the
-    /// compat translator and returning the plain stdout text.
-    fn run_mash_command(&mut self, input: &str) -> CommandOutput {
-        // Every call is one distinct execution, including parse errors and
-        // empty input -- assign the id once, up front, so all three return
-        // paths below get a real, unique, monotonically-increasing id.
-        self.next_command_id += 1;
-        let command_id = self.next_command_id;
-
-        let commands = match parser::parse(input) {
-            Ok(cmds) => cmds,
-            Err(e) => {
-                let err_msg = format!("mash: parse error: {e}\n");
-                if let Some(compat) = &mut self.compat {
-                    compat.feed(err_msg.as_bytes());
-                }
-                // Matches mash's own CLI convention (crates/mash/src/main.rs)
-                // of exiting 1 on a parse error.
-                return CommandOutput {
-                    command_id,
-                    output: err_msg,
-                    stderr: String::new(),
-                    exit_code: 1,
-                };
+    fn submit_legacy_command(&mut self, command: String, reply: mpsc::Sender<CommandOutput>) {
+        let (worker_reply, worker_result) = mpsc::channel();
+        match self.ingress.submit(command, worker_reply) {
+            Ok(()) => {
+                // A legacy SessionCommand caller expects a plain CommandOutput.
+                // Keep that compatibility without making the control actor wait.
+                let _ = thread::Builder::new()
+                    .name("session-command-reply".to_string())
+                    .spawn(move || match worker_result.recv() {
+                        Ok(Ok(output)) => {
+                            let _ = reply.send(output);
+                        }
+                        Ok(Err(error)) => {
+                            let _ = reply.send(command_error_output(error));
+                        }
+                        Err(_) => {
+                            let _ = reply.send(command_error_output(DaemonError::ExecutionUnavailable(
+                                malt_protocol::common::SessionId(0),
+                            )));
+                        }
+                    });
             }
-        };
-
-        if commands.is_empty() {
-            return CommandOutput {
-                command_id,
-                output: String::new(),
-                stderr: String::new(),
-                exit_code: 0,
-            };
+            Err(error) => {
+                self.append_execution_diagnostic(&error);
+                let _ = reply.send(command_error_output(error));
+            }
         }
+    }
 
-        let result = execute_list(&commands, input, &mut self.mash_env);
+    fn submit_discarded_command(&mut self, command: String) {
+        let (reply, _result) = mpsc::channel::<Result<CommandOutput, DaemonError>>();
+        if let Err(error) = self.ingress.submit(command, reply) {
+            self.append_execution_diagnostic(&error);
+        }
+    }
 
-        // Feed stdout through compat translator for grid rendering
-        if !result.stdout.is_empty() {
-            if let Some(compat) = &mut self.compat {
-                compat.feed(&result.stdout);
+    fn begin_finalization(&mut self, completion: ExecutionCompletion) {
+        match completion.result {
+            Ok(worker_output) => {
+                if worker_output.sequence != self.expected_completion_sequence {
+                    let error = DaemonError::ExecutionUnavailable(self.session.id().clone());
+                    self.ingress.mark_unavailable();
+                    let _ = completion.reply.send(Err(error));
+                    let _ = completion.finalized.send(());
+                    return;
+                }
+                let staged_compat = self
+                    .compat
+                    .as_ref()
+                    .map(CompatTranslator::staging_clone);
+                self.finalization = Some(Finalization {
+                    sequence: worker_output.sequence,
+                    output: worker_output.result,
+                    snapshot: worker_output.env_snapshot,
+                    reply: completion.reply,
+                    finalized: completion.finalized,
+                    staged_compat,
+                    stdout_offset: 0,
+                    stderr_offset: 0,
+                });
             }
-            // Publish output to bus
+            Err(error) => {
+                self.append_execution_diagnostic(&error);
+                let _ = completion.reply.send(Err(error));
+                let _ = completion.finalized.send(());
+            }
+        }
+    }
+
+    /// Advance a completed result by at most 128 KiB. While this work is in
+    /// progress, the live compat grid and snapshot remain unchanged, so every
+    /// control request observes one previous finalized boundary rather than a
+    /// partial command. `run` services one mailbox event between turns.
+    fn advance_finalization(&mut self) {
+        let mut complete = false;
+        if let Some(finalization) = &mut self.finalization {
+            let mut remaining = FINALIZATION_SLICE_BYTES;
+            if let Some(compat) = &mut finalization.staged_compat {
+                let stdout = finalization.output.output.as_bytes();
+                let stdout_end = (finalization.stdout_offset + remaining).min(stdout.len());
+                if stdout_end > finalization.stdout_offset {
+                    compat.feed(&stdout[finalization.stdout_offset..stdout_end]);
+                    remaining -= stdout_end - finalization.stdout_offset;
+                    finalization.stdout_offset = stdout_end;
+                }
+                let stderr = finalization.output.stderr.as_bytes();
+                let stderr_end = (finalization.stderr_offset + remaining).min(stderr.len());
+                if stderr_end > finalization.stderr_offset {
+                    compat.feed(&stderr[finalization.stderr_offset..stderr_end]);
+                    finalization.stderr_offset = stderr_end;
+                }
+            }
+            complete = finalization.stdout_offset == finalization.output.output.len()
+                && finalization.stderr_offset == finalization.output.stderr.len();
+        }
+        if !complete {
+            return;
+        }
+        let Some(finalization) = self.finalization.take() else {
+            return;
+        };
+        if finalization.staged_compat.is_some() {
+            self.compat = finalization.staged_compat;
+        }
+        if !finalization.output.output.is_empty() {
             self.bus.publish(BusMessage {
-                domain: 1,   // Shell
-                msg_type: 4, // OutputChunk
+                domain: 1,
+                msg_type: 4,
                 priority: Priority::Normal,
                 producer_id: 0,
-                payload: result.stdout.clone(),
+                payload: finalization.output.output.as_bytes().to_vec(),
             });
         }
+        self.env_snapshot = finalization.snapshot;
+        self.expected_completion_sequence = finalization.sequence.saturating_add(1);
+        self.dispatch_render();
+        let _ = finalization.reply.send(Ok(finalization.output));
+        // The acknowledgement is deliberately last: only a completely
+        // materialized view and reply let the worker begin its next request.
+        let _ = finalization.finalized.send(());
+    }
 
-        // Feed stderr through compat translator too
-        if !result.stderr.is_empty() {
-            if let Some(compat) = &mut self.compat {
-                compat.feed(&result.stderr);
-            }
+    fn append_execution_diagnostic(&mut self, error: &DaemonError) {
+        let text = format!("malt: {error}\n");
+        if let Some(compat) = &mut self.compat {
+            compat.feed(text.as_bytes());
         }
-
-        CommandOutput {
-            command_id,
-            output: String::from_utf8_lossy(&result.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&result.stderr).to_string(),
-            exit_code: result.exit_code,
-        }
+        self.bus.publish(BusMessage {
+            domain: 1,
+            msg_type: 4,
+            priority: Priority::Normal,
+            producer_id: 0,
+            payload: text.into_bytes(),
+        });
+        self.dispatch_render();
     }
 
     /// Extract the grid as plain text, no styling — for programmatic/agent
@@ -893,39 +1019,27 @@ pub(crate) fn from_persisted_env_snapshot(
 ///
 /// Called from the `Snapshot` command handler — runs on the session thread,
 /// so all access to `env` is unsynchronized by design.
+fn command_error_output(error: DaemonError) -> CommandOutput {
+    CommandOutput {
+        command_id: 0,
+        output: String::new(),
+        stderr: format!("malt: {error}\n"),
+        exit_code: 1,
+    }
+}
+
 fn build_persisted_session(
     session_id: &SessionId,
     focused_pane: &PaneId,
     name: Option<&str>,
     isolation: IsolationTier,
-    env: &Env,
+    env: &EnvSnapshot,
 ) -> PersistedSession {
-    let shell_path = {
-        let s = env.get_str("SHELL");
-        if s.is_empty() {
-            #[cfg(unix)]
-            {
-                "/bin/sh".to_string()
-            }
-            #[cfg(not(unix))]
-            {
-                "cmd.exe".to_string()
-            }
-        } else {
-            s.to_string()
-        }
-    };
-
-    let cwd = {
-        let s = env.get_str("PWD");
-        if s.is_empty() {
-            ".".to_string()
-        } else {
-            s.to_string()
-        }
-    };
-
-    let env_snapshot = Some(to_persisted_env_snapshot(&env.to_snapshot()));
+    let shell_path = snapshot_string(env, "SHELL").unwrap_or_else(default_shell_path);
+    let cwd = snapshot_string(env, "PWD").unwrap_or_else(|| {
+        if env.cwd.is_empty() { ".".to_string() } else { env.cwd.clone() }
+    });
+    let env_snapshot = Some(to_persisted_env_snapshot(env));
 
     let pane = PersistedPane {
         cwd,
@@ -956,6 +1070,25 @@ fn build_persisted_session(
         group: None,
         isolation,
         _unknown: vec![],
+    }
+}
+
+fn snapshot_string(snapshot: &EnvSnapshot, name: &str) -> Option<String> {
+    match snapshot.variables.get(name).map(|variable| &variable.value) {
+        Some(mash::env::VarValue::String(value)) => Some(value.clone()),
+        Some(mash::env::VarValue::Integer(value, _)) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn default_shell_path() -> String {
+    #[cfg(unix)]
+    {
+        "/bin/sh".to_string()
+    }
+    #[cfg(not(unix))]
+    {
+        "cmd.exe".to_string()
     }
 }
 

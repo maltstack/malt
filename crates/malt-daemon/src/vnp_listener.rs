@@ -159,15 +159,15 @@ fn handle_client(stream: TcpStream, coordinator: Arc<Mutex<Coordinator>>, client
     let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
 
     // Register with the coordinator; obtain the InitialState snapshot.
-    let initial_state = match coordinator.lock() {
+    let initial_reply = match coordinator.lock() {
         Ok(mut coord) => {
-            match coord.register_vnp_client(
+            match coord.begin_register_vnp_client(
                 session_id.clone(),
                 client_id,
                 handshake.capabilities,
                 render_tx,
             ) {
-                Ok(state) => state,
+                Ok(reply) => reply,
                 Err(e) => {
                     warn!(peer = %peer, error = %e, session_id = session_id_raw,
                           "VNP: register_vnp_client failed");
@@ -177,6 +177,18 @@ fn handle_client(stream: TcpStream, coordinator: Arc<Mutex<Coordinator>>, client
         }
         Err(e) => {
             warn!(peer = %peer, error = %e, "VNP: coordinator lock poisoned");
+            return;
+        }
+    };
+
+    // Do not retain the global coordinator mutex while waiting for the
+    // session control actor. A long-running command in any session therefore
+    // cannot turn an attach into global coordinator contention.
+    let initial_state = match initial_reply.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(state) => state,
+        Err(_) => {
+            warn!(peer = %peer, session_id = session_id_raw, "VNP: InitialState timed out");
+            cleanup(&coordinator, session_id.clone(), client_id, &peer);
             return;
         }
     };

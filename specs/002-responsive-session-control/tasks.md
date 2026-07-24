@@ -32,8 +32,8 @@ carry the current full shell snapshot needed by the control actor.
 **Purpose**: Re-establish the current baseline and create deterministic
 concurrency-test support before changing executor ownership.
 
-- [ ] T001 Run `cargo build --workspace` and `cargo test --workspace` against `Cargo.toml`, then record the commit, toolchain, test counts, and any pre-existing failure in `docs/findings/2026-07-25-responsive-session-control.md`
-- [ ] T002 Add shared deadline, portable MALT `sleep`, high-output command, and polling helpers for concurrency tests in `crates/malt-daemon/tests/support/mod.rs`
+- [X] T001 Run `cargo build --workspace` and `cargo test --workspace` against `Cargo.toml`, then record the commit, toolchain, test counts, and any pre-existing failure in `docs/findings/2026-07-25-responsive-session-control.md`
+- [X] T002 Add shared deadline, portable MALT `sleep`, high-output command, and polling helpers for concurrency tests in `crates/malt-daemon/tests/support/mod.rs`
 
 **Checkpoint**: The post-plan repository baseline is recorded, and later tests
 can use deterministic local commands without platform-specific shell tools.
@@ -52,19 +52,19 @@ command counter while changing thread ownership.
 
 ### Foundational Tests
 
-- [ ] T003 [P] Add failing unit tests for `Env: Send`, nonzero capacity, active-excluded capacity accounting, FIFO admission sequence, nonblocking full rejection, closing/unavailable rejection, and finalization acknowledgement in `crates/malt-daemon/src/executor/command_worker.rs`
-- [ ] T004 [P] Add failing integration tests proving zero execution capacity is rejected without panic and default capacity is 256 waiting requests in `crates/malt-daemon/tests/coordinator.rs`
+- [X] T003 [P] Add failing unit tests for `Env: Send`, nonzero capacity, active-excluded capacity accounting, FIFO admission sequence, nonblocking full rejection, closing/unavailable rejection, and finalization acknowledgement in `crates/malt-daemon/src/executor/command_worker.rs`
+- [X] T004 [P] Add failing integration tests proving zero execution capacity is rejected without panic and default capacity is 256 waiting requests in `crates/malt-daemon/tests/coordinator.rs`
 
 ### Foundational Implementation
 
-- [ ] T005 Add non-exhaustive `ExecutionQueueFull`, `ExecutionUnavailable`, and `SessionShuttingDown` variants with session context in `crates/malt-daemon/src/error.rs`, and matching internal Gateway error variants in `crates/malt-gateway/src/error.rs`
-- [ ] T006 Define and validate `PoolConfig.session_channel_size` as pending execution capacity, reject zero configuration through coordinator construction, and update affected constructors in `crates/malt-daemon/src/executor/pools.rs` and `crates/malt-daemon/src/executor/coordinator.rs`
-- [ ] T007 Implement `ExecutionIngress`, admission state, internal submission sequence, `ExecutionRequest`, `ExecutionCompletion`, worker dispatch/ack channels, and the panic-contained single-owner MASH worker in `crates/malt-daemon/src/executor/command_worker.rs`
-- [ ] T008 Register and explicitly re-export the new worker/admission types without wildcard exports in `crates/malt-daemon/src/executor/mod.rs` and `crates/malt-daemon/src/lib.rs`
-- [ ] T009 Refactor session spawning so the original isolation-configured `mash::Env` moves once into the worker and the session thread remains a control actor in `crates/malt-daemon/src/executor/session_thread.rs`
-- [ ] T010 Implement the worker-to-control completion handshake, command-ID assignment at execution start, result delivery after finalization, and transfer of the current full `mash::env::EnvSnapshot` in `crates/malt-daemon/src/executor/command_worker.rs` and `crates/malt-daemon/src/executor/session_thread.rs`
-- [ ] T011 Store control sender, execution ingress, control-thread handle, and worker/reaper ownership per active session; add a typed coordinator execution-submission API and migrate basic Gateway exec/send submission to it in `crates/malt-daemon/src/executor/coordinator.rs` and `crates/malt-daemon/src/gateway_backend.rs`
-- [ ] T012 Run the foundational unit and integration tests for `crates/malt-daemon/src/executor/command_worker.rs`, `crates/malt-daemon/tests/coordinator.rs`, and `crates/malt-daemon/tests/gateway_backend.rs`, fixing all regressions before story work
+- [X] T005 Add non-exhaustive `ExecutionQueueFull`, `ExecutionUnavailable`, and `SessionShuttingDown` variants with session context in `crates/malt-daemon/src/error.rs`, and matching internal Gateway error variants in `crates/malt-gateway/src/error.rs`
+- [X] T006 Define and validate `PoolConfig.session_channel_size` as pending execution capacity, reject zero configuration through coordinator construction, and update affected constructors in `crates/malt-daemon/src/executor/pools.rs` and `crates/malt-daemon/src/executor/coordinator.rs`
+- [X] T007 Implement `ExecutionIngress`, admission state, internal submission sequence, `ExecutionRequest`, `ExecutionCompletion`, worker dispatch/ack channels, and the panic-contained single-owner MASH worker in `crates/malt-daemon/src/executor/command_worker.rs`
+- [X] T008 Register and explicitly re-export the new worker/admission types without wildcard exports in `crates/malt-daemon/src/executor/mod.rs` and `crates/malt-daemon/src/lib.rs`
+- [X] T009 Refactor session spawning so the original isolation-configured `mash::Env` moves once into the worker and the session thread remains a control actor in `crates/malt-daemon/src/executor/session_thread.rs`
+- [X] T010 Implement the worker-to-control completion handshake, command-ID assignment at execution start, result delivery after finalization, and transfer of the current full `mash::env::EnvSnapshot` in `crates/malt-daemon/src/executor/command_worker.rs` and `crates/malt-daemon/src/executor/session_thread.rs`
+- [X] T011 Store control sender, execution ingress, control-thread handle, and worker/reaper ownership per active session; add a typed coordinator execution-submission API and migrate basic Gateway exec/send submission to it in `crates/malt-daemon/src/executor/coordinator.rs` and `crates/malt-daemon/src/gateway_backend.rs`
+- [X] T012 Run the foundational unit and integration tests for `crates/malt-daemon/src/executor/command_worker.rs`, `crates/malt-daemon/tests/coordinator.rs`, and `crates/malt-daemon/tests/gateway_backend.rs`, fixing all regressions before story work
 
 **Checkpoint**: One worker exclusively owns each session's MASH state, accepted
 commands enter one bounded ingress, and the control actor no longer executes
@@ -86,16 +86,16 @@ second, return a consistent latest-finalized view, and never report
 
 ### Tests for User Story 1
 
-- [ ] T013 [P] [US1] Add failing long-command tests for prompt styled output, plain-text output, snapshot response, consistent latest-finalized output, and disconnected initiating receivers in `crates/malt-daemon/tests/session_thread.rs`
-- [ ] T014 [P] [US1] Add failing 100-trial VNP attach-during-execution test with a one-second per-attach bound and existing `InitialState` schema assertions in `crates/malt-daemon/tests/vnp_listener.rs`
-- [ ] T015 [P] [US1] Add failing Gateway tests proving busy-session output stays prompt and a long command in session A does not delay attach/output in session B in `crates/malt-daemon/tests/gateway_backend.rs`
+- [X] T013 [P] [US1] Add failing long-command tests for prompt styled output, plain-text output, snapshot response, consistent latest-finalized output, and disconnected initiating receivers in `crates/malt-daemon/tests/session_thread.rs`
+- [X] T014 [P] [US1] Add failing 100-trial VNP attach-during-execution test with a one-second per-attach bound and existing `InitialState` schema assertions in `crates/malt-daemon/tests/vnp_listener.rs`
+- [X] T015 [P] [US1] Add failing Gateway tests proving busy-session output stays prompt and a long command in session A does not delay attach/output in session B in `crates/malt-daemon/tests/gateway_backend.rs`
 
 ### Implementation for User Story 1
 
-- [ ] T016 [US1] Implement cached finalized command output plus current control-state composition, and build snapshots from the last finalized full `EnvSnapshot` without reading or locking the worker in `crates/malt-daemon/src/executor/session_thread.rs`
-- [ ] T017 [US1] Apply completed stdout/stderr in at-most-128-KiB control-actor turns, service control messages between turns, and atomically publish the new finalized output only after all bytes and shell state are committed in `crates/malt-daemon/src/executor/session_thread.rs`
-- [ ] T018 [US1] Split attach and output request initiation from reply waiting so `DaemonBackend` and the VNP listener do not retain the global coordinator mutex during bounded waits in `crates/malt-daemon/src/executor/coordinator.rs`, `crates/malt-daemon/src/gateway_backend.rs`, and `crates/malt-daemon/src/vnp_listener.rs`
-- [ ] T019 [US1] Run and pass the User Story 1 tests in `crates/malt-daemon/tests/session_thread.rs`, `crates/malt-daemon/tests/vnp_listener.rs`, and `crates/malt-daemon/tests/gateway_backend.rs`
+- [X] T016 [US1] Implement cached finalized command output plus current control-state composition, and build snapshots from the last finalized full `EnvSnapshot` without reading or locking the worker in `crates/malt-daemon/src/executor/session_thread.rs`
+- [X] T017 [US1] Apply completed stdout/stderr in at-most-128-KiB control-actor turns, service control messages between turns, and atomically publish the new finalized output only after all bytes and shell state are committed in `crates/malt-daemon/src/executor/session_thread.rs`
+- [X] T018 [US1] Split attach and output request initiation from reply waiting so `DaemonBackend` and the VNP listener do not retain the global coordinator mutex during bounded waits in `crates/malt-daemon/src/executor/coordinator.rs`, `crates/malt-daemon/src/gateway_backend.rs`, and `crates/malt-daemon/src/vnp_listener.rs`
+- [X] T019 [US1] Run and pass the User Story 1 tests in `crates/malt-daemon/tests/session_thread.rs`, `crates/malt-daemon/tests/vnp_listener.rs`, and `crates/malt-daemon/tests/gateway_backend.rs`
 
 **Checkpoint**: User Story 1 is independently demonstrable: a long-running
 command no longer makes its healthy session appear offline. This is the MVP.
@@ -115,18 +115,18 @@ not claimed to reach the active process.
 
 ### Tests for User Story 2
 
-- [ ] T020 [P] [US2] Add failing mixed-control tests for register, unregister, resize, frame acknowledgement, ordinary key editing, snapshot, and current terminal-size reflection during a long command in `crates/malt-daemon/tests/session_thread.rs`
-- [ ] T021 [P] [US2] Add failing VNP integration tests for resize, frame acknowledgement, key event, and disconnect cleanup during active execution in `crates/malt-daemon/tests/vnp_listener.rs`
-- [ ] T022 [P] [US2] Add failing coordinator tests proving idle last-detach persists and becomes Dormant while busy/finalizing/pending last-detach returns promptly, preserves accepted work, and remains Active in `crates/malt-daemon/tests/coordinator.rs`
-- [ ] T023 [US2] Add failing shutdown tests proving intake closes promptly, queued work receives `SessionShuttingDown`, an active command may finish once, and joining never holds the coordinator mutex in `crates/malt-daemon/tests/coordinator.rs`
+- [X] T020 [P] [US2] Add failing mixed-control tests for register, unregister, resize, frame acknowledgement, ordinary key editing, snapshot, and current terminal-size reflection during a long command in `crates/malt-daemon/tests/session_thread.rs`
+- [X] T021 [P] [US2] Add failing VNP integration tests for resize, frame acknowledgement, key event, and disconnect cleanup during active execution in `crates/malt-daemon/tests/vnp_listener.rs`
+- [X] T022 [P] [US2] Add failing coordinator tests proving idle last-detach persists and becomes Dormant while busy/finalizing/pending last-detach returns promptly, preserves accepted work, and remains Active in `crates/malt-daemon/tests/coordinator.rs`
+- [X] T023 [US2] Add failing shutdown tests proving intake closes promptly, queued work receives `SessionShuttingDown`, an active command may finish once, and joining never holds the coordinator mutex in `crates/malt-daemon/tests/coordinator.rs`
 
 ### Implementation for User Story 2
 
-- [ ] T024 [US2] Route direct `WriteInput` and complete editor lines through the shared execution ingress, keep ordinary key evaluation on the control actor, and materialize stable queue/closing/unavailable diagnostics through existing session output in `crates/malt-daemon/src/executor/session_thread.rs`
-- [ ] T025 [US2] Compose accepted resize, renderer acknowledgement, client registration, and editor state changes with cached finalized command output without exposing partial execution output in `crates/malt-daemon/src/executor/session_thread.rs`
-- [ ] T026 [US2] Add a nonblocking quiescence response for last-client detach; transition idle sessions to Dormant but leave active, finalizing, or pending sessions Active with zero VNP clients in `crates/malt-daemon/src/executor/coordinator.rs` and `crates/malt-daemon/src/executor/session_thread.rs`
-- [ ] T027 [US2] Implement prompt shutdown acceptance, execution-intake closure, queued-request failure, last-finalized persistence, and asynchronous thread reaping outside the coordinator mutex in `crates/malt-daemon/src/executor/coordinator.rs` and `crates/malt-bin/src/daemon.rs`
-- [ ] T028 [US2] Run and pass the User Story 2 tests in `crates/malt-daemon/tests/session_thread.rs`, `crates/malt-daemon/tests/vnp_listener.rs`, and `crates/malt-daemon/tests/coordinator.rs`
+- [X] T024 [US2] Route direct `WriteInput` and complete editor lines through the shared execution ingress, keep ordinary key evaluation on the control actor, and materialize stable queue/closing/unavailable diagnostics through existing session output in `crates/malt-daemon/src/executor/session_thread.rs`
+- [X] T025 [US2] Compose accepted resize, renderer acknowledgement, client registration, and editor state changes with cached finalized command output without exposing partial execution output in `crates/malt-daemon/src/executor/session_thread.rs`
+- [X] T026 [US2] Add a nonblocking quiescence response for last-client detach; transition idle sessions to Dormant but leave active, finalizing, or pending sessions Active with zero VNP clients in `crates/malt-daemon/src/executor/coordinator.rs` and `crates/malt-daemon/src/executor/session_thread.rs`
+- [X] T027 [US2] Implement prompt shutdown acceptance, execution-intake closure, queued-request failure, last-finalized persistence, and asynchronous thread reaping outside the coordinator mutex in `crates/malt-daemon/src/executor/coordinator.rs` and `crates/malt-bin/src/daemon.rs`
+- [X] T028 [US2] Run and pass the User Story 2 tests in `crates/malt-daemon/tests/session_thread.rs`, `crates/malt-daemon/tests/vnp_listener.rs`, and `crates/malt-daemon/tests/coordinator.rs`
 
 **Checkpoint**: User Story 2 is independently demonstrable: a busy session's
 control plane remains manageable, and detach/shutdown no longer wait behind
@@ -149,18 +149,18 @@ its predecessor's finalized state, and never overlap shell mutation.
 
 ### Tests for User Story 3
 
-- [ ] T029 [P] [US3] Add failing capacity-one, 1,000-trial FIFO/exactly-once, state-handoff, normal-failure-continuation, stderr, and monotonic-start-ID tests in `crates/malt-daemon/tests/session_thread.rs`
-- [ ] T030 [P] [US3] Add failing concurrent Gateway exec/send and editor-producer admission tests, including timed-out or disconnected caller non-cancellation, in `crates/malt-daemon/tests/gateway_backend.rs`
-- [ ] T031 [P] [US3] Add failing HTTP contract tests for 503 `execution_queue_full`, 503 `execution_unavailable`, 409 `session_shutting_down`, unchanged success envelopes, and 429 remaining reserved for `rate_limited` in `crates/malt-gateway/tests/routes.rs`
-- [ ] T032 [P] [US3] Add failing injected worker-panic/channel-loss tests proving the control actor survives, active and pending replies fail exactly once, later admission rejects immediately, and no worker is reconstructed from cached state in `crates/malt-daemon/src/executor/command_worker.rs`
+- [X] T029 [P] [US3] Add failing capacity-one, 1,000-trial FIFO/exactly-once, state-handoff, normal-failure-continuation, stderr, and monotonic-start-ID tests in `crates/malt-daemon/tests/session_thread.rs`
+- [X] T030 [P] [US3] Add failing concurrent Gateway exec/send and editor-producer admission tests, including timed-out or disconnected caller non-cancellation, in `crates/malt-daemon/tests/gateway_backend.rs`
+- [X] T031 [P] [US3] Add failing HTTP contract tests for 503 `execution_queue_full`, 503 `execution_unavailable`, 409 `session_shutting_down`, unchanged success envelopes, and 429 remaining reserved for `rate_limited` in `crates/malt-gateway/tests/routes.rs`
+- [X] T032 [P] [US3] Add failing injected worker-panic/channel-loss tests proving the control actor survives, active and pending replies fail exactly once, later admission rejects immediately, and no worker is reconstructed from cached state in `crates/malt-daemon/src/executor/command_worker.rs`
 
 ### Implementation for User Story 3
 
-- [ ] T033 [US3] Route Gateway exec, Gateway send, direct write, and accepted editor lines through the same serialized `ExecutionIngress`; remove command execution from the general control mailbox and preserve command IDs only for started work in `crates/malt-daemon/src/gateway_backend.rs`, `crates/malt-daemon/src/executor/coordinator.rs`, and `crates/malt-daemon/src/executor/session_thread.rs`
-- [ ] T034 [US3] Map daemon queue-full, unavailable, and shutting-down outcomes to the exact HTTP statuses/codes in `crates/malt-daemon/src/gateway_backend.rs` and `crates/malt-gateway/src/error.rs` without changing successful Gateway response types
-- [ ] T035 [US3] On worker integrity failure, atomically close admission, fail the active and every accepted pending request exactly once, retain attach/output/snapshot controls, and reject future executions in `crates/malt-daemon/src/executor/command_worker.rs` and `crates/malt-daemon/src/executor/session_thread.rs`
-- [ ] T036 [US3] Validate completion sequence against the active request, treat duplicate/stale/out-of-order completion as execution unavailability, acknowledge only fully finalized results, and continue after ordinary parse/nonzero/spawn outcomes in `crates/malt-daemon/src/executor/command_worker.rs` and `crates/malt-daemon/src/executor/session_thread.rs`
-- [ ] T037 [US3] Run and pass the User Story 3 tests in `crates/malt-daemon/tests/session_thread.rs`, `crates/malt-daemon/tests/gateway_backend.rs`, `crates/malt-gateway/tests/routes.rs`, and `crates/malt-daemon/src/executor/command_worker.rs`
+- [X] T033 [US3] Route Gateway exec, Gateway send, direct write, and accepted editor lines through the same serialized `ExecutionIngress`; remove command execution from the general control mailbox and preserve command IDs only for started work in `crates/malt-daemon/src/gateway_backend.rs`, `crates/malt-daemon/src/executor/coordinator.rs`, and `crates/malt-daemon/src/executor/session_thread.rs`
+- [X] T034 [US3] Map daemon queue-full, unavailable, and shutting-down outcomes to the exact HTTP statuses/codes in `crates/malt-daemon/src/gateway_backend.rs` and `crates/malt-gateway/src/error.rs` without changing successful Gateway response types
+- [X] T035 [US3] On worker integrity failure, atomically close admission, fail the active and every accepted pending request exactly once, retain attach/output/snapshot controls, and reject future executions in `crates/malt-daemon/src/executor/command_worker.rs` and `crates/malt-daemon/src/executor/session_thread.rs`
+- [X] T036 [US3] Validate completion sequence against the active request, treat duplicate/stale/out-of-order completion as execution unavailability, acknowledge only fully finalized results, and continue after ordinary parse/nonzero/spawn outcomes in `crates/malt-daemon/src/executor/command_worker.rs` and `crates/malt-daemon/src/executor/session_thread.rs`
+- [X] T037 [US3] Run and pass the User Story 3 tests in `crates/malt-daemon/tests/session_thread.rs`, `crates/malt-daemon/tests/gateway_backend.rs`, `crates/malt-gateway/tests/routes.rs`, and `crates/malt-daemon/src/executor/command_worker.rs`
 
 **Checkpoint**: All user stories are complete: session responsiveness no longer
 trades away authoritative ordering, bounded admission, or explicit failure.
@@ -172,11 +172,11 @@ trades away authoritative ordering, bounded admission, or explicit failure.
 **Purpose**: Prove persistence/protocol compatibility, shell conformance,
 cross-session isolation, and full-workspace readiness without expanding scope.
 
-- [ ] T038 Add regression coverage that a snapshot taken during execution uses the last finalized full `EnvSnapshot`, and that detach/restart still restores variables, aliases, functions, options, directory stack, cwd, and traps in `crates/malt-daemon/tests/gateway_backend.rs` and `crates/malt-daemon/tests/store.rs`
-- [ ] T039 Run VNP golden/protocol and persistence compatibility suites for `crates/malt-protocol`, `crates/malt-daemon/tests/vnp_listener.rs`, `crates/malt-daemon/tests/store.rs`, and `schemas/persist/session.vexil`, confirming this feature changes no schema or encoding
-- [ ] T040 Run native-Windows Smoosh conformance for `crates/mash/tests/smoosh_runner.rs` with `target/debug/mash.exe`, requiring 183 passed and 3 unsupported skipped
-- [ ] T041 Run every command and the 10-minute cross-session soak described in `specs/002-responsive-session-control/quickstart.md`, then run `cargo fmt --all --check`, `cargo build --workspace`, and `cargo test --workspace` against `Cargo.toml`
-- [ ] T042 Record measured responsiveness/order/soak results and exact test counts in `docs/findings/2026-07-25-responsive-session-control.md`, then mark only the verified 0b item complete in `docs/BACKLOG.md`
+- [X] T038 Add regression coverage that a snapshot taken during execution uses the last finalized full `EnvSnapshot`, and that detach/restart still restores variables, aliases, functions, options, directory stack, cwd, and traps in `crates/malt-daemon/tests/gateway_backend.rs` and `crates/malt-daemon/tests/store.rs`
+- [X] T039 Run VNP golden/protocol and persistence compatibility suites for `crates/malt-protocol`, `crates/malt-daemon/tests/vnp_listener.rs`, `crates/malt-daemon/tests/store.rs`, and `schemas/persist/session.vexil`, confirming this feature changes no schema or encoding
+- [X] T040 Run native-Windows Smoosh conformance for `crates/mash/tests/smoosh_runner.rs` with `target/debug/mash.exe`, requiring 183 passed and 3 unsupported skipped
+- [X] T041 Run every command and the 10-minute cross-session soak described in `specs/002-responsive-session-control/quickstart.md`, then run `cargo fmt --all --check`, `cargo build --workspace`, and `cargo test --workspace` against `Cargo.toml`
+- [X] T042 Record measured responsiveness/order/soak results and exact test counts in `docs/findings/2026-07-25-responsive-session-control.md`, then mark only the verified 0b item complete in `docs/BACKLOG.md`
 
 ---
 

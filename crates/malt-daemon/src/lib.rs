@@ -9,4 +9,7 @@ pub mod supervisor;
 pub mod vnp_listener;
 
 pub use error::DaemonError;
-pub use executor::{Coordinator, PoolConfig, SessionCommand, SessionExecutor};
+pub use executor::{
+    Coordinator, ExecutionCompletion, ExecutionIngress, ExecutionRequest, PoolConfig,
+    SessionCommand, SessionExecutor, WorkerOutput,
+};

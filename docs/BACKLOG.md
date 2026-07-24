@@ -78,21 +78,17 @@ original ten, in order. Each links to its detail below.
   isn't accidentally requiring Admin everywhere), and
   `rate_limit_exceeded_is_rejected`. See
   `docs/findings/2026-07-24-audit-client-sdk-surface.md` §4.
-- **The session executor is a single thread blocking on one command queue
-  — a long command freezes attach, output, and input for its whole
-  duration.** `SessionExecutor::run` (`crates/malt-daemon/src/executor/session_thread.rs:271-415`)
-  loops on one blocking `mpsc::Receiver`; `RunCommand`'s handler calls
-  `run_mash_command` synchronously. While a `cargo test`-length command
-  runs, `RegisterVnpClient`/`GetOutput`/`KeyInput`/`AckFrame`/`Resize` all
-  queue behind it. Concretely: `register_vnp_client`'s 5s timeout
-  (`coordinator.rs:325`) means attaching mid-command **hard-fails the TCP
-  connection** rather than degrading gracefully; `exec_command`'s 30s
-  timeout returns an error to the caller while the command keeps running
-  to completion inside the daemon regardless, with no way to retrieve the
-  result later. Priority 0b — root cause behind the raw-input gap, the
-  render-notification gap below, and the attach-timeout behavior; nothing
-  downstream can be fixed correctly without this first. See
-  `docs/findings/2026-07-24-audit-input-concurrency.md` §3c (recommendation 1).
+- **0b. Responsive session control during execution — FIXED 2026-07-25.**
+  Each active session now has a responsive control actor and a single-owner
+  MASH worker connected by one bounded FIFO ingress. The worker waits for the
+  control actor to finalize output and the full shell snapshot before starting
+  the next request. Attach, output, resize, frame acknowledgement, editor
+  evaluation, snapshots, detach, and shutdown intent therefore stay off the
+  execution path. Admission is explicit (256 pending by default), with stable
+  queue-full, unavailable, and closing errors. Evidence: 100 busy VNP attaches
+  each completed within one second, the native Windows Smoosh suite remains
+  183/183, and a 600.20-second cross-session observation soak passed; see
+  `docs/findings/2026-07-25-responsive-session-control.md`.
 - **`exec`/`RunCommand` silently dropped stderr — FIXED 2026-07-24.** Added
   `stderr: String` to `CommandOutput`, `ExecResult`
   (`malt-gateway/src/types.rs`), and `ExecResultData` (`malt-bin/src/client.rs`,

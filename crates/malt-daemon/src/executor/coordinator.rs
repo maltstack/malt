@@ -1,6 +1,7 @@
 use crate::bus::BusMessage;
 use crate::executor::pools::PoolConfig;
-use crate::executor::session_thread::{SessionCommand, SessionExecutor};
+use crate::executor::session_thread::{CommandOutput, SessionCommand, SessionExecutor};
+use crate::executor::ExecutionIngress;
 use crate::store::{DebouncedStore, StoreError};
 use crate::supervisor::ProcessSupervisor;
 use crate::DaemonError;
@@ -19,7 +20,9 @@ use tracing::{info, warn};
 enum SessionLifecycle {
     Active {
         cmd_tx: mpsc::Sender<SessionCommand>,
-        thread: Option<std::thread::JoinHandle<()>>,
+        ingress: ExecutionIngress,
+        control_thread: Option<std::thread::JoinHandle<()>>,
+        worker_thread: Option<std::thread::JoinHandle<()>>,
         client_count: u32,
     },
     Dormant {
@@ -54,6 +57,14 @@ pub struct Coordinator {
 }
 
 impl Coordinator {
+    /// Fallible construction for callers that supply configuration.  The
+    /// legacy `new` constructor remains for existing embedders; production
+    /// startup uses this checked entry point.
+    pub fn try_new(pool_config: PoolConfig, store: DebouncedStore) -> Result<Self, DaemonError> {
+        pool_config.validate()?;
+        Ok(Self::new(pool_config, store))
+    }
+
     pub fn new(pool_config: PoolConfig, store: DebouncedStore) -> Self {
         let mut next_session_id = 1u32;
         let mut next_pane_id = 1u32;
@@ -163,8 +174,13 @@ impl Coordinator {
         let pane_id = PaneId(self.next_pane_id);
         self.next_pane_id += 1;
 
-        let (cmd_tx, thread) =
-            SessionExecutor::spawn(session_id.clone(), pane_id.clone(), isolation)?;
+        self.pool_config.validate()?;
+        let spawned = SessionExecutor::spawn_with_capacity(
+            session_id.clone(),
+            pane_id.clone(),
+            isolation,
+            self.pool_config.session_channel_size,
+        )?;
 
         info!(?session_id, name = %final_name, "session created with in-process mash shell");
 
@@ -176,8 +192,10 @@ impl Coordinator {
                 isolation,
                 first_pane: pane_id,
                 lifecycle: SessionLifecycle::Active {
-                    cmd_tx,
-                    thread: Some(thread),
+                    cmd_tx: spawned.control_tx,
+                    ingress: spawned.ingress,
+                    control_thread: Some(spawned.control_thread),
+                    worker_thread: Some(spawned.worker_thread),
                     client_count: 0,
                 },
             },
@@ -189,6 +207,25 @@ impl Coordinator {
 
     /// Get the current output text for a session, as styled-grid JSON.
     pub fn get_session_output(&self, session_id: SessionId) -> Result<String, DaemonError> {
+        self.begin_get_session_output(session_id)?
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| DaemonError::SessionUnreachable(SessionId(0)))
+    }
+
+    /// Get the current output text for a session, as plain text with no
+    /// styling — for programmatic/agent consumption.
+    pub fn get_session_output_text(&self, session_id: SessionId) -> Result<String, DaemonError> {
+        self.begin_get_session_output_text(session_id)?
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| DaemonError::SessionUnreachable(SessionId(0)))
+    }
+
+    /// Start an output request without waiting. Callers holding the global
+    /// coordinator mutex use this and await the receiver after releasing it.
+    pub fn begin_get_session_output(
+        &self,
+        session_id: SessionId,
+    ) -> Result<mpsc::Receiver<String>, DaemonError> {
         let handle = self
             .sessions
             .get(&session_id.0)
@@ -199,17 +236,16 @@ impl Coordinator {
                 cmd_tx
                     .send(SessionCommand::GetOutput { reply: reply_tx })
                     .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
-                reply_rx
-                    .recv_timeout(std::time::Duration::from_secs(2))
-                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+                Ok(reply_rx)
             }
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
         }
     }
 
-    /// Get the current output text for a session, as plain text with no
-    /// styling — for programmatic/agent consumption.
-    pub fn get_session_output_text(&self, session_id: SessionId) -> Result<String, DaemonError> {
+    pub fn begin_get_session_output_text(
+        &self,
+        session_id: SessionId,
+    ) -> Result<mpsc::Receiver<String>, DaemonError> {
         let handle = self
             .sessions
             .get(&session_id.0)
@@ -220,9 +256,7 @@ impl Coordinator {
                 cmd_tx
                     .send(SessionCommand::GetOutputText { reply: reply_tx })
                     .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
-                reply_rx
-                    .recv_timeout(std::time::Duration::from_secs(2))
-                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+                Ok(reply_rx)
             }
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
         }
@@ -233,12 +267,19 @@ impl Coordinator {
         if let Some(mut handle) = self.sessions.remove(&id.0) {
             match handle.lifecycle {
                 SessionLifecycle::Active {
-                    cmd_tx, mut thread, ..
+                    cmd_tx,
+                    ingress,
+                    control_thread,
+                    worker_thread,
+                    ..
                 } => {
-                    let _ = cmd_tx.send(SessionCommand::Shutdown);
-                    if let Some(t) = thread.take() {
-                        let _ = t.join();
-                    }
+                    ingress.close();
+                    // Let the active worker finalize exactly once and drain
+                    // admitted-but-not-started requests as shutting down.
+                    // The reaper shuts down the control actor only after the
+                    // worker has stopped; `destroy_session` itself never
+                    // joins under the coordinator.
+                    spawn_session_reaper_after_worker(cmd_tx, control_thread, worker_thread);
                 }
                 SessionLifecycle::Dormant { .. } => {
                     // No thread to shut down.
@@ -286,6 +327,28 @@ impl Coordinator {
         }
     }
 
+    /// Submit execution directly to the bounded session ingress. This is
+    /// intentionally separate from control-mailbox routing so no caller can
+    /// make a healthy control plane wait behind a command.
+    pub fn submit_execution(
+        &self,
+        session_id: SessionId,
+        command: String,
+    ) -> Result<mpsc::Receiver<Result<CommandOutput, DaemonError>>, DaemonError> {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { ingress, .. } => {
+                let (reply, receiver) = mpsc::channel();
+                ingress.submit(command, reply)?;
+                Ok(receiver)
+            }
+            SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
+    }
+
     /// List all active sessions.
     pub fn list_sessions(&self) -> Vec<SessionInfo> {
         self.sessions
@@ -320,6 +383,20 @@ impl Coordinator {
         capabilities: ClientCapabilities,
         render_tx: mpsc::SyncSender<RenderBatch>,
     ) -> Result<InitialState, DaemonError> {
+        self.begin_register_vnp_client(session_id, client_id, capabilities, render_tx)?
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| DaemonError::SessionUnreachable(SessionId(0)))
+    }
+
+    /// Begin VNP registration without holding the coordinator mutex while the
+    /// control actor constructs the snapshot.
+    pub fn begin_register_vnp_client(
+        &mut self,
+        session_id: SessionId,
+        client_id: u64,
+        capabilities: ClientCapabilities,
+        render_tx: mpsc::SyncSender<RenderBatch>,
+    ) -> Result<mpsc::Receiver<InitialState>, DaemonError> {
         // Check whether the session is Dormant — if so, restore it first.
         // We do this with a short immutable borrow so that the subsequent
         // `restore_session(&mut self)` call does not fight the borrow checker.
@@ -355,13 +432,8 @@ impl Coordinator {
                         initial_reply: initial_tx,
                     })
                     .map_err(|_| DaemonError::SessionUnreachable(session_id_for_err.clone()))?;
-                let result = initial_rx
-                    .recv_timeout(Duration::from_secs(5))
-                    .map_err(|_| DaemonError::SessionUnreachable(session_id_for_err));
-                if result.is_ok() {
-                    *client_count += 1;
-                }
-                result
+                *client_count += 1;
+                Ok(initial_rx)
             }
             // restore_session succeeded but lifecycle is still Dormant — should
             // never happen, but defend against it rather than panic.
@@ -401,7 +473,8 @@ impl Coordinator {
         let should_go_dormant = match self.sessions.get(&session_id.0) {
             Some(h) => matches!(
                 &h.lifecycle,
-                SessionLifecycle::Active { client_count, .. } if *client_count == 0
+                SessionLifecycle::Active { client_count, ingress, .. }
+                    if *client_count == 0 && ingress.is_idle()
             ),
             None => false,
         };
@@ -496,11 +569,18 @@ impl Coordinator {
                     self.store.mark_dirty(session_id.clone(), persisted.clone());
                     // Shut down thread and transition to Dormant.
                     if let Some(handle) = self.sessions.get_mut(&session_id.0) {
-                        if let SessionLifecycle::Active { thread, .. } = &mut handle.lifecycle {
+                        if let SessionLifecycle::Active {
+                            ingress,
+                            control_thread,
+                            worker_thread,
+                            ..
+                        } = &mut handle.lifecycle {
+                            ingress.close();
                             let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
-                            if let Some(t) = thread.take() {
-                                let _ = t.join();
-                            }
+                            // Do not hold daemon shutdown behind an
+                            // uncancellable command. The reaper owns joins
+                            // after the coordinator has released its state.
+                            spawn_session_reaper(control_thread.take(), worker_thread.take());
                         }
                         handle.lifecycle = SessionLifecycle::Dormant { persisted };
                     }
@@ -513,10 +593,9 @@ impl Coordinator {
                     // Shut down thread anyway so it doesn't linger.
                     let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
                     if let Some(handle) = self.sessions.get_mut(&session_id.0) {
-                        if let SessionLifecycle::Active { thread, .. } = &mut handle.lifecycle {
-                            if let Some(t) = thread.take() {
-                                let _ = t.join();
-                            }
+                        if let SessionLifecycle::Active { ingress, control_thread, worker_thread, .. } = &mut handle.lifecycle {
+                            ingress.close();
+                            spawn_session_reaper(control_thread.take(), worker_thread.take());
                         }
                     }
                 }
@@ -575,7 +654,7 @@ impl Coordinator {
         let pane_id = PaneId(*pane_id_raw);
         let cwd = std::path::PathBuf::from(&pane.cwd);
 
-        let (cmd_tx, thread) = match &pane.pane_type {
+        let spawned = match &pane.pane_type {
             malt_protocol::persist::session::PersistedPaneType::Shell {
                 shell_path,
                 env_snapshot,
@@ -583,13 +662,14 @@ impl Coordinator {
                 let env_snapshot = env_snapshot
                     .as_ref()
                     .map(crate::executor::session_thread::from_persisted_env_snapshot);
-                SessionExecutor::spawn_with_cwd(
+                SessionExecutor::spawn_with_cwd_and_capacity(
                     id.clone(),
                     pane_id,
                     session_isolation,
                     cwd,
                     Some(shell_path.clone()),
                     env_snapshot,
+                    self.pool_config.session_channel_size,
                 )
                 .map_err(|e| DaemonError::RestoreFailed(id.clone(), e.to_string()))?
             }
@@ -606,13 +686,14 @@ impl Coordinator {
                 // spawn one exactly like the Shell path, then separately
                 // launch the real external process and forward its output
                 // into it via PtyOutput.
-                let (cmd_tx, thread) = SessionExecutor::spawn_with_cwd(
+                let spawned = SessionExecutor::spawn_with_cwd_and_capacity(
                     id.clone(),
                     pane_id.clone(),
                     session_isolation,
                     cwd.clone(),
                     None,
                     None,
+                    self.pool_config.session_channel_size,
                 )
                 .map_err(|e| DaemonError::RestoreFailed(id.clone(), e.to_string()))?;
 
@@ -629,8 +710,9 @@ impl Coordinator {
                     // Roll back the SessionExecutor thread we already
                     // started -- don't leave an Active session with no
                     // process behind it.
-                    let _ = cmd_tx.send(SessionCommand::Shutdown);
-                    let _ = thread.join();
+                    let _ = spawned.control_tx.send(SessionCommand::Shutdown);
+                    let _ = spawned.control_thread.join();
+                    let _ = spawned.worker_thread.join();
                     return Err(DaemonError::RestoreFailed(id.clone(), e.to_string()));
                 }
 
@@ -642,10 +724,10 @@ impl Coordinator {
                 // process runs uncontained. Real, tracked gap, not a
                 // silent one -- see docs/BACKLOG.md.
                 if let Some((reader, _writer)) = self.supervisor.take_io(&pane_id) {
-                    spawn_pty_reader(pane_id.clone(), reader, cmd_tx.clone());
+                    spawn_pty_reader(pane_id.clone(), reader, spawned.control_tx.clone());
                 }
 
-                (cmd_tx, thread)
+                spawned
             }
             _ => {
                 return Err(DaemonError::RestoreFailed(
@@ -657,8 +739,10 @@ impl Coordinator {
 
         if let Some(handle) = self.sessions.get_mut(&id.0) {
             handle.lifecycle = SessionLifecycle::Active {
-                cmd_tx,
-                thread: Some(thread),
+                cmd_tx: spawned.control_tx,
+                ingress: spawned.ingress,
+                control_thread: Some(spawned.control_thread),
+                worker_thread: Some(spawned.worker_thread),
                 client_count: 0,
             };
         }
@@ -716,13 +800,15 @@ impl Coordinator {
         self.store.mark_dirty(id.clone(), persisted.clone());
         self.store.flush_all();
 
-        // Shut down the session thread.
+        // Shut down the session worker and control actor.
         let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
         if let Some(handle) = self.sessions.get_mut(&id.0) {
-            if let SessionLifecycle::Active { thread, .. } = &mut handle.lifecycle {
-                if let Some(t) = thread.take() {
+            if let SessionLifecycle::Active { ingress, control_thread, worker_thread, .. } = &mut handle.lifecycle {
+                ingress.close();
+                if let Some(t) = control_thread.take() {
                     let _ = t.join();
                 }
+                if let Some(t) = worker_thread.take() { let _ = t.join(); }
             }
             handle.lifecycle = SessionLifecycle::Dormant { persisted };
         }
@@ -748,6 +834,36 @@ impl Drop for Coordinator {
     fn drop(&mut self) {
         self.shutdown_graceful();
     }
+}
+
+fn spawn_session_reaper(
+    control_thread: Option<std::thread::JoinHandle<()>>,
+    worker_thread: Option<std::thread::JoinHandle<()>>,
+) {
+    let _ = std::thread::Builder::new()
+        .name("malt-session-reaper".to_string())
+        .spawn(move || {
+            if let Some(thread) = control_thread { let _ = thread.join(); }
+            if let Some(thread) = worker_thread { let _ = thread.join(); }
+        });
+}
+
+fn spawn_session_reaper_after_worker(
+    control_tx: mpsc::Sender<SessionCommand>,
+    control_thread: Option<std::thread::JoinHandle<()>>,
+    worker_thread: Option<std::thread::JoinHandle<()>>,
+) {
+    let _ = std::thread::Builder::new()
+        .name("malt-session-reaper".to_string())
+        .spawn(move || {
+            if let Some(thread) = worker_thread {
+                let _ = thread.join();
+            }
+            let _ = control_tx.send(SessionCommand::Shutdown);
+            if let Some(thread) = control_thread {
+                let _ = thread.join();
+            }
+        });
 }
 
 /// Read a spawned process's PTY output in a loop and forward each chunk as

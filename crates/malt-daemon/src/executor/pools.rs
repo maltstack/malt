@@ -24,3 +24,17 @@ impl Default for PoolConfig {
         }
     }
 }
+
+impl PoolConfig {
+    /// Validate configuration that changes correctness, rather than merely
+    /// tuning performance. A zero pending-execution capacity would make every
+    /// session reject work and previously led to an opaque channel failure.
+    pub fn validate(&self) -> Result<(), crate::DaemonError> {
+        if self.session_channel_size == 0 {
+            return Err(crate::DaemonError::InvalidPoolConfig(
+                "session_channel_size must be greater than zero".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}

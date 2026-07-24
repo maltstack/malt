@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use axum::response::IntoResponse;
 use axum::Router;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
@@ -463,4 +464,33 @@ async fn rate_limit_exceeded_is_rejected() {
         StatusCode::TOO_MANY_REQUESTS,
         "the 3rd request within a 2-request-per-window budget must be rate limited"
     );
+}
+
+#[tokio::test]
+async fn execution_admission_errors_have_stable_statuses_and_codes() {
+    let cases = [
+        (
+            GatewayError::ExecutionQueueFull("queue full".to_string()),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "execution_queue_full",
+        ),
+        (
+            GatewayError::ExecutionUnavailable("worker lost".to_string()),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "execution_unavailable",
+        ),
+        (
+            GatewayError::SessionShuttingDown("closing".to_string()),
+            StatusCode::CONFLICT,
+            "session_shutting_down",
+        ),
+        (GatewayError::RateLimited, StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+    ];
+    for (error, status, code) in cases {
+        let response = error.into_response();
+        assert_eq!(response.status(), status);
+        let body = BodyExt::collect(response.into_body()).await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], code);
+    }
 }

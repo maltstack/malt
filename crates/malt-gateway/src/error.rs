@@ -24,6 +24,15 @@ pub enum GatewayError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    #[error("execution queue full: {0}")]
+    ExecutionQueueFull(String),
+
+    #[error("execution unavailable: {0}")]
+    ExecutionUnavailable(String),
+
+    #[error("session shutting down: {0}")]
+    SessionShuttingDown(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -49,6 +58,15 @@ impl IntoResponse for GatewayError {
             GatewayError::Forbidden { .. } => (StatusCode::FORBIDDEN, "forbidden"),
             GatewayError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             GatewayError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
+            GatewayError::ExecutionQueueFull(_) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "execution_queue_full")
+            }
+            GatewayError::ExecutionUnavailable(_) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "execution_unavailable")
+            }
+            GatewayError::SessionShuttingDown(_) => {
+                (StatusCode::CONFLICT, "session_shutting_down")
+            }
             GatewayError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
 

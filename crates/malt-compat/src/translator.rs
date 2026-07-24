@@ -25,6 +25,20 @@ impl CompatTranslator {
         }
     }
 
+    /// Create an isolated staging translator with the same rendered grid.
+    ///
+    /// `vte::Parser` intentionally is not `Clone`; completed command output
+    /// is nevertheless a safe finalization boundary, so a fresh parser plus a
+    /// cloned grid lets the daemon materialize large completed output without
+    /// exposing partial changes to the authoritative translator.
+    pub fn staging_clone(&self) -> Self {
+        Self {
+            grid: self.grid.clone(),
+            parser: vte::Parser::new(),
+            last_data: self.last_data.clone(),
+        }
+    }
+
     /// Feed raw bytes through the VT parser, updating the grid and storing
     /// the most recent chunk for delta passthrough via `frame_element()`.
     ///

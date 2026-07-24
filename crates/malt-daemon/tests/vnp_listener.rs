@@ -382,3 +382,72 @@ fn vnp_frame_ack_accepted() {
         Err(e) => panic!("unexpected frame error after FrameAck: {e}"),
     }
 }
+
+#[test]
+fn vnp_attach_during_execution_returns_initial_state_promptly() {
+    use std::time::{Duration, Instant};
+
+    let (coordinator, session_id) = make_coordinator_with_session();
+    let receiver = coordinator
+        .lock()
+        .unwrap()
+        .submit_execution(SessionId(session_id), "sleep 1; echo done".to_string())
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let addr = start_test_listener(coordinator);
+    let stream = TcpStream::connect(&addr).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let write_stream = stream.try_clone().unwrap();
+    let mut writer = FrameWriter::new(write_stream);
+    let mut reader = FrameReader::new(BufReader::new(stream));
+    let _ = do_handshake(&mut writer, &mut reader);
+    let started = Instant::now();
+    do_attach(&mut writer, session_id);
+    let initial = read_initial_state(&mut reader);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(initial.frame_seq, 0);
+    send_char_key(&mut writer, session_id, 'x');
+    let ack = FrameAck {
+        frame_seq: initial.frame_seq,
+        _unknown: Vec::new(),
+    };
+    let env = make_envelope(DOMAIN_RENDER, MSG_FRAME_ACK, session_id);
+    let mut bits = BitWriter::new();
+    ack.pack(&mut bits).unwrap();
+    writer
+        .write_frame(&Frame {
+            flags: FrameFlags::new(),
+            payload: encode_message(&env, &bits.finish()).unwrap(),
+        })
+        .unwrap();
+    assert!(receiver.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+}
+
+#[test]
+fn one_hundred_vnp_attaches_remain_bounded_while_execution_is_busy() {
+    use std::time::{Duration, Instant};
+
+    let (coordinator, session_id) = make_coordinator_with_session();
+    let receiver = coordinator
+        .lock()
+        .unwrap()
+        .submit_execution(SessionId(session_id), "sleep 3; echo done".to_string())
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let addr = start_test_listener(coordinator);
+
+    for _ in 0..100 {
+        let stream = TcpStream::connect(&addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let write_stream = stream.try_clone().unwrap();
+        let mut writer = FrameWriter::new(write_stream);
+        let mut reader = FrameReader::new(BufReader::new(stream));
+        let _ = do_handshake(&mut writer, &mut reader);
+        let started = Instant::now();
+        do_attach(&mut writer, session_id);
+        let initial = read_initial_state(&mut reader);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(initial.frame_seq, 0);
+    }
+    assert!(receiver.recv_timeout(Duration::from_secs(5)).unwrap().is_ok());
+}
