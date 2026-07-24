@@ -48,3 +48,27 @@ fn destroy_session() {
     let sessions = backend.list_sessions().unwrap();
     assert!(sessions.is_empty());
 }
+
+#[test]
+fn exec_reports_real_exit_code_for_success() {
+    let backend = make_backend();
+    let created = backend.create_session(None, None).unwrap();
+    let result = backend
+        .exec_command(created.id, "echo hello".to_string())
+        .unwrap();
+    assert_eq!(result.exit_code, Some(0));
+    assert!(result.output.contains("hello"));
+}
+
+#[test]
+fn exec_reports_real_exit_code_for_failure() {
+    let backend = make_backend();
+    let created = backend.create_session(None, None).unwrap();
+    let result = backend.exec_command(created.id, "false".to_string()).unwrap();
+    assert_eq!(
+        result.exit_code,
+        Some(1),
+        "the `false` builtin must report a nonzero exit code, not the \
+         previously-hardcoded None"
+    );
+}

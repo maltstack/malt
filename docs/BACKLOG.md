@@ -55,12 +55,17 @@ near-term, evidence-based items, not the whole product roadmap.
   `RunCommand` path, and wire `CommandBlock` construction into it. See
   `docs/adr/ADR-0002-gateway-canonical-mcp-adapter.md` for the full
   context — this is Phase 3/4 of that decision.
-- **`send_input`'s actual forwarding behavior is unconfirmed and suspected
-  wrong.** Suspected to dispatch another `RunCommand` rather than writing
-  raw bytes to an already-running process's stdin — would explain why
-  simple standalone commands work in testing while genuinely interactive
-  cases (REPLs, password prompts) might not. Not yet verified against the
-  code. Confirm before Phase 3 work in ADR-0002 begins.
+- **`send_input`'s forwarding behavior — CONFIRMED WRONG 2026-07-24** (was
+  "unconfirmed, suspected wrong"). Read while investigating the exit_code
+  bug above: `gateway_backend.rs:117`'s `send_input` dispatches another
+  `SessionCommand::RunCommand { command: input, .. }` — i.e. it re-parses
+  and executes `input` as a new shell command line, exactly like `exec`
+  does, rather than writing raw bytes to an already-running process's
+  stdin. This explains why simple standalone commands work in testing
+  while genuinely interactive cases (REPLs, password prompts) wouldn't:
+  there is no live stdin to write to from this path at all. Not fixed here
+  — needs real design work (an actual PTY/stdin-write path distinct from
+  `RunCommand`), in scope for Phase 3 work in ADR-0002.
 - **Agent-facing `get_output` returns the wrong representation — the human
   rendering pipeline, not something built for a program to parse.** It
   returns `StyledGrid` (character cells with RGB/bold flags, the same
@@ -149,9 +154,30 @@ near-term, evidence-based items, not the whole product roadmap.
   transport messages needed. New tests: `shed_stale_clients_removes_unacked_client_after_timeout`,
   `shed_stale_clients_spares_fully_acked_client`,
   `shed_stale_clients_spares_client_with_no_frames_sent`.
-- **`exec` responses always show `"exit_code": null`.** Observed on every
-  call this session, including successful ones. Might be intentional
-  (async result delivered elsewhere) — confirm before treating as a bug.
+- **`exec` responses always show `"exit_code": null` — FIXED 2026-07-24, not
+  intentional.** Root cause: mash's `execute_list` already returns a real
+  `exit_code: i32` in its `ExecResult` (`crates/mash/src/executor.rs`), but
+  the daemon's `SessionCommand::RunCommand` reply channel was typed
+  `Sender<String>` — the exit code was computed and then simply dropped
+  before it could reach the gateway, which then hardcoded `exit_code: None`
+  at `gateway_backend.rs:113` because it had nothing else to put there.
+  Added a `CommandOutput { output, exit_code }` struct, changed the reply
+  channel to carry it end-to-end (`run_mash_command`, the `RunCommand`
+  handler, `gateway_backend::exec_command`), and set sensible codes for the
+  parse-error path (1, matching mash's own CLI convention) and the
+  empty-command path (0). Added `exec_reports_real_exit_code_for_success`
+  and `exec_reports_real_exit_code_for_failure` in
+  `crates/malt-daemon/tests/gateway_backend.rs`, exercising the real
+  `Coordinator` end-to-end (not a mock) — previously this file tested
+  session CRUD only, never `exec_command`.
+  Related, confirmed while investigating (not fixed — separate, larger P1
+  item above): `command_id: 0` at the same call site is still hardcoded;
+  fixing it needs the full `CommandBlock` wiring from ADR-0002 Phase 3/4,
+  not a plumbing fix like this one.
+  Also confirmed while here: `send_input` (`gateway_backend.rs:117`)
+  dispatches another `SessionCommand::RunCommand` — the P1 item below about
+  its forwarding behavior being "unconfirmed, suspected wrong" is now
+  **confirmed** wrong, not just suspected.
 - **Test-coverage gaps on functionally-complete code.** `malt-session`'s
   `GroupManager` (create_group, add_session with max_sessions enforcement,
   on_oom) has zero tests anywhere in the crate. `malt-platform`'s `env.rs`

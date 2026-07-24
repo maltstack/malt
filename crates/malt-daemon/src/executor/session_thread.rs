@@ -51,6 +51,14 @@ fn apply_session_isolation(env: &mut Env, session_id: SessionId, isolation: Isol
     }
 }
 
+/// Result of running a command line through mash: the captured stdout text
+/// (what callers display) plus the command's exit code (what `$?` would be).
+#[derive(Debug, Clone)]
+pub struct CommandOutput {
+    pub output: String,
+    pub exit_code: i32,
+}
+
 /// Commands sent from the coordinator to a session executor.
 pub enum SessionCommand {
     /// Deliver a message to the session's bus.
@@ -69,7 +77,7 @@ pub enum SessionCommand {
     /// Execute a command via mash (from exec_command API).
     RunCommand {
         command: String,
-        reply: mpsc::Sender<String>,
+        reply: mpsc::Sender<CommandOutput>,
     },
     /// Write input to PTY stdin.
     WriteInput { data: Vec<u8> },
@@ -447,7 +455,7 @@ impl SessionExecutor {
 
     /// Parse and execute a command string via mash, feeding output through the
     /// compat translator and returning the plain stdout text.
-    fn run_mash_command(&mut self, input: &str) -> String {
+    fn run_mash_command(&mut self, input: &str) -> CommandOutput {
         let commands = match parser::parse(input) {
             Ok(cmds) => cmds,
             Err(e) => {
@@ -455,12 +463,20 @@ impl SessionExecutor {
                 if let Some(compat) = &mut self.compat {
                     compat.feed(err_msg.as_bytes());
                 }
-                return err_msg;
+                // Matches mash's own CLI convention (crates/mash/src/main.rs)
+                // of exiting 1 on a parse error.
+                return CommandOutput {
+                    output: err_msg,
+                    exit_code: 1,
+                };
             }
         };
 
         if commands.is_empty() {
-            return String::new();
+            return CommandOutput {
+                output: String::new(),
+                exit_code: 0,
+            };
         }
 
         let result = execute_list(&commands, input, &mut self.mash_env);
@@ -487,7 +503,10 @@ impl SessionExecutor {
             }
         }
 
-        String::from_utf8_lossy(&result.stdout).to_string()
+        CommandOutput {
+            output: String::from_utf8_lossy(&result.stdout).to_string(),
+            exit_code: result.exit_code,
+        }
     }
 
     fn recompute_layout(&mut self) {

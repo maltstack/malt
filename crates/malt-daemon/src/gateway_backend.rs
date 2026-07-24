@@ -103,14 +103,14 @@ impl GatewayBackend for DaemonBackend {
                 .map_err(|e| GatewayError::Internal(e.to_string()))?;
         } // Release lock before waiting
 
-        let output = reply_rx
+        let result = reply_rx
             .recv_timeout(std::time::Duration::from_secs(30))
             .map_err(|_| GatewayError::Internal("command timed out".to_string()))?;
 
         Ok(ExecResult {
             command_id: 0,
-            output,
-            exit_code: None,
+            output: result.output,
+            exit_code: Some(result.exit_code),
         })
     }
 
