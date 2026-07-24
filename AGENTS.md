@@ -240,97 +240,79 @@ Isolation tiers are reachable via the gateway API (`POST /sessions` with an
 - **maltty:** wgpu window, surface setup, dark background clear, daemon HTTP connection, input mapping (scaffold — text rendering pending)
 - **malt-web:** SvelteKit MVP, styled span grid rendering, keyboard input, session polling
 
-## Implementation Roadmap
+## Priorities (correctness-first, see ADR-0003)
 
-Goal: fully realize `docs/design/architecture.md`. Every phase is production-ready before starting the next.
-Audit baseline: `docs/baseline-audit-2026-03-31.md`.
+The phased feature roadmap that used to live here (Phase A–I) is retired
+as of 2026-07-24 — see `docs/adr/ADR-0003-correctness-first-strategic-pivot.md`
+for the full reasoning. Phase A and Phase B1 are historical fact and stay
+recorded below; Phase B2 onward is replaced by a flat, priority-ordered
+correctness/hardening list, informed by a five-agent audit
+(`docs/findings/2026-07-24-audit-*.md`) run specifically to find what's
+missing, buggy, or on shaky ground — not to plan new features.
 
-For concrete, near-term, evidence-based items (bugs found, small gaps), see
-`docs/BACKLOG.md` instead — it's kept current; this roadmap is the larger
-multi-week phase structure and updates less often.
+**Guiding lens, not a task:** a 9-step demo — an agent starts `cargo test`
+in a persistent session, MALT reports structured progress, a human attaches
+to the same session, both see the same authoritative state, the command
+requests input or fails, temporary input authority changes hands, the
+session survives client disconnection, the daemon restarts and restores
+session history, and the agent resumes from the last execution event
+instead of scraping the terminal — is used only to judge whether a given
+gap actually matters for genuine human/agent coexistence. It is not a
+feature to build toward directly; no work item should be justified solely
+by "the demo needs it."
 
-### Phase A — Foundation Hardening ✅ COMPLETE
+**Priority order** (see `docs/BACKLOG.md` for the concrete, evidence-based
+items behind each — this list is the ordering, not the detail):
+
+- **0a. Gateway auth actually enforced.** `TokenStore`/`AuthContext`/
+  `RateLimiter` are fully built and tested in isolation but never wired
+  into `build_router` — every route is Admin-equivalent open to anyone who
+  can reach the port today. Audit-discovered prerequisite, not on the
+  original list, sequenced first because it gates safely exposing the
+  Gateway to any agent at all.
+- **0b. Decouple command execution from the session's single
+  command-dispatch thread.** One thread, one blocking `mpsc::Receiver` per
+  session; a long-running command blocks attach/output/input entirely for
+  its whole duration. Audit-discovered prerequisite for genuine raw input,
+  for gateway-driven execution to ever notify an attached human, and for
+  attach to degrade gracefully instead of hard-timing-out.
+- 1. Correct plain stdout and stderr
+- 2. Real exit codes and execution IDs
+- 3. Command lifecycle events
+- 4. Persistent execution history
+- 5. Genuine raw input
+- 6. Human and agent coexistence
+- 7. Fail-closed requested isolation (`required`/`preferred`/`disabled`
+  policy, plus the underlying per-tier enforcement the audit found
+  missing on every platform)
+- 8. A correct TUI rendering path
+- 9. Session restoration
+- 10. One excellent agent client or Gateway SDK
+
+**Explicitly paused**, with equal weight to the list above — a deliberate
+decision per ADR-0003, not silent deferral: the GPU client (`maltty`)
+beyond basic usability, plugin marketplace infrastructure, broad plugin
+lifecycle features, remote shared deployments, exotic isolation tiers
+beyond what's already built, large collections of new FrameElement/UI
+variants, MCP-specific expansion, elaborate observability systems, and
+maintaining multiple competing client experiences. `malt-tui` (VNP mode)
+is the single reference human client; `maltty` and `malt-web` are frozen
+as-is.
+
+### Historical: Phase A — Foundation Hardening ✅ COMPLETE
 - ✅ Fix Invariant 2: moved `PermissionsExt` usage into malt-platform
 - ✅ Fix Invariant 5: added `// SAFETY:` to `malt-platform/src/env.rs:25,27`
 - ✅ Add `deny.toml` to workspace root
 - ✅ Wire-format golden file tests for envelope encode/decode stability
 
-### Phase B — Config + Persistence
-**B1 ✅ COMPLETE** (specs: `docs/superpowers/specs/2026-03-31-phase-b1-persistence-hardening-design.md`)
+### Historical: Phase B1 — Config + Persistence ✅ COMPLETE
+(specs: `docs/superpowers/specs/2026-03-31-phase-b1-persistence-hardening-design.md`)
 - ✅ malt-config: `VxDecoder` trait + real `.vx` file parsing via `vexil_lang::compile`
 - ✅ Corruption handler: `.corrupt.{ts}.vxb` quarantine, `.bak` backup on atomic overwrite
 - ✅ Session name uniqueness + numeric suffix (`-2`…`-100`) on conflict
 - ✅ Persistence debouncing: `DebouncedStore` with 1s timer + `flush_all()`
 - ✅ XDG storage conventions: `malt_config::paths::data_dir()` wired at daemon startup
 - ✅ Counter restore: `Coordinator` loads `DaemonState` on construction
-
-**B2 — in design** (graceful shutdown + session restore on attach)
-- Graceful shutdown: `flush_all()` → session threads stop cleanly
-- Session lifecycle: Active → Dormant state transition on last-client-detach
-- Session restore on attach: re-launch processes (mash + compat) in persisted cwd/args
-- `DetachSession` VNP message handler
-
-**B3 — pending**
-- Scrollback: mmap append-only log per pane, ring buffer header, disk budget (default 10K lines), per-client scroll offsets
-
-### Phase C — Shell Completeness
-- MASH FrameElement emission: MASH composes shell output into FrameElement trees and emits them directly (currently absent)
-- Add 11 missing FrameElement schema variants: Table, List, Tree, Diff, ProgressBar, Sparkline, Badge, KeyValue, Tabs, Modal, StatusBar
-- `catch_unwind` at every MASH poll point (keystroke, execution, expansion)
-- Alias expansion depth limit (1024) and subshell recursion limit (256)
-- Per-session watchdog: heartbeat pings, 500ms SLA enforcement
-- IsolationContext token injection from daemon into each MASH instance — **partially done 2026-07-24**: the token is injected and Job Objects are wired on Windows for mash's external-command spawn path; the PTY/compat supervisor path and other platforms are still open, see `docs/BACKLOG.md`.
-- Wire Smoosh (186 tests) + Modernish diagnostic suite into CI
-
-### Phase D — Gateway Hardening
-- Wire rate limiter into all route handlers (currently exists but not integrated)
-- Global rate limit (100 req/s across all clients)
-- X-RateLimit response headers on 429 responses
-- Payload size limits: reject POST /exec and POST /send > 64 KiB
-- Per-endpoint scope enforcement (Monitor/Read/Interact/Admin)
-- Make gateway bus-extractable: replace direct Coordinator calls with bus messages only
-
-### Phase E — Observability
-- Metrics registry: counters, gauges, histograms per subsystem (message bus, MASH, compat translator, plugin host, session store, gateway, process supervisor)
-- Prometheus `/metrics` scrape endpoint in malt-gateway
-- Real `/health`: uptime, per-subsystem status (running/degraded/failed), bus queue pressure, active session count, severity mapping
-- Diagnostics bus channel: System domain Diagnostic type (Low priority), `/diagnostics` endpoint
-- JSON structured logging with session_id, pane_id, subsystem, msg_type fields; 50 MiB rotation
-
-### Phase F — Layout + Theme Completeness
-- Focus layer segmentation: tiled base layer vs float overlay layers; directional navigation stays within layer; Escape returns to base layer
-- Theme token resolution: replace stub in malt-renderer with actual token → resolved color mapping
-
-### Phase G — Plugin System Completion
-- Plugin startup lifecycle: `[startup]` manifest section (daemon/session hooks, priority 0–100, lazy flag)
-- User overrides: `~/.config/malt/startup.vx`
-- Plugin output filtering: declare command patterns (e.g. `cargo *`), Plugin Host routes OutputChunks to matching plugins only
-- `malt-app-sdk` crate: App trait with VNP-connected mode + standalone ratatui fallback.
-  Not the same thing as `malt-tui` (already built, malt's own first-party client) —
-  this is the still-unbuilt third-party app-authoring SDK per architecture.md §7,
-  re-exporting only the stable FrameElement core-primitive subset for external
-  developers building their own malt apps. Easy to conflate with malt-tui because
-  the "dual-mode runner" wording is similar; they are distinct crates.
-- `malt plugin audit` command
-- Specific latency SLO enforcement: < 5ms keystroke, < 10ms prompt, < 50ms output parser
-
-### Phase H — Isolation Enforcement
-*Most complex phase. Platform-specific per OS.*
-- `tier_available()`: runtime capability probing — ✅ real, rewritten 2026-07-24 to use
-  `CapabilityReport` (Supported/Degraded/Unsupported + reason) instead of flat booleans
-- Linux: namespaces (mount, pid, net, uts, ipc), cgroup v2 (memory + cpu limits), overlayfs, seccomp BPF, veth/bridge for network isolation — unverified on this Windows dev machine
-- macOS: sandbox-exec / Seatbelt profile, setrlimit — unverified on this Windows dev machine
-- Windows: **Job Objects wired to real containment (2026-07-24)**, restricted tokens (real, tested), HCS bindings (real Win32 calls, feature-gated, only fake-mode tested — real Windows Containers path unverified), AppContainer (deliberately not implemented — carboy's version is a stub with zero real isolation, see ADR-0001)
-- Group atomic lifecycle ops: pause, resume, kill, checkpoint
-- malt-compat out-of-process worker (Restricted+ sessions): heartbeat (2s), restart limit (5 in 60s), memory limits, output stall detection
-- IsolationContext enforcement at MASH spawn — ✅ done for mash's own external-command spawn path; not yet for the PTY/compat supervisor path
-
-### Phase I — Security Hardening
-- Local transport: OS peer credential verification
-- BLAKE3 content-addressed wire identity
-- Token enforcement: verify bearer tokens on every authenticated route in malt-gateway
-- malt-elevate: wire elevated helper into daemon spawn flow for privileged operations
-- Remote TLS: rustls, self-signed certs with TOFU, CA-signed for shared infra
 
 ## Code Standards
 
