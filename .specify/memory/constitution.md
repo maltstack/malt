@@ -1,9 +1,30 @@
-# MALT Constitution
+<!--
+Sync Impact Report — 2026-07-24 (re-run via /speckit-constitution)
+Version change: 1.0.0 → 1.0.1 (PATCH)
+Rationale: This constitution was originally seeded from CLAUDE.md's "Hard
+Invariants" without running the /speckit-constitution skill (skill was
+unavailable in that session). Running it now: no principle content changed,
+version normalized to MAJOR.MINOR.PATCH form, and propagation to dependent
+templates/commands was verified rather than assumed.
+Modified principles: none (wording unchanged)
+Added sections: none
+Removed sections: the "seeded, not drafted" caveat paragraph (superseded —
+the skill has now actually run)
+Templates checked:
+  - .specify/templates/plan-template.md — ✅ no update needed (Constitution
+    Check section is a dynamic placeholder, not principle-specific text)
+  - .specify/templates/spec-template.md — ✅ no update needed (no
+    constitution-specific references)
+  - .specify/templates/tasks-template.md — ✅ no update needed (no
+    constitution-specific references)
+  - .claude/skills/speckit-*/SKILL.md, .agents/skills/speckit-*/SKILL.md —
+    ✅ generic Spec Kit command files, no CLAUDE-only or stale references
+  - AGENTS.md — ✅ already documents .specify/memory/constitution.md and
+    docs/adr/ correctly, no change needed
+Follow-up TODOs: none
+-->
 
-Seeded 2026-07-24 from `CLAUDE.md`'s "Hard Invariants" section and the day's
-ADRs, rather than drafted from scratch. If you run `/speckit-constitution`
-interactively later, treat this as the starting draft to refine, not a
-placeholder to discard.
+# MALT Constitution
 
 ## Core Principles
 
@@ -90,4 +111,4 @@ Amendments should be documented (an ADR is the right place) with the
 reasoning for the change, not just the change itself — the "why" is what
 lets future work judge edge cases the letter of the rule doesn't cover.
 
-**Version**: 1.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-07-24
+**Version**: 1.0.1 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-07-24
