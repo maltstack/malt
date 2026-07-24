@@ -4,7 +4,7 @@
 
 **Created**: 2026-07-24
 
-**Status**: Draft
+**Status**: Complete
 
 **Input**: User description: "the `malt new --isolation` CLI flag from the backlog"
 

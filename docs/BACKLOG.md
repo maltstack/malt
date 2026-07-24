@@ -92,9 +92,6 @@ near-term, evidence-based items, not the whole product roadmap.
   read in `walker.rs` despite the design calling it "Enforced".
   `ClientState::should_shed()` (10s-no-ack disconnect) exists and is
   unit-tested, but `RendererHost::process_frame` never calls it.
-- **`malt new` has no `--isolation` flag.** The gateway API and daemon-side
-  wiring both support it (confirmed working via direct gateway calls); the
-  primary CLI just doesn't expose it. Small, mechanical fix.
 - **`exec` responses always show `"exit_code": null`.** Observed on every
   call this session, including successful ones. Might be intentional
   (async result delivered elsewhere) — confirm before treating as a bug.
@@ -149,6 +146,11 @@ near-term, evidence-based items, not the whole product roadmap.
 
 ## Done (for context — remove once stale)
 
+- 2026-07-24: Exposed existing session isolation through
+  `malt new --isolation <bare|restricted|capped|contained>`; preserves the
+  omitted-field/Bare default and rejects a mismatched reported tier. Verified
+  against an isolated daemon across all four tiers and by `cargo test --workspace`
+  (commit `4c892fd`).
 - 2026-07-24: Reverted the uncommitted malt-stack (carboy/keg) dependency
   from `malt-platform`/`malt-elevate`; established vendor-not-depend policy
   (ADR-0001).
