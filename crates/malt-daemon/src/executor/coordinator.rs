@@ -32,6 +32,10 @@ struct SessionHandle {
     name: Option<String>,
     isolation: IsolationTier,
     lifecycle: SessionLifecycle,
+    /// The session's one pane, under today's single-pane model. Stable
+    /// across Active<->Dormant transitions since it lives on the outer
+    /// struct, not inside `SessionLifecycle`.
+    first_pane: PaneId,
 }
 
 /// Coordinator manages session lifecycle and routes messages to session threads.
@@ -67,12 +71,20 @@ impl Coordinator {
                 for sid in &state.sessions {
                     match store.load_session(sid) {
                         Ok(persisted) => {
+                            let first_pane = persisted
+                                .panes
+                                .keys()
+                                .next()
+                                .copied()
+                                .map(PaneId)
+                                .unwrap_or(PaneId(0));
                             initial_sessions.insert(
                                 sid.0,
                                 SessionHandle {
                                     id: persisted.id.clone(),
                                     name: persisted.name.clone(),
                                     isolation: persisted.isolation,
+                                    first_pane,
                                     lifecycle: SessionLifecycle::Dormant { persisted },
                                 },
                             );
@@ -162,6 +174,7 @@ impl Coordinator {
                 id: session_id.clone(),
                 name: Some(final_name),
                 isolation,
+                first_pane: pane_id,
                 lifecycle: SessionLifecycle::Active {
                     cmd_tx,
                     thread: Some(thread),
@@ -440,6 +453,11 @@ impl Coordinator {
 
     pub fn has_session(&self, id: SessionId) -> bool {
         self.sessions.contains_key(&id.0)
+    }
+
+    /// The session's one real pane id, under today's single-pane model.
+    pub fn session_first_pane(&self, id: SessionId) -> Option<PaneId> {
+        self.sessions.get(&id.0).map(|h| h.first_pane.clone())
     }
 
     /// Snapshot all Active sessions, persist them, join threads.

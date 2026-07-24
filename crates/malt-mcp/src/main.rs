@@ -138,6 +138,19 @@ fn handle_request(request: &Value, client: &reqwest::blocking::Client, api_addr:
     }
 }
 
+/// Build the request body for `create_session`. Omits `name` entirely when
+/// not provided, matching malt-bin's `CreateSessionRequest` (which uses
+/// `skip_serializing_if`) -- defaulting to the literal string "default"
+/// would create a real, named session that a CLI- or curl-created session
+/// with no name never gets (shown as `-` in `malt list`).
+fn create_session_body(arguments: &Value) -> Value {
+    let mut body = json!({});
+    if let Some(name) = arguments.get("name").and_then(|n| n.as_str()) {
+        body["name"] = json!(name);
+    }
+    body
+}
+
 fn dispatch_tool(
     name: &str,
     arguments: &Value,
@@ -151,9 +164,7 @@ fn dispatch_tool(
         }
 
         "create_session" => {
-            let body = json!({
-                "name": arguments.get("name").and_then(|n| n.as_str()).unwrap_or("default")
-            });
+            let body = create_session_body(arguments);
             let resp = client
                 .post(format!("{api_addr}/sessions"))
                 .json(&body)
@@ -255,6 +266,23 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_session_body_omits_name_when_absent() {
+        let body = create_session_body(&json!({}));
+        assert!(
+            body.get("name").is_none(),
+            "an omitted name argument must not become the literal string \
+             \"default\" -- that diverges from malt-bin's own \
+             CreateSessionRequest, which omits the field entirely; got: {body:?}"
+        );
+    }
+
+    #[test]
+    fn create_session_body_includes_name_when_present() {
+        let body = create_session_body(&json!({"name": "my-session"}));
+        assert_eq!(body["name"], "my-session");
+    }
 
     #[test]
     fn handle_initialize() {

@@ -21,12 +21,23 @@ impl DaemonBackend {
     }
 }
 
-fn parse_isolation(s: Option<String>) -> IsolationTier {
+/// Parse the `isolation` field of a `CreateSession` request.
+///
+/// An omitted field defaults to `Bare` (preserves existing behavior for
+/// callers that don't opt in). An unrecognized value is a client error, not
+/// a silent fallback to `Bare` — a typo'd isolation string (e.g. from an
+/// agent constructing the request JSON itself) must not silently produce a
+/// weaker session than requested with no indication anything was wrong.
+fn parse_isolation(s: Option<String>) -> Result<IsolationTier, GatewayError> {
     match s.as_deref() {
-        Some("Restricted") | Some("restricted") => IsolationTier::Restricted,
-        Some("Capped") | Some("capped") => IsolationTier::Capped,
-        Some("Contained") | Some("contained") => IsolationTier::Contained,
-        _ => IsolationTier::Bare,
+        None => Ok(IsolationTier::Bare),
+        Some("Bare") | Some("bare") => Ok(IsolationTier::Bare),
+        Some("Restricted") | Some("restricted") => Ok(IsolationTier::Restricted),
+        Some("Capped") | Some("capped") => Ok(IsolationTier::Capped),
+        Some("Contained") | Some("contained") => Ok(IsolationTier::Contained),
+        Some(other) => Err(GatewayError::BadRequest(format!(
+            "unrecognized isolation tier {other:?} (expected one of: bare, restricted, capped, contained)"
+        ))),
     }
 }
 
@@ -51,7 +62,7 @@ impl GatewayBackend for DaemonBackend {
         name: Option<String>,
         isolation: Option<String>,
     ) -> Result<SessionResponse, GatewayError> {
-        let tier = parse_isolation(isolation);
+        let tier = parse_isolation(isolation)?;
         let mut coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
         let session_id = coord
             .create_session(name.clone(), tier, None)
@@ -157,11 +168,17 @@ impl GatewayBackend for DaemonBackend {
 
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError> {
         let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
-        if !coord.has_session(SessionId(session_id)) {
-            return Err(GatewayError::SessionNotFound(session_id));
-        }
+        let pane_id = coord
+            .session_first_pane(SessionId(session_id))
+            .ok_or(GatewayError::SessionNotFound(session_id))?;
+        // Every session has exactly one pane under today's single-pane
+        // model, and every reachable pane is Shell-kind today (Compat-pane
+        // creation is only reachable via session restore, which is itself
+        // a confirmed stub -- see docs/BACKLOG.md). `kind`/`title` will
+        // need to reflect the real PaneKind/title once multi-pane sessions
+        // exist; the id below is real, not a hardcoded placeholder.
         Ok(vec![PaneResponse {
-            id: 1,
+            id: pane_id.0,
             kind: "Shell".to_string(),
             title: None,
             focused: true,

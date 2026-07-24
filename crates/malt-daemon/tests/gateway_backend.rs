@@ -74,6 +74,43 @@ fn exec_reports_real_exit_code_for_failure() {
 }
 
 #[test]
+fn list_panes_returns_the_sessions_real_pane_id_not_always_one() {
+    let backend = make_backend();
+    // Create and destroy a session first so the next one's pane id is not 1,
+    // proving list_panes doesn't just hardcode the first-ever pane id.
+    let first = backend.create_session(None, None).unwrap();
+    backend.destroy_session(first.id).unwrap();
+    let second = backend.create_session(None, None).unwrap();
+
+    let panes = backend.list_panes(second.id).unwrap();
+    assert_eq!(panes.len(), 1);
+    assert_ne!(
+        panes[0].id, 1,
+        "list_panes must return this session's real pane id, not a \
+         hardcoded 1 left over from the very first session ever created"
+    );
+}
+
+#[test]
+fn create_session_rejects_unrecognized_isolation_string() {
+    let backend = make_backend();
+    let err = backend
+        .create_session(None, Some("resticted".to_string()))
+        .unwrap_err();
+    match err {
+        malt_gateway::error::GatewayError::BadRequest(msg) => {
+            assert!(
+                msg.contains("resticted"),
+                "error message should echo back the bad value, got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected GatewayError::BadRequest for a typo'd isolation string, got: {other:?}"
+        ),
+    }
+}
+
+#[test]
 fn get_output_text_returns_plain_text_matching_executed_output() {
     let backend = make_backend();
     let created = backend.create_session(None, None).unwrap();

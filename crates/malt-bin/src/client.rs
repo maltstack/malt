@@ -78,6 +78,15 @@ pub struct HealthData {
     pub status: String,
 }
 
+/// Response shape from `GET /sessions/{id}/output/text`.
+#[derive(Debug, Deserialize)]
+pub struct OutputTextData {
+    #[serde(rename = "type")]
+    #[allow(dead_code)]
+    pub kind: String,
+    pub text: String,
+}
+
 pub struct MaltClient {
     addr: String,
     http: Client,
@@ -161,6 +170,20 @@ impl MaltClient {
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<ExecResultData> = resp.json().context("invalid exec response")?;
         envelope.into_data("exec")
+    }
+
+    /// Fetch the session's current output as plain text (no styling) --
+    /// the agent/CLI-friendly variant, distinct from the StyledGrid shape
+    /// `malt-tui`/`maltty` consume.
+    pub fn get_output_text(&self, id: u32) -> Result<OutputTextData> {
+        let resp = self
+            .http
+            .get(self.url(&format!("/sessions/{id}/output/text")))
+            .send()
+            .context("failed to reach daemon")?;
+        let envelope: ApiEnvelope<OutputTextData> =
+            resp.json().context("invalid output response")?;
+        envelope.into_data("get output")
     }
 
     pub fn send_input(&self, id: u32, input: &str) -> Result<()> {
@@ -273,6 +296,22 @@ mod tests {
         assert!(envelope.ok);
         let health = envelope.data.unwrap();
         assert_eq!(health.status, "ok");
+    }
+
+    #[test]
+    fn parse_output_text_response() {
+        let json = r#"{
+            "ok": true,
+            "data": {
+                "type": "PlainText",
+                "text": "hello\n"
+            },
+            "error": null
+        }"#;
+        let envelope: ApiEnvelope<OutputTextData> = serde_json::from_str(json).unwrap();
+        assert!(envelope.ok);
+        let result = envelope.data.unwrap();
+        assert_eq!(result.text, "hello\n");
     }
 
     #[test]

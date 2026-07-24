@@ -28,6 +28,7 @@ fn main() -> Result<()> {
             command,
         }) => handle_exec(&client, session_id, &command),
         Some(Command::Send { session_id, input }) => handle_send(&client, session_id, &input),
+        Some(Command::Output { session_id }) => handle_output(&client, session_id),
     }
 }
 
@@ -229,6 +230,12 @@ fn handle_exec(client: &MaltClient, session_id: u32, command: &str) -> Result<()
             std::process::exit(code);
         }
     }
+    Ok(())
+}
+
+fn handle_output(client: &MaltClient, session_id: u32) -> Result<()> {
+    let result = client.get_output_text(session_id)?;
+    print!("{}", result.text);
     Ok(())
 }
 

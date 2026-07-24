@@ -95,11 +95,11 @@ original ten, in order. Each links to its detail below.
     any platform, contradicting architecture.md's stated intent that an
     unsupported-tier request should fail up front with a clear error, not
     fall through silently.
-  - `gateway_backend.rs::parse_isolation` (line 24-31) silently maps any
-    unrecognized isolation string to `Bare` (`_ => IsolationTier::Bare`) —
-    a typo'd `isolation` field in a request body (including one an agent
-    constructs itself) produces a silently-`Bare` session with a 200
-    response, no error.
+  - `gateway_backend.rs::parse_isolation` silently mapped any unrecognized
+    isolation string to `Bare` — **FIXED 2026-07-24**: now returns
+    `Result<IsolationTier, GatewayError>`, rejecting unrecognized values
+    with `GatewayError::BadRequest` (→ HTTP 400) instead of silently
+    defaulting. New test: `create_session_rejects_unrecognized_isolation_string`.
   - `malt-bin`'s `validate_created_session` (`main.rs:131-145`) — the one
     thing that looks like a client-side safety net — cannot catch any of
     the above, because it compares against a value computed *before*
@@ -307,21 +307,35 @@ original ten, in order. Each links to its detail below.
   doesn't apply — different actor model (ACP's client hosts an embedded
   agent's UI; MALT's is an external agent remotely driving a persistent
   session).
-- **Three gateway pane-management routes are fake, not previously
-  documented.** `DaemonBackend::list_panes` (`gateway_backend.rs:150-161`)
-  always returns one hardcoded `PaneResponse`, ignoring the session's real
-  panes; `split_pane` (`:163-176`) is an explicit stub returning a fake
-  response without touching the daemon; `close_pane` (`:178-180`) is a
-  no-op always returning `Ok(())`. Doesn't block the demo-lens scenario
-  (single-pane), but any SDK work should not expose these as if they
-  worked. See `docs/findings/2026-07-24-audit-client-sdk-surface.md` §1.
-- **`malt-bin` has no `get_output` client method at all**, and `malt-mcp`'s
-  `create_session` silently defaults an omitted `name` to the literal
-  string `"default"` (`unwrap_or("default")`) while the CLI/curl path
-  correctly omits the field — a real behavioral divergence between two
-  consumers meant to share one contract per ADR-0002 principle 4. Both
-  small, worth fixing whenever next in the relevant files. See
-  `docs/findings/2026-07-24-audit-client-sdk-surface.md` §1, §2.
+- **Three gateway pane-management routes were fake — `list_panes` FIXED
+  2026-07-24, `split_pane`/`close_pane` intentionally left as honest
+  stubs.** `DaemonBackend::list_panes` always returned a hardcoded
+  `PaneResponse { id: 1, .. }` regardless of which session's real pane id
+  actually was — added `first_pane: PaneId` to `Coordinator`'s
+  `SessionHandle` (populated at creation and at daemon-startup restore
+  from `persisted.panes`' first key) and a `session_first_pane()`
+  accessor, so `list_panes` now returns the session's real pane id.
+  `kind`/`title` remain hardcoded (`"Shell"`/`None`) since every reachable
+  pane genuinely is untitled Shell-kind today — real per-pane
+  kind/title tracking is multi-pane feature work, out of scope per "no new
+  features." New test: `list_panes_returns_the_sessions_real_pane_id_not_always_one`
+  (creates and destroys a session first so the next one's pane id isn't 1,
+  proving it's not hardcoded). `split_pane`/`close_pane` deliberately left
+  as stubs, not built out — implementing real pane split/close is
+  multi-pane feature work, not a bugfix. See
+  `docs/findings/2026-07-24-audit-client-sdk-surface.md` §1.
+- **`malt-bin` had no `get_output` client method, and `malt-mcp`'s
+  `create_session` name-default divergence — both FIXED 2026-07-24.**
+  Added `MaltClient::get_output_text` (calls the new
+  `/output/text` route) plus a `malt output <session_id>` CLI subcommand
+  so the client method has a real caller. `malt-mcp`'s
+  `create_session` no longer sends the literal string `"default"` for an
+  omitted `name` — extracted the body-building logic into a pure
+  `create_session_body()` function with direct unit tests
+  (`create_session_body_omits_name_when_absent`,
+  `create_session_body_includes_name_when_present`), since the previous
+  divergence was exactly the kind of bug a real test would have caught.
+  See `docs/findings/2026-07-24-audit-client-sdk-surface.md` §1, §2.
 - **Recommendation: build a new `malt-gateway-sdk` Rust crate, once the
   above land — not hardening `malt-mcp` into that role.** MCP's tool-call
   round-trip has no first-class subscription primitive for the lifecycle-
