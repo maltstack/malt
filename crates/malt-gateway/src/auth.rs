@@ -131,7 +131,11 @@ fn generate_random_token() -> String {
     )
 }
 
-fn dirs_token_path() -> std::path::PathBuf {
+/// Where `TokenStore::load_or_generate_default` reads/writes the default
+/// API token. Public so first-party clients (`malt-bin`, `malt-mcp`) can
+/// read the same file the daemon wrote, rather than duplicating this path
+/// logic and risking drift.
+pub fn dirs_token_path() -> std::path::PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".to_string());

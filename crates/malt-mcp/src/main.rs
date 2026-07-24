@@ -70,7 +70,45 @@ fn tools_schema() -> Value {
     ])
 }
 
-fn handle_request(request: &Value, client: &reqwest::blocking::Client, api_addr: &str) -> Value {
+/// Where the Gateway's default API token lives. Deliberately duplicated
+/// from `malt_gateway::auth::dirs_token_path()` rather than depending on
+/// `malt-gateway` -- `malt-mcp` is intentionally zero-internal-dependency
+/// (ADR-0002), and a whole crate dependency for one path constant would
+/// undermine that.
+fn default_api_token_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home)
+        .join(".config")
+        .join("malt")
+        .join("api-token")
+}
+
+fn read_default_api_token() -> Option<String> {
+    std::fs::read_to_string(default_api_token_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Attach the bearer token, if present, to an outgoing request.
+fn authed(
+    builder: reqwest::blocking::RequestBuilder,
+    token: Option<&str>,
+) -> reqwest::blocking::RequestBuilder {
+    match token {
+        Some(t) => builder.bearer_auth(t),
+        None => builder,
+    }
+}
+
+fn handle_request(
+    request: &Value,
+    client: &reqwest::blocking::Client,
+    api_addr: &str,
+    token: Option<&str>,
+) -> Value {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
@@ -108,7 +146,7 @@ fn handle_request(request: &Value, client: &reqwest::blocking::Client, api_addr:
             let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
-            match dispatch_tool(tool_name, &arguments, client, api_addr) {
+            match dispatch_tool(tool_name, &arguments, client, api_addr, token) {
                 Ok(text) => json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -156,17 +194,17 @@ fn dispatch_tool(
     arguments: &Value,
     client: &reqwest::blocking::Client,
     api_addr: &str,
+    token: Option<&str>,
 ) -> anyhow::Result<String> {
     match name {
         "list_sessions" => {
-            let resp = client.get(format!("{api_addr}/sessions")).send()?;
+            let resp = authed(client.get(format!("{api_addr}/sessions")), token).send()?;
             Ok(resp.text()?)
         }
 
         "create_session" => {
             let body = create_session_body(arguments);
-            let resp = client
-                .post(format!("{api_addr}/sessions"))
+            let resp = authed(client.post(format!("{api_addr}/sessions")), token)
                 .json(&body)
                 .send()?;
             Ok(resp.text()?)
@@ -181,10 +219,12 @@ fn dispatch_tool(
                 .get("command")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("missing command"))?;
-            let resp = client
-                .post(format!("{api_addr}/sessions/{session_id}/exec"))
-                .json(&json!({"command": command}))
-                .send()?;
+            let resp = authed(
+                client.post(format!("{api_addr}/sessions/{session_id}/exec")),
+                token,
+            )
+            .json(&json!({"command": command}))
+            .send()?;
             Ok(resp.text()?)
         }
 
@@ -196,9 +236,11 @@ fn dispatch_tool(
             // Plain-text variant, not the StyledGrid route -- an agent has
             // no use for character-cell RGB/bold spans built for human
             // rendering clients.
-            let resp = client
-                .get(format!("{api_addr}/sessions/{session_id}/output/text"))
-                .send()?;
+            let resp = authed(
+                client.get(format!("{api_addr}/sessions/{session_id}/output/text")),
+                token,
+            )
+            .send()?;
             Ok(resp.text()?)
         }
 
@@ -211,10 +253,12 @@ fn dispatch_tool(
                 .get("input")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("missing input"))?;
-            let resp = client
-                .post(format!("{api_addr}/sessions/{session_id}/send"))
-                .json(&json!({"input": input}))
-                .send()?;
+            let resp = authed(
+                client.post(format!("{api_addr}/sessions/{session_id}/send")),
+                token,
+            )
+            .json(&json!({"input": input}))
+            .send()?;
             Ok(resp.text()?)
         }
 
@@ -223,9 +267,11 @@ fn dispatch_tool(
                 .get("session_id")
                 .and_then(|v| v.as_i64())
                 .ok_or_else(|| anyhow::anyhow!("missing session_id"))?;
-            let resp = client
-                .delete(format!("{api_addr}/sessions/{session_id}"))
-                .send()?;
+            let resp = authed(
+                client.delete(format!("{api_addr}/sessions/{session_id}")),
+                token,
+            )
+            .send()?;
             Ok(resp.text()?)
         }
 
@@ -237,6 +283,9 @@ fn main() -> anyhow::Result<()> {
     let api_addr =
         std::env::var("MALT_API_ADDR").unwrap_or_else(|_| "http://127.0.0.1:7700".to_string());
     let client = reqwest::blocking::Client::new();
+    // Read once at startup, same as malt-bin -- the Gateway now enforces
+    // real auth, so every tool call needs this to get anything but 401.
+    let token = read_default_api_token();
 
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -249,7 +298,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         let request: Value = serde_json::from_str(&line)?;
-        let response = handle_request(&request, &client, &api_addr);
+        let response = handle_request(&request, &client, &api_addr, token.as_deref());
 
         // Notifications produce Value::Null — no response needed
         if response.is_null() {
@@ -288,7 +337,7 @@ mod tests {
     fn handle_initialize() {
         let req = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}});
         let client = reqwest::blocking::Client::new();
-        let resp = handle_request(&req, &client, "http://localhost:9999");
+        let resp = handle_request(&req, &client, "http://localhost:9999", None);
         assert_eq!(resp["result"]["serverInfo"]["name"], "malt-mcp");
     }
 
@@ -296,7 +345,7 @@ mod tests {
     fn handle_tools_list() {
         let req = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
         let client = reqwest::blocking::Client::new();
-        let resp = handle_request(&req, &client, "http://localhost:9999");
+        let resp = handle_request(&req, &client, "http://localhost:9999", None);
         let tools = resp["result"]["tools"]
             .as_array()
             .expect("tools should be an array");
@@ -307,7 +356,7 @@ mod tests {
     fn handle_unknown_method() {
         let req = json!({"jsonrpc": "2.0", "id": 3, "method": "unknown/method"});
         let client = reqwest::blocking::Client::new();
-        let resp = handle_request(&req, &client, "http://localhost:9999");
+        let resp = handle_request(&req, &client, "http://localhost:9999", None);
         assert!(resp.get("error").is_some());
         assert_eq!(resp["error"]["code"], -32601);
     }
@@ -321,7 +370,7 @@ mod tests {
             "params": {"name": "nonexistent", "arguments": {}}
         });
         let client = reqwest::blocking::Client::new();
-        let resp = handle_request(&req, &client, "http://localhost:9999");
+        let resp = handle_request(&req, &client, "http://localhost:9999", None);
         assert!(resp.get("error").is_some());
     }
 
@@ -329,7 +378,7 @@ mod tests {
     fn handle_notification_returns_null() {
         let req = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
         let client = reqwest::blocking::Client::new();
-        let resp = handle_request(&req, &client, "http://localhost:9999");
+        let resp = handle_request(&req, &client, "http://localhost:9999", None);
         assert!(resp.is_null());
     }
 

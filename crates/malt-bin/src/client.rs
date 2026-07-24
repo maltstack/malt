@@ -90,14 +90,26 @@ pub struct OutputTextData {
 pub struct MaltClient {
     addr: String,
     http: Client,
+    /// Bearer token read once at construction from the same well-known
+    /// file the daemon's `TokenStore::load_or_generate_default` writes
+    /// (`malt_gateway::auth::dirs_token_path()`). `None` if the file
+    /// doesn't exist yet (e.g. daemon never started) -- requests are then
+    /// sent unauthenticated and will get a real 401 from the Gateway,
+    /// which is correct: no local fallback bypasses real enforcement.
+    token: Option<String>,
 }
 
 impl MaltClient {
     pub fn new(addr: &str) -> Self {
         let addr = addr.trim_end_matches('/').to_owned();
+        let token = std::fs::read_to_string(malt_gateway::auth::dirs_token_path())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         Self {
             addr,
             http: Client::new(),
+            token,
         }
     }
 
@@ -105,10 +117,17 @@ impl MaltClient {
         format!("{}{}", self.addr, path)
     }
 
+    /// Attach the bearer token, if we have one, to an outgoing request.
+    fn authed(&self, builder: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+        match &self.token {
+            Some(token) => builder.bearer_auth(token),
+            None => builder,
+        }
+    }
+
     pub fn health(&self) -> Result<HealthData> {
         let resp = self
-            .http
-            .get(self.url("/health"))
+            .authed(self.http.get(self.url("/health")))
             .send()
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<HealthData> = resp.json().context("invalid health response")?;
@@ -116,8 +135,7 @@ impl MaltClient {
     }
 
     pub fn shutdown(&self) -> Result<()> {
-        self.http
-            .post(self.url("/shutdown"))
+        self.authed(self.http.post(self.url("/shutdown")))
             .send()
             .context("failed to reach daemon")?;
         Ok(())
@@ -125,8 +143,7 @@ impl MaltClient {
 
     pub fn list_sessions(&self) -> Result<Vec<SessionData>> {
         let resp = self
-            .http
-            .get(self.url("/sessions"))
+            .authed(self.http.get(self.url("/sessions")))
             .send()
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<Vec<SessionData>> =
@@ -140,8 +157,7 @@ impl MaltClient {
         isolation: Option<&str>,
     ) -> Result<SessionData> {
         let req = self
-            .http
-            .post(self.url("/sessions"))
+            .authed(self.http.post(self.url("/sessions")))
             .json(&CreateSessionRequest::new(name, isolation));
         let resp = req.send().context("failed to reach daemon")?;
         let envelope: ApiEnvelope<SessionData> =
@@ -151,8 +167,7 @@ impl MaltClient {
 
     pub fn destroy_session(&self, id: u32) -> Result<()> {
         let resp = self
-            .http
-            .delete(self.url(&format!("/sessions/{id}")))
+            .authed(self.http.delete(self.url(&format!("/sessions/{id}"))))
             .send()
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<serde_json::Value> =
@@ -163,8 +178,7 @@ impl MaltClient {
 
     pub fn exec_command(&self, id: u32, cmd: &str) -> Result<ExecResultData> {
         let resp = self
-            .http
-            .post(self.url(&format!("/sessions/{id}/exec")))
+            .authed(self.http.post(self.url(&format!("/sessions/{id}/exec"))))
             .json(&serde_json::json!({ "command": cmd }))
             .send()
             .context("failed to reach daemon")?;
@@ -177,8 +191,7 @@ impl MaltClient {
     /// `malt-tui`/`maltty` consume.
     pub fn get_output_text(&self, id: u32) -> Result<OutputTextData> {
         let resp = self
-            .http
-            .get(self.url(&format!("/sessions/{id}/output/text")))
+            .authed(self.http.get(self.url(&format!("/sessions/{id}/output/text"))))
             .send()
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<OutputTextData> =
@@ -188,8 +201,7 @@ impl MaltClient {
 
     pub fn send_input(&self, id: u32, input: &str) -> Result<()> {
         let resp = self
-            .http
-            .post(self.url(&format!("/sessions/{id}/send")))
+            .authed(self.http.post(self.url(&format!("/sessions/{id}/send"))))
             .json(&serde_json::json!({ "input": input }))
             .send()
             .context("failed to reach daemon")?;

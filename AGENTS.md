@@ -175,17 +175,22 @@ malt daemon [--port N]        # Run daemon foreground (HTTP on port, VNP on port
 malt start                    # Start daemon in background
 malt stop                     # Graceful shutdown via /shutdown endpoint
 malt status                   # Show daemon health + session list
-malt new [--name N]           # Create session (spawns in-process mash shell)
+malt new [--name N] [--isolation <bare|restricted|capped|contained>]
+                               # Create session (spawns in-process mash shell)
 malt list                     # List sessions
 malt attach [ID]              # Open TUI connected to session (VNP + HTTP fallback)
 malt exec ID "command"        # Run command via mash, return output
+malt output ID                # Print session's current output as plain text
 malt send ID "input"          # Send raw input to session
 malt kill ID                  # Destroy session
 ```
 
-Isolation tiers are reachable via the gateway API (`POST /sessions` with an
-`isolation` field) but not yet exposed as a `malt new --isolation` flag — see
-`docs/BACKLOG.md`.
+The Gateway now enforces real auth (2026-07-25) — every HTTP route requires
+a bearer token. `malt-bin` and `malt-mcp` read it automatically from
+`~/.config/malt/api-token` (the same file the daemon's `TokenStore` writes on
+first start); nothing to configure for normal CLI/agent use on the same
+machine. See `docs/BACKLOG.md`'s Gateway-auth entry for what does and
+doesn't have a token mechanism yet.
 
 ## What's Implemented
 

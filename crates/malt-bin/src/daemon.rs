@@ -5,9 +5,16 @@ use malt_daemon::executor::pools::PoolConfig;
 use malt_daemon::gateway_backend::DaemonBackend;
 use malt_daemon::store::{DebouncedStore, SessionStore};
 use malt_gateway::auth::TokenStore;
+use malt_gateway::rate_limit::RateLimiter;
 use malt_gateway::server::build_router;
+use malt_gateway::with_auth;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
+
+/// Requests allowed per client per rate-limit window. No per-endpoint or
+/// global tuning yet (see `docs/BACKLOG.md`'s Gateway-hardening items) --
+/// generous enough not to trip on normal interactive/CLI use.
+const RATE_LIMIT_PER_WINDOW: usize = 100;
 
 pub fn run_daemon(port: u16) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
@@ -29,6 +36,7 @@ pub fn run_daemon(port: u16) -> Result<()> {
         let token_store = Arc::new(TokenStore::new());
         let default_token = token_store.load_or_generate_default();
         println!("API token: {default_token}");
+        let rate_limiter = Arc::new(RateLimiter::new(RATE_LIMIT_PER_WINDOW));
 
         let backend = Arc::new(DaemonBackend::new(coordinator.clone()));
 
@@ -36,7 +44,10 @@ pub fn run_daemon(port: u16) -> Result<()> {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let shutdown_tx = Arc::new(shutdown_tx);
 
-        // Add shutdown route to the router
+        // Add shutdown route to the router, then apply auth enforcement --
+        // with_auth() must be the last step so it also covers /shutdown,
+        // not just the routes build_router() defines itself (axum's
+        // .layer() only wraps routes registered before it's called).
         let shutdown_sender = shutdown_tx.clone();
         let router = build_router(backend).route(
             "/shutdown",
@@ -45,6 +56,7 @@ pub fn run_daemon(port: u16) -> Result<()> {
                 axum::Json(serde_json::json!({"ok": true, "data": "shutting down"}))
             }),
         );
+        let router = with_auth(router, token_store, rate_limiter);
 
         let addr = format!("127.0.0.1:{port}");
         println!("malt daemon listening on {addr}");

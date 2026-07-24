@@ -37,17 +37,46 @@ original ten, in order. Each links to its detail below.
 
 ## P0 — blocks daily-driver usability and safe agent use
 
-- **Gateway auth is not enforced anywhere — every route is Admin-equivalent
-  open to any process that can reach the port.** `TokenStore`/`AuthContext`/
-  `RateLimiter` (`crates/malt-gateway/src/auth.rs`, `rate_limit.rs`) are real
-  and well-tested in isolation (8 + 4 tests), but `build_router()`
-  (`crates/malt-gateway/src/server.rs:10-27`) attaches no auth extractor and
-  no rate-limit layer at all. `malt-bin/src/daemon.rs:29-31` generates and
-  prints an "API token" that is never passed into `build_router` or used
-  anywhere. Every `GatewayError::Unauthorized`/`Forbidden`/`RateLimited`
-  variant has a correct HTTP mapping but is never constructed outside
-  tests. Priority 0a — this is not "is `Interact` scope sufficient," it's
-  "nothing is checked at all." See
+- **Gateway auth was not enforced anywhere — FIXED 2026-07-25.** Added
+  `crates/malt-gateway/src/middleware.rs`: a real axum middleware
+  (`with_auth`) wiring the existing `TokenStore`/`AuthContext`/
+  `RateLimiter` into every route. Extracts the `Authorization: Bearer`
+  header, validates it, checks per-route required scope against a table
+  matching architecture.md's scope model (Monitor/Read/Interact/Admin —
+  unrecognized routes fail closed to `Admin`), applies rate limiting, and
+  returns real 401/403/429 via the `GatewayError` variants that already
+  existed but were never constructed. **Must be applied last, after every
+  route including `malt-bin`'s ad hoc `/shutdown`** — axum's `.layer()`
+  only wraps routes registered before it's called, so `build_router()`
+  itself stays auth-free and `daemon.rs` calls `with_auth(router, ...)`
+  as the final step once `/shutdown` is added, or that route would have
+  shipped unauthenticated.
+  **Every first-party client that needs to keep working was updated to
+  send the token**: `malt-bin`'s `MaltClient` and `malt-mcp` both now read
+  the same well-known token file
+  (`malt_gateway::auth::dirs_token_path()`, `~/.config/malt/api-token`)
+  the daemon already wrote and attach it as a bearer token on every
+  request. `malt-mcp` duplicates the path-resolution logic rather than
+  depending on `malt-gateway`, deliberately preserving its
+  zero-internal-dependency design (ADR-0002).
+  **Real, known consequence, not silently introduced**: `malt-tui`'s
+  orphaned HTTP mode and `malt-web` have no token mechanism and will now
+  get 401 on every request. Both were already flagged for freeze/no-further-
+  investment in the client-SDK audit (§5) before this change — `malt-web`
+  in particular has no way to add one without a real design (browser JS
+  can't read `~/.config/malt/api-token`), which is out of scope here as
+  new feature work. `malt-tui`'s VNP mode (the actual `malt attach` path,
+  and the one the audit recommends as the sole reference client) is
+  unaffected — it talks to the VNP socket, not the HTTP Gateway.
+  New tests (`crates/malt-gateway/tests/routes.rs`): all 7 existing route
+  tests updated to send a valid token (proving the change didn't silently
+  loosen anything), plus 5 new tests —
+  `request_with_no_token_is_rejected`, `request_with_invalid_token_is_rejected`,
+  `insufficient_scope_is_forbidden` (a Monitor-scoped token can't create a
+  session), `monitor_scope_can_still_read_health` (the same low-privilege
+  token still works for a Monitor-level route — proves the scope check
+  isn't accidentally requiring Admin everywhere), and
+  `rate_limit_exceeded_is_rejected`. See
   `docs/findings/2026-07-24-audit-client-sdk-surface.md` §4.
 - **The session executor is a single thread blocking on one command queue
   — a long command freezes attach, output, and input for its whole
