@@ -223,25 +223,44 @@ original ten, in order. Each links to its detail below.
   (recommendation 5) and
   `docs/findings/2026-07-24-audit-persistence-restore.md` §1
   (recommendation 2).
-- **`mash::Env::to_snapshot()`/`apply_snapshot()` — a fully-built, tested
-  mechanism for exactly "session state survives daemon restart" — is never
-  called by `malt-daemon`.** `build_persisted_session` only ever captures
-  two scalar strings (`SHELL`, `PWD`) out of a live mash `Env`; everything
-  else — exported and non-exported variables, functions, aliases, jobs,
-  directory stack, traps — is silently dropped on every restart or
-  detach/reattach, and restore creates a brand-new `Env::from_os()`. But
-  `EnvSnapshot` (`crates/mash/src/env.rs:1150-1533`) already captures
-  exactly this, is exercised by 34 passing tests, and was explicitly
-  designed for this per the original Phase 2 spec ("on detach/reattach or
-  daemon restart, the EnvSnapshot is restored and `FOO=bar` is back") —
-  `malt-daemon` has simply never called either method. Same shape of gap
-  as `CommandBlock` above: real subsystem, zero callers. Also needs a
-  schema field (same constraint as the `CommandBlock` persistence gap).
-  Silent, surprising data loss today, not a missing nicety. See
+- **`mash::Env::to_snapshot()`/`apply_snapshot()` wired into persistence —
+  FIXED 2026-07-25, and a real latent bug in `apply_snapshot` itself found
+  and fixed in the process.** Extended `schemas/persist/session.vexil`
+  with `EnvSnapshot`/`PersistedVariable`/`PersistedVarValue`/
+  `PersistedShellOptions` message types and an `env_snapshot:
+  optional<EnvSnapshot>` field on `PersistedPaneType::Shell` (alongside
+  `shell_path`). `build_persisted_session` now calls `env.to_snapshot()`
+  and converts it via a new `to_persisted_env_snapshot()`;
+  `SessionExecutor::spawn_with_cwd` (restore-only) now takes the persisted
+  snapshot, converts it back via `from_persisted_env_snapshot()`, and
+  calls `env.apply_snapshot()` after `Env::from_os()`. Also fixed the
+  adjacent dead `shell_path` round-trip (captured on persist, discarded on
+  restore) in the same change — `spawn_with_cwd` now restores it into the
+  `SHELL` env var.
+  **Real bug found by actually exercising this path for the first time:**
+  `mash::Env::apply_snapshot` (`crates/mash/src/env.rs`) re-parses each
+  function's stored source text, but stored the *entire reparsed
+  top-level command* (a `Command::FunctionDef` node) as the function's
+  `body`, instead of extracting the function's actual inner body from it
+  — a restored function's body was itself a function-definition wrapper,
+  not the function's real logic. The existing unit test
+  (`snapshot_roundtrip_functions`) didn't catch this because it used
+  unrealistic source text (just `"echo hello"`, not a full `"name() {
+  body }"` definition matching what `executor.rs` actually stores) and
+  only checked that a `FunctionDef` entry existed, never that calling the
+  restored function actually worked. Fixed to extract the inner body
+  (matching `executor.rs`'s own `Command::FunctionDef` handling) and
+  rewrote the test to define/snapshot/restore/**call** a real function
+  through `execute_list`, asserting on its actual output. New end-to-end
+  test in the daemon too:
+  `shell_env_state_survives_dormant_restore_via_env_snapshot`
+  (`malt-daemon/tests/gateway_backend.rs`) — creates a session, sets an
+  exported variable + alias + function, forces a dormant→restore cycle by
+  detaching and reattaching against a fresh `Coordinator` reading the same
+  on-disk store (simulating a daemon restart), and confirms all three
+  survive by actually invoking them. See
   `docs/findings/2026-07-24-audit-persistence-restore.md` §4
-  (recommendation 1); also fix the small adjacent dead round-trip where
-  `shell_path` is captured on persist and discarded on restore
-  (`coordinator.rs:540-543`, recommendation 4, trivial, do alongside).
+  (recommendation 1).
 - **Compat-pane session restore is a confirmed stub** —
   `coordinator.rs:547-551` returns `DaemonError::RestoreFailed(id,
   "compat pane restore not yet implemented")`; `spawn_compat` was never

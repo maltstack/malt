@@ -281,14 +281,25 @@ impl SessionExecutor {
         Ok((tx, handle))
     }
 
-    /// Spawn a new session executor on a dedicated thread, setting the working directory.
-    /// If `initial_cwd` is not a directory at spawn time, a warning is logged and the
-    /// OS-inherited cwd is used instead.
+    /// Spawn a new session executor on a dedicated thread, setting the working
+    /// directory and restoring shell state from a prior session.
+    ///
+    /// If `initial_cwd` is not a directory at spawn time, a warning is logged
+    /// and the OS-inherited cwd is used instead. `shell_path`, if present, is
+    /// restored into the `SHELL` env var (previously computed and persisted
+    /// but never read back — see `docs/BACKLOG.md`). `env_snapshot`, if
+    /// present, restores exported/non-exported variables, options, aliases,
+    /// functions, directory stack, and traps via `Env::apply_snapshot` —
+    /// this is the actual fix for "session state silently dropped on
+    /// restart," not just the two scalars (`SHELL`/`PWD`) this function
+    /// already handled.
     pub fn spawn_with_cwd(
         session_id: SessionId,
         first_pane: PaneId,
         isolation: IsolationTier,
         initial_cwd: std::path::PathBuf,
+        shell_path: Option<String>,
+        env_snapshot: Option<mash::env::EnvSnapshot>,
     ) -> Result<(mpsc::Sender<SessionCommand>, JoinHandle<()>), DaemonError> {
         let (tx, rx) = mpsc::channel();
         let handle = thread::Builder::new()
@@ -297,6 +308,17 @@ impl SessionExecutor {
                 let mut env = Env::from_os();
                 env.set_interactive(true);
                 apply_session_isolation(&mut env, session_id.clone(), isolation);
+
+                if let Some(snapshot) = &env_snapshot {
+                    env.apply_snapshot(snapshot);
+                }
+
+                if let Some(shell_path) = shell_path {
+                    if let Err(e) = env.set_global("SHELL", Variable::exported_string(shell_path))
+                    {
+                        warn!(error = %e, "spawn_with_cwd: failed to restore SHELL in mash env");
+                    }
+                }
 
                 if initial_cwd.is_dir() {
                     let cwd_str = initial_cwd.to_string_lossy().to_string();
@@ -698,6 +720,164 @@ impl SessionExecutor {
     }
 }
 
+/// Convert mash's live `EnvSnapshot` to the schema-generated persisted
+/// shape. See `from_persisted_env_snapshot` for the reverse direction.
+fn to_persisted_env_snapshot(
+    snapshot: &mash::env::EnvSnapshot,
+) -> malt_protocol::persist::session::EnvSnapshot {
+    use malt_protocol::persist::session::{
+        EnvSnapshot as PEnvSnapshot, PersistedShellOptions, PersistedVarValue, PersistedVariable,
+    };
+
+    let variables = snapshot
+        .variables
+        .iter()
+        .map(|(name, var)| {
+            let value = match &var.value {
+                mash::env::VarValue::String(s) => PersistedVarValue::Str { value: s.clone() },
+                mash::env::VarValue::Integer(i, formatted) => PersistedVarValue::Int {
+                    value: *i,
+                    formatted: formatted.clone(),
+                },
+                mash::env::VarValue::Array(items) => {
+                    PersistedVarValue::Arr { values: items.clone() }
+                }
+                mash::env::VarValue::AssocArray(map) => PersistedVarValue::AssocArr {
+                    entries: map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                },
+                // VarValue is #[non_exhaustive] in mash -- a future variant
+                // this daemon build doesn't know about yet. Best-effort:
+                // persist it as an empty string rather than failing the
+                // whole snapshot over one unrecognized variable.
+                _ => {
+                    warn!(
+                        variable = %name,
+                        "unrecognized VarValue variant while snapshotting env; persisting as empty string"
+                    );
+                    PersistedVarValue::Str {
+                        value: String::new(),
+                    }
+                }
+            };
+            (
+                name.clone(),
+                PersistedVariable {
+                    value,
+                    exported: var.exported,
+                    readonly: var.readonly,
+                    integer: var.integer,
+                    _unknown: vec![],
+                },
+            )
+        })
+        .collect();
+
+    let options = PersistedShellOptions {
+        allexport: snapshot.options.allexport,
+        errexit: snapshot.options.errexit,
+        nounset: snapshot.options.nounset,
+        pipefail: snapshot.options.pipefail,
+        xtrace: snapshot.options.xtrace,
+        verbose: snapshot.options.verbose,
+        noglob: snapshot.options.noglob,
+        notify: snapshot.options.notify,
+        monitor: snapshot.options.monitor,
+        noclobber: snapshot.options.noclobber,
+        noexec: snapshot.options.noexec,
+        nonlexicalctrl: snapshot.options.nonlexicalctrl,
+        hash_cmds: snapshot.options.hash_cmds,
+        nolog: snapshot.options.nolog,
+        sourcepath: snapshot.options.sourcepath,
+        _unknown: vec![],
+    };
+
+    PEnvSnapshot {
+        variables,
+        options,
+        aliases: snapshot.aliases.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        functions: snapshot
+            .functions
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        dir_stack: snapshot.dir_stack.clone(),
+        cwd: snapshot.cwd.clone(),
+        traps: snapshot.traps.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        _unknown: vec![],
+    }
+}
+
+/// Convert a schema-generated persisted `EnvSnapshot` back to mash's live
+/// shape, for `Env::apply_snapshot`. Reverse of `to_persisted_env_snapshot`.
+pub(crate) fn from_persisted_env_snapshot(
+    persisted: &malt_protocol::persist::session::EnvSnapshot,
+) -> mash::env::EnvSnapshot {
+    use malt_protocol::persist::session::PersistedVarValue;
+
+    let variables = persisted
+        .variables
+        .iter()
+        .map(|(name, pv)| {
+            let value = match &pv.value {
+                PersistedVarValue::Str { value } => mash::env::VarValue::String(value.clone()),
+                PersistedVarValue::Int { value, formatted } => {
+                    mash::env::VarValue::Integer(*value, formatted.clone())
+                }
+                PersistedVarValue::Arr { values } => mash::env::VarValue::Array(values.clone()),
+                PersistedVarValue::AssocArr { entries } => mash::env::VarValue::AssocArray(
+                    entries.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                ),
+                // PersistedVarValue is #[non_exhaustive] too (includes the
+                // schema's own forward-compat `Unknown` variant) -- treat
+                // anything unrecognized as an empty string rather than
+                // failing the whole restore over one variable.
+                _ => mash::env::VarValue::String(String::new()),
+            };
+            (
+                name.clone(),
+                mash::env::Variable {
+                    value,
+                    exported: pv.exported,
+                    readonly: pv.readonly,
+                    integer: pv.integer,
+                },
+            )
+        })
+        .collect();
+
+    let options = mash::env::ShellOptions {
+        allexport: persisted.options.allexport,
+        errexit: persisted.options.errexit,
+        nounset: persisted.options.nounset,
+        pipefail: persisted.options.pipefail,
+        xtrace: persisted.options.xtrace,
+        verbose: persisted.options.verbose,
+        noglob: persisted.options.noglob,
+        notify: persisted.options.notify,
+        monitor: persisted.options.monitor,
+        noclobber: persisted.options.noclobber,
+        noexec: persisted.options.noexec,
+        nonlexicalctrl: persisted.options.nonlexicalctrl,
+        hash_cmds: persisted.options.hash_cmds,
+        nolog: persisted.options.nolog,
+        sourcepath: persisted.options.sourcepath,
+    };
+
+    mash::env::EnvSnapshot {
+        variables,
+        options,
+        aliases: persisted.aliases.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        functions: persisted
+            .functions
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        dir_stack: persisted.dir_stack.clone(),
+        cwd: persisted.cwd.clone(),
+        traps: persisted.traps.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+    }
+}
+
 /// Build a `PersistedSession` from current runtime state.
 ///
 /// Called from the `Snapshot` command handler — runs on the session thread,
@@ -734,10 +914,15 @@ fn build_persisted_session(
         }
     };
 
+    let env_snapshot = Some(to_persisted_env_snapshot(&env.to_snapshot()));
+
     let pane = PersistedPane {
         cwd,
         title: None,
-        pane_type: PersistedPaneType::Shell { shell_path },
+        pane_type: PersistedPaneType::Shell {
+            shell_path,
+            env_snapshot,
+        },
         _unknown: vec![],
     };
 

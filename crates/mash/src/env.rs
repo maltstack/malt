@@ -1184,18 +1184,35 @@ impl Env {
         self.aliases = snapshot.aliases.clone();
         self.dir_stack = snapshot.dir_stack.clone();
 
-        // Re-parse function source texts
+        // Re-parse function source texts. `source` is the *whole* definition
+        // statement ("name() { body }"), matching how it was captured in
+        // executor.rs's `Command::FunctionDef` handling — so the reparsed
+        // top-level command is itself a `FunctionDef` node, and the inner
+        // `body` must be extracted from it. Storing the whole reparsed node
+        // as `FunctionDef.body` (as this used to do) would make every
+        // restored function's body a `FunctionDef` wrapping the real body
+        // instead of the real body itself.
         for (name, source) in &snapshot.functions {
             match parser::parse(source) {
                 Ok(mut cmds) if !cmds.is_empty() => {
-                    let body = cmds.remove(0);
-                    self.functions.insert(
-                        name.clone(),
-                        FunctionDef {
-                            source: source.clone(),
-                            body,
-                        },
-                    );
+                    let parsed = cmds.remove(0);
+                    match &parsed.node {
+                        Command::FunctionDef { body, .. } => {
+                            self.functions.insert(
+                                name.clone(),
+                                FunctionDef {
+                                    source: source.clone(),
+                                    body: body.as_ref().clone(),
+                                },
+                            );
+                        }
+                        _ => {
+                            tracing::warn!(
+                                "function '{}' snapshot source did not reparse as a function definition",
+                                name
+                            );
+                        }
+                    }
                 }
                 _ => {
                     // Log warning but don't fail — invalid function source is non-fatal

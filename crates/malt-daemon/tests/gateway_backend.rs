@@ -12,6 +12,24 @@ fn make_backend() -> DaemonBackend {
     DaemonBackend::new(coordinator)
 }
 
+fn make_backend_with_store(dir: &tempfile::TempDir) -> DaemonBackend {
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
+    DaemonBackend::new(coordinator)
+}
+
+fn test_caps() -> malt_protocol::common::ClientCapabilities {
+    malt_protocol::common::ClientCapabilities {
+        color_depth: malt_protocol::common::ColorDepth::TrueColor,
+        unicode: malt_protocol::common::UnicodeLevel::Full,
+        image_protocol: malt_protocol::common::ImageProtocol::None,
+        overlay: false,
+        vt_passthrough: true,
+        max_fps: 60,
+        _unknown: Vec::new(),
+    }
+}
+
 #[test]
 fn list_sessions_empty() {
     let backend = make_backend();
@@ -181,5 +199,79 @@ fn exec_reports_stderr_separately_from_stdout() {
     assert!(
         !result.output.contains("err-text"),
         "stderr text must not leak into the stdout field"
+    );
+}
+
+#[test]
+fn shell_env_state_survives_dormant_restore_via_env_snapshot() {
+    use malt_protocol::common::SessionId;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let session_id;
+    {
+        let backend = make_backend_with_store(&dir);
+        let created = backend.create_session(None, None).unwrap();
+        session_id = created.id;
+
+        // Set state across every category EnvSnapshot is supposed to carry:
+        // an exported variable, an alias, and a function.
+        backend
+            .exec_command(
+                session_id,
+                "export MALT_SNAPSHOT_TEST=hello; alias mysnapalias='echo aliased'; \
+                 mysnapfunc() { echo funced; }"
+                    .to_string(),
+            )
+            .unwrap();
+
+        // Detaching the only attached client transitions the session to
+        // Dormant, which snapshots it (build_persisted_session ->
+        // to_persisted_env_snapshot) and persists it to the store.
+        let coord_arc = backend.coordinator().clone();
+        let mut coord = coord_arc.lock().unwrap();
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+        coord
+            .register_vnp_client(SessionId(session_id), 1, test_caps(), render_tx)
+            .unwrap();
+        coord.unregister_vnp_client(SessionId(session_id), 1).unwrap();
+    }
+
+    // Simulate a daemon restart: fresh Coordinator/DaemonBackend reading the
+    // same on-disk store. The session should be Dormant; re-attaching
+    // restores it via SessionExecutor::spawn_with_cwd, which now applies the
+    // persisted EnvSnapshot.
+    let backend2 = make_backend_with_store(&dir);
+    {
+        let coord_arc = backend2.coordinator().clone();
+        let mut coord = coord_arc.lock().unwrap();
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+        coord
+            .register_vnp_client(SessionId(session_id), 2, test_caps(), render_tx)
+            .unwrap();
+    }
+
+    let result = backend2
+        .exec_command(
+            session_id,
+            "echo \"var=$MALT_SNAPSHOT_TEST\"; mysnapalias; mysnapfunc".to_string(),
+        )
+        .unwrap();
+
+    assert!(
+        result.output.contains("var=hello"),
+        "exported variable must survive dormant->restore via EnvSnapshot, got: {:?}",
+        result.output
+    );
+    assert!(
+        result.output.contains("aliased"),
+        "alias must survive dormant->restore via EnvSnapshot, got: {:?}",
+        result.output
+    );
+    assert!(
+        result.output.contains("funced"),
+        "function must survive dormant->restore via EnvSnapshot, got output: {:?}, stderr: {:?}",
+        result.output,
+        result.stderr
     );
 }

@@ -576,9 +576,22 @@ impl Coordinator {
         let cwd = std::path::PathBuf::from(&pane.cwd);
 
         let (cmd_tx, thread) = match &pane.pane_type {
-            malt_protocol::persist::session::PersistedPaneType::Shell { .. } => {
-                SessionExecutor::spawn_with_cwd(id.clone(), pane_id, session_isolation, cwd)
-                    .map_err(|e| DaemonError::RestoreFailed(id.clone(), e.to_string()))?
+            malt_protocol::persist::session::PersistedPaneType::Shell {
+                shell_path,
+                env_snapshot,
+            } => {
+                let env_snapshot = env_snapshot
+                    .as_ref()
+                    .map(crate::executor::session_thread::from_persisted_env_snapshot);
+                SessionExecutor::spawn_with_cwd(
+                    id.clone(),
+                    pane_id,
+                    session_isolation,
+                    cwd,
+                    Some(shell_path.clone()),
+                    env_snapshot,
+                )
+                .map_err(|e| DaemonError::RestoreFailed(id.clone(), e.to_string()))?
             }
             malt_protocol::persist::session::PersistedPaneType::App { .. } => {
                 return Err(DaemonError::AppRestoreNotSupported);

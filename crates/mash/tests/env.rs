@@ -323,16 +323,39 @@ fn snapshot_roundtrip_variables() {
 
 #[test]
 fn snapshot_roundtrip_functions() {
-    let mut env = Env::empty();
-    let body = mash::parser::parse("echo hello").unwrap().remove(0);
-    env.define_function("greet".into(), "echo hello".into(), body);
+    // Use a real, full function-definition statement (as
+    // executor.rs::execute_inner's Command::FunctionDef handling actually
+    // stores in `FunctionDef.source` -- the whole "name() { body }" text,
+    // not just the inner body) and verify the restored function actually
+    // *runs* correctly, not just that an entry with the right name exists.
+    // A prior version of this test used unrealistic source text ("echo
+    // hello" instead of "greet() { echo hello; }") and only checked
+    // `get_function(..).is_some()`, which passed even though
+    // `apply_snapshot` was storing the wrong `body` (the whole reparsed
+    // `FunctionDef` node instead of its inner body) -- a real bug, only
+    // caught once something actually executed the restored function.
+    let mut env = Env::from_os();
+    let cmds = mash::parser::parse("greet() { echo hello; }").unwrap();
+    mash::executor::execute_list(&cmds, "greet() { echo hello; }", &mut env);
 
     let snapshot = env.to_snapshot();
-    assert_eq!(snapshot.functions.get("greet").unwrap(), "echo hello");
+    assert_eq!(
+        snapshot.functions.get("greet").unwrap(),
+        "greet() { echo hello; }"
+    );
 
-    let mut restored = Env::empty();
+    let mut restored = Env::from_os();
     restored.apply_snapshot(&snapshot);
     assert!(restored.get_function("greet").is_some());
+
+    let call_cmds = mash::parser::parse("greet").unwrap();
+    let result = mash::executor::execute_list(&call_cmds, "greet", &mut restored);
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout),
+        "hello\n",
+        "the restored function must actually execute its real body, not a \
+         mis-stored FunctionDef node"
+    );
 }
 
 #[test]

@@ -24,6 +24,7 @@ fn make_session(id: u32) -> PersistedSession {
                     title: Some("bash".to_string()),
                     pane_type: PersistedPaneType::Shell {
                         shell_path: "/bin/bash".to_string(),
+                        env_snapshot: None,
                     },
                     _unknown: Vec::new(),
                 },
@@ -241,6 +242,7 @@ fn roundtrip_complex_layout() {
                     title: Some("left".to_string()),
                     pane_type: PersistedPaneType::Shell {
                         shell_path: "/bin/bash".to_string(),
+                        env_snapshot: None,
                     },
                     _unknown: Vec::new(),
                 },
@@ -252,6 +254,7 @@ fn roundtrip_complex_layout() {
                     title: Some("right".to_string()),
                     pane_type: PersistedPaneType::Shell {
                         shell_path: "/bin/bash".to_string(),
+                        env_snapshot: None,
                     },
                     _unknown: Vec::new(),
                 },

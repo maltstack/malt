@@ -28,7 +28,61 @@ message PersistedPane {
 @non_exhaustive
 @doc("Discriminated pane type with type-specific restoration data.")
 union PersistedPaneType {
-    Shell  @0 { shell_path @0 : string }
+    Shell  @0 { shell_path @0 : string  env_snapshot @1 : optional<EnvSnapshot> }
     App    @1 { app_id @0 : string  config @1 : optional<bytes> }
     Compat @2 { program @0 : string  args @1 : array<string> }
+}
+
+@non_exhaustive
+@doc("Persisted mash shell variable value. Mirrors mash::env::VarValue.")
+union PersistedVarValue {
+    Str      @0 { value @0 : string }
+    Int      @1 { value @0 : i64  formatted @1 : string }
+    Arr      @2 { values @0 : array<optional<string>> }
+    AssocArr @3 { entries @0 : map<string, string> }
+}
+
+@doc("Persisted mash shell variable. Mirrors mash::env::Variable.")
+message PersistedVariable {
+    value    @0 : PersistedVarValue
+    exported @1 : bool
+    readonly @2 : bool
+    integer  @3 : bool
+}
+
+@doc("Persisted mash shell options. Mirrors mash::env::ShellOptions.")
+message PersistedShellOptions {
+    allexport      @0  : bool
+    errexit        @1  : bool
+    nounset        @2  : bool
+    pipefail       @3  : bool
+    xtrace         @4  : bool
+    verbose        @5  : bool
+    noglob         @6  : bool
+    notify         @7  : bool
+    monitor        @8  : bool
+    noclobber      @9  : bool
+    noexec         @10 : bool
+    nonlexicalctrl @11 : bool
+    hash_cmds      @12 : bool
+    nolog          @13 : bool
+    sourcepath     @14 : bool
+}
+
+@doc("Persisted mash shell environment: exported/non-exported variables,")
+@doc("aliases, function source text (re-parsed on restore), directory")
+@doc("stack, cwd, and signal traps. Mirrors mash::env::EnvSnapshot -- built")
+@doc("for exactly this (session-scoped persistence across daemon restart /")
+@doc("detach-reattach) but not previously wired into the daemon's own")
+@doc("persistence path. See docs/BACKLOG.md.")
+message EnvSnapshot {
+    variables @0 : map<string, PersistedVariable>
+    options   @1 : PersistedShellOptions
+    aliases   @2 : map<string, string>
+    @doc("name -> source text, re-parsed on restore")
+    functions @3 : map<string, string>
+    dir_stack @4 : array<string>
+    cwd       @5 : string
+    @doc("signal -> action string")
+    traps     @6 : map<string, string>
 }

@@ -332,9 +332,15 @@ fn spawn_with_cwd_uses_provided_directory() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().to_path_buf();
 
-    let (cmd_tx, _thread) =
-        SessionExecutor::spawn_with_cwd(SessionId(1), PaneId(1), IsolationTier::Bare, cwd.clone())
-            .unwrap();
+    let (cmd_tx, _thread) = SessionExecutor::spawn_with_cwd(
+        SessionId(1),
+        PaneId(1),
+        IsolationTier::Bare,
+        cwd.clone(),
+        None,
+        None,
+    )
+    .unwrap();
 
     let (reply_tx, reply_rx) = mpsc::channel();
     cmd_tx
