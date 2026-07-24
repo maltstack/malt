@@ -14,29 +14,25 @@
 
 This is the standard for every change, regardless of scope.
 
-## Context Engine
-
-**Always use the context-engine MCP tools** for codebase work in this repo:
-
-- `context_status` + `session_update` — register/update the session at start and end
-- `context_search` / `find_path` — semantic search before raw Grep/Glob
-- `file_skeleton` — understand a file's structure before editing
-- `impact_graph` — check blast radius before changing a file
-- `save_observation` — record notable findings during exploration
-- `context_dependency_search` / `context_dependency_index` — dependency questions
 
 ## What is MALT?
 
 MALT (structured terminal platform) inverts the traditional terminal model: the daemon is the authority, not the renderer. The daemon owns session state, layout, pane identity, and structured output. Clients are interchangeable consumers of a typed RenderCommand stream. All inter-component communication uses VNP (Vexil Native Protocol) — typed, schema-defined, bitpack-encoded messages.
 
-**Current state:** Foundation + Phase A + Phase B1 implemented. 18 Rust crates + 1 SvelteKit web client. ~885 tests across 63 non-empty test suites. The `malt` command starts a daemon with an in-process mash (POSIX shell), serves HTTP + VNP socket APIs, and opens an interactive TUI. Full VNP bitpack encoding used end-to-end (no JSON post-handshake). Real `.vx` config file loading wired. Session store hardened (.bak backup, corruption quarantine, debounced 1s flush, XDG-compliant data dir, counter restore on startup). MCP server available for AI agents. WASM plugin host ready. GPU terminal (maltty) scaffolded. Many architecture spec features remain unimplemented — see Implementation Roadmap below.
+**Current state:** Foundation + Phase A + Phase B1 implemented. 18 Rust crates + 1 SvelteKit web client. 1,200+ tests, all green (verified 2026-07-24 after a 3.5-month dormancy). The `malt` command starts a daemon with an in-process mash (POSIX shell), serves HTTP + VNP socket APIs, and opens an interactive TUI. Full VNP bitpack encoding used end-to-end (no JSON post-handshake). Real `.vx` config file loading wired. Session store hardened (.bak backup, corruption quarantine, debounced 1s flush, XDG-compliant data dir, counter restore on startup). MCP server available for AI agents. WASM plugin host ready. GPU terminal (maltty) scaffolded. Many architecture spec features remain unimplemented — see Implementation Roadmap below.
 
 ## Project Relationships
 
 ```
-orix/vexil-lang/    Vexil schema language compiler + runtime (v0.1.0)
+orix/vexil-lang/    Vexil schema language compiler + runtime — actively developed, MALT's build dependency
 orix/malt/          This repo — MALT terminal platform
-orix/vexil-v2/      Legacy prototype — source for porting
+orix/vexil-v2/      Legacy prototype — reference only, deprecated donor for the carboy extraction
+orix/malt-stack/    Sibling substrate project (Carboy/Keg/Kettle/Hops/Cask/Tap) — do NOT depend on.
+                    MALT briefly depended on carboy/keg (2026-04-11, uncommitted); reverted 2026-07-24.
+                    Full reverted state preserved on branch checkpoint/pre-carboy-revert-2026-07-24.
+                    If porting anything from carboy-isolation (it has broader OS coverage than
+                    malt-platform::isolation — AppContainer/HCS/CRIU/capability-probing), vendor the
+                    code in as owned source. Never add a path/git dependency on malt-stack.
 ```
 
 MALT depends on `vexil-lang` for schema compilation and `vexil-runtime` for encode/decode. The `vexil-store` crate (in vexil-lang workspace) provides `.vx`/`.vxb` persistence formats.
@@ -46,23 +42,39 @@ MALT depends on `vexil-lang` for schema compilation and `vexil-runtime` for enco
 ## Repo Structure
 
 ```
-specs/
-  architecture.md              # Single source of truth (~2,380 lines)
-docs/superpowers/
-  specs/                       # Sub-project design specs (3A-3F, 4.1-4.2, integration)
-  plans/                       # Implementation plans
+specs/                        # GitHub Spec Kit territory (adopted 2026-07-24) — per-feature
+                               # specs/NNN-feature-name/{spec,plan,tasks}.md, created by
+                               # /speckit-specify. Empty until the first feature uses it.
+.specify/                     # Spec Kit config, templates, constitution (.specify/memory/constitution.md)
+.claude/skills/speckit-*/     # Spec Kit's Claude Code skills — /speckit-constitution,
+                               # /speckit-specify, /speckit-plan, /speckit-tasks, /speckit-implement,
+                               # /speckit-converge, plus optional clarify/analyze/checklist/taskstoissues
+docs/
+  design/
+    architecture.md            # Single source of truth (~2,380 lines) — moved from specs/
+                                # 2026-07-24 to free that path for Spec Kit
+    legacy-specs/               # The old specs/ directory's phase0-2 build specs — historical,
+                                # point-in-time, not living docs. Reference only.
+  adr/                         # Architecture decisions and their reasoning — check before
+                                # re-deciding something already settled (e.g. ADR-0001: malt-stack)
+  findings/                    # Dated evidence from actually running/testing the product —
+                                # not conclusions, the "how do we know this" record
+  BACKLOG.md                   # Living, prioritized "what's next and why" — check before
+                                # picking up new work
+docs/superpowers/              # DEPRECATED 2026-07-24 — no longer used, no new content goes here.
+                                # Historical specs/plans left as point-in-time record.
 crates/
-  malt-protocol/               # L0: VNP types, framing, envelope, codec (46 tests)
-  malt-platform/               # L0: PTY, process, signals, sockets (25 tests)
+  malt-protocol/               # L0: VNP types, framing, envelope, codec (60 tests)
+  malt-platform/               # L0: PTY, process, signals, sockets, isolation (77 tests; isolation/ not yet wired into malt-daemon)
   malt-config/                 # L0: Config loading, VxDecoder, real .vx parsing (17 tests)
-  mash/                        # L1: POSIX shell — lexer, parser, expander, executor (330 tests)
+  mash/                        # L1: POSIX shell — lexer, parser, expander, executor (600+ tests, plus 183/183 Smoosh POSIX conformance on native Windows)
   malt-term/                   # L1: Line editor — vi/emacs, completion, history (41 tests)
-  malt-tools/                  # L1: In-process POSIX utilities (40 tests)
+  malt-tools/                  # L1: In-process POSIX utilities (80 tests)
   malt-layout/                 # L1: Layout engine — n-ary tree, resolution, focus (48 tests)
   malt-session/                # L1: Session lifecycle, pane runtime, groups (23 tests)
-  malt-elevate/                # Elevated helper binary (17 tests)
-  malt-daemon/                 # L2: Daemon core (120 tests)
-  malt-compat/                 # L2: VT emulator — vte 0.15 parser + grid (22 tests)
+  malt-elevate/                # Elevated helper binary (17 tests; only CreateSymlink is real, other ops stub)
+  malt-daemon/                 # L2: Daemon core (126 tests)
+  malt-compat/                 # L2: VT emulator — vte 0.15 parser + grid (26 tests)
   malt-renderer/               # L2: Renderer host — walker, dirty, client state (29 tests)
   malt-gateway/                # L2: HTTP API — axum, auth, rate limiting (22 tests)
   malt-plugin-sdk/             # L3: WASM plugin host — wasmtime, fuel budgets (5 tests)
@@ -192,7 +204,7 @@ malt kill ID                  # Destroy session
 
 ## Implementation Roadmap
 
-Goal: fully realize `specs/architecture.md`. Every phase is production-ready before starting the next.
+Goal: fully realize `docs/design/architecture.md`. Every phase is production-ready before starting the next.
 Audit baseline: `docs/baseline-audit-2026-03-31.md`.
 
 ### Phase A — Foundation Hardening ✅ COMPLETE
@@ -251,7 +263,12 @@ Audit baseline: `docs/baseline-audit-2026-03-31.md`.
 - Plugin startup lifecycle: `[startup]` manifest section (daemon/session hooks, priority 0–100, lazy flag)
 - User overrides: `~/.config/malt/startup.vx`
 - Plugin output filtering: declare command patterns (e.g. `cargo *`), Plugin Host routes OutputChunks to matching plugins only
-- `malt-app-sdk` crate: App trait with VNP-connected mode + standalone ratatui fallback
+- `malt-app-sdk` crate: App trait with VNP-connected mode + standalone ratatui fallback.
+  Not the same thing as `malt-tui` (already built, malt's own first-party client) —
+  this is the still-unbuilt third-party app-authoring SDK per architecture.md §7,
+  re-exporting only the stable FrameElement core-primitive subset for external
+  developers building their own malt apps. Easy to conflate with malt-tui because
+  the "dual-mode runner" wording is similar; they are distinct crates.
 - `malt plugin audit` command
 - Specific latency SLO enforcement: < 5ms keystroke, < 10ms prompt, < 50ms output parser
 

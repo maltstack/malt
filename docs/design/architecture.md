@@ -1340,6 +1340,12 @@ L2  malt-daemon          Daemon core: message bus, scheduler, session store,
 
 L3  malt-plugin-sdk      WASM plugin SDK, #[plugin] macro
 L3  malt-app-sdk         App trait, dual-mode runner (VNP + standalone fallback)
+                         [status 2026-07-24: NOT built. Distinct from `malt-tui`
+                         (malt's own first-party client, which does exist) —
+                         malt-app-sdk is the still-unbuilt third-party app-authoring
+                         SDK described in §7 (re-exports only the stable FrameElement
+                         core-primitive subset, own semver line). See CLAUDE.md
+                         Phase G roadmap.]
 L3  malt-bin             CLI entry point (`malt` command, daemon lifecycle,
                          service install/uninstall/status, privilege mode dispatch)
 
@@ -2300,8 +2306,15 @@ Feature status per platform at v1.0 target. "Full" = complete implementation.
 | **Service model: user service** | Full (systemd --user) | Full (Task Scheduler / user-mode service) | Full (LaunchAgents) | |
 | **Service model: system service** | Full (systemd) | Full (Windows Service) | Full (LaunchDaemons) | |
 | **Compat Translator out-of-process** | Full (Unix socket IPC) | Full (named pipe IPC) | Full (Unix socket IPC) | |
-| **malt-elevate** | Full (Unix socket, SO_PEERCRED, /proc/pid/exe) | Full (named pipe, GetNamedPipeClientProcessId, GetProcessTimes) | Full (Unix socket, SO_PEERCRED, code signature verification via SecCodeCopySigningInformation) | macOS uses code signing instead of /proc/pid/exe |
+| **malt-elevate** [1] | Full (Unix socket, SO_PEERCRED, /proc/pid/exe) | Full (named pipe, GetNamedPipeClientProcessId, GetProcessTimes) | Full (Unix socket, SO_PEERCRED, code signature verification via SecCodeCopySigningInformation) | macOS uses code signing instead of /proc/pid/exe |
 | **Network isolation (veth/bridge)** | Full | None (Windows networking is different) | None | Windows: network isolation via HCS only (Contained tier) |
+
+[1] This row rates the IPC transport and nonce-auth layer only (`protocol.rs`/`auth.rs`),
+which is genuinely complete on all three platforms. It does not mean the privileged
+*operations* dispatched over that transport are implemented: as of 2026-07-24, only
+`CreateSymlink` does real work in `dispatch.rs` — CreateNamespace, MountOverlay,
+SetCgroup, SetupNetns, ApplySeccomp, CreateRestrictedToken, ManageHcsContainer,
+ApplySeatbelt, and BindPort all return stub success without performing the operation.
 
 **v1.0 cross-platform launch requirement:** All three platforms must support
 Bare + Restricted + foreground + user service + Compat Translator +
