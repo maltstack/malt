@@ -148,6 +148,13 @@ impl GatewayBackend for DaemonBackend {
         }))
     }
 
+    fn get_output_text(&self, session_id: u32) -> Result<String, GatewayError> {
+        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+        coord
+            .get_session_output_text(SessionId(session_id))
+            .map_err(|e| GatewayError::Internal(e.to_string()))
+    }
+
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError> {
         let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
         if !coord.has_session(SessionId(session_id)) {

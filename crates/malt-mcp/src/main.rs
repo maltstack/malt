@@ -182,8 +182,11 @@ fn dispatch_tool(
                 .get("session_id")
                 .and_then(|v| v.as_i64())
                 .ok_or_else(|| anyhow::anyhow!("missing session_id"))?;
+            // Plain-text variant, not the StyledGrid route -- an agent has
+            // no use for character-cell RGB/bold spans built for human
+            // rendering clients.
             let resp = client
-                .get(format!("{api_addr}/sessions/{session_id}/output"))
+                .get(format!("{api_addr}/sessions/{session_id}/output/text"))
                 .send()?;
             Ok(resp.text()?)
         }

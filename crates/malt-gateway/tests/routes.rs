@@ -91,6 +91,13 @@ impl GatewayBackend for MockBackend {
         Ok(serde_json::json!({"lines": []}))
     }
 
+    fn get_output_text(&self, session_id: u32) -> Result<String, GatewayError> {
+        if !self.sessions.iter().any(|s| s.id == session_id) {
+            return Err(GatewayError::SessionNotFound(session_id));
+        }
+        Ok("mock plain text output".to_string())
+    }
+
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError> {
         if !self.sessions.iter().any(|s| s.id == session_id) {
             return Err(GatewayError::SessionNotFound(session_id));
@@ -248,6 +255,30 @@ async fn destroy_session() {
         .to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["ok"], true);
+}
+
+#[tokio::test]
+async fn output_text_returns_plain_text_shape() {
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/1/output/text")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["data"]["type"], "PlainText");
+    assert_eq!(json["data"]["text"], "mock plain text output");
 }
 
 #[tokio::test]

@@ -174,7 +174,7 @@ impl Coordinator {
         Ok(session_id)
     }
 
-    /// Get the current output text for a session.
+    /// Get the current output text for a session, as styled-grid JSON.
     pub fn get_session_output(&self, session_id: SessionId) -> Result<String, DaemonError> {
         let handle = self
             .sessions
@@ -185,6 +185,27 @@ impl Coordinator {
                 let (reply_tx, reply_rx) = mpsc::channel();
                 cmd_tx
                     .send(SessionCommand::GetOutput { reply: reply_tx })
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
+                reply_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+            }
+            SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
+    }
+
+    /// Get the current output text for a session, as plain text with no
+    /// styling — for programmatic/agent consumption.
+    pub fn get_session_output_text(&self, session_id: SessionId) -> Result<String, DaemonError> {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                cmd_tx
+                    .send(SessionCommand::GetOutputText { reply: reply_tx })
                     .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
                 reply_rx
                     .recv_timeout(std::time::Duration::from_secs(2))

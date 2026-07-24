@@ -24,6 +24,10 @@ pub trait GatewayBackend: Send + Sync + 'static {
 
     fn get_output(&self, session_id: u32) -> Result<serde_json::Value, GatewayError>;
 
+    /// Plain-text variant of `get_output`, for programmatic/agent
+    /// consumption — same underlying content, no styling.
+    fn get_output_text(&self, session_id: u32) -> Result<String, GatewayError>;
+
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError>;
 
     fn split_pane(

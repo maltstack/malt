@@ -65,3 +65,15 @@ pub async fn output(
     let data = backend.get_output(id)?;
     Ok(Json(ApiResponse::success(data)))
 }
+
+/// Plain-text variant of `output`, for programmatic/agent consumption.
+pub async fn output_text(
+    State(backend): State<Arc<dyn GatewayBackend>>,
+    Path(id): Path<u32>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, GatewayError> {
+    let text = backend.get_output_text(id)?;
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "type": "PlainText",
+        "text": text,
+    }))))
+}

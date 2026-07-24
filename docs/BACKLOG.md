@@ -282,24 +282,26 @@ original ten, in order. Each links to its detail below.
   touch points in
   `docs/findings/2026-07-24-audit-isolation-safety.md` (item 7 and the
   Proposal section).
-- **Agent-facing `get_output` returns the wrong representation — the
-  human rendering pipeline, not something built for a program to parse.**
-  Confirmed still `StyledGrid` end-to-end
-  (`crates/gateway/src/routes/sessions.rs:61-67` →
-  `gateway_backend.rs:136-148` → `session_thread.rs::get_grid_output`).
-  Zero plain-text/structured variant exists anywhere, including
-  client-side in `malt-mcp` (bare passthrough). `exec`'s response is
-  already plain-text-shaped after today's fix; `get_output` (used for
-  monitoring ongoing/backgrounded sessions) isn't. Two-tier fix: cheap
-  now — add `get_plain_text_output()` next to `get_grid_output()`, walking
-  the same grid cells but emitting characters only, wired through a new
-  command variant/format param and gateway route, leaving the existing
-  `StyledGrid` route untouched for `malt-tui`/`maltty`. Real fix — deferred
-  to the `CommandBlock`/execution-resource work above, since true
-  stdout/stderr separation with command-boundary framing needs the
-  per-command captured-output buffer ADR-0002 already flags as
-  undecided. See
-  `docs/findings/2026-07-24-audit-execution-correctness.md` §1
+- **Agent-facing `get_output` returned the wrong representation — cheap
+  tier FIXED 2026-07-24.** Added `get_plain_text_output()`
+  (`session_thread.rs`, next to `get_grid_output()`) walking the same
+  `TerminalGrid` cells but emitting characters only, no span/style JSON; a
+  new `SessionCommand::GetOutputText` variant; `Coordinator::get_session_output_text`;
+  a new `GatewayBackend::get_output_text` trait method; and a new route,
+  `GET /sessions/{id}/output/text`, left alongside the existing
+  `StyledGrid` route (`GET /sessions/{id}/output`) rather than replacing
+  it — `malt-tui`/`maltty` still need the styled one. **`malt-mcp`'s
+  `get_output` tool now calls the new text route instead of the grid
+  one** — this is the actual fix for the agent-facing bug, not just an
+  unused addition. New tests:
+  `get_output_text_returns_plain_text_matching_executed_output` (real
+  `Coordinator`, asserts real command output round-trips with no JSON
+  span markup) and `output_text_returns_plain_text_shape` (route-level).
+  Real fix — still deferred to the `CommandBlock`/execution-resource work
+  above, since true stdout/stderr separation with command-boundary
+  framing (not just "whatever's on screen right now") needs the
+  per-command captured-output buffer ADR-0002 already flags as undecided.
+  See `docs/findings/2026-07-24-audit-execution-correctness.md` §1
   (recommendation 2). Also recording a considered non-decision so it
   doesn't get re-litigated: Agent Client Protocol (ACP) was evaluated and
   doesn't apply — different actor model (ACP's client hosts an embedded

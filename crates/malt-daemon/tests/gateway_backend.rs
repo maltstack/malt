@@ -74,6 +74,27 @@ fn exec_reports_real_exit_code_for_failure() {
 }
 
 #[test]
+fn get_output_text_returns_plain_text_matching_executed_output() {
+    let backend = make_backend();
+    let created = backend.create_session(None, None).unwrap();
+    backend
+        .exec_command(created.id, "echo plain-text-marker".to_string())
+        .unwrap();
+
+    let text = backend.get_output_text(created.id).unwrap();
+    assert!(
+        text.contains("plain-text-marker"),
+        "plain-text output should contain the command's real output, got: {:?}",
+        text
+    );
+    assert!(
+        !text.contains('{') && !text.contains("\"fg\""),
+        "plain-text output must not contain StyledGrid JSON span markup, got: {:?}",
+        text
+    );
+}
+
+#[test]
 fn exec_reports_a_real_monotonic_command_id() {
     let backend = make_backend();
     let created = backend.create_session(None, None).unwrap();

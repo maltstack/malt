@@ -84,8 +84,15 @@ pub enum SessionCommand {
     },
     /// Write input to PTY stdin.
     WriteInput { data: Vec<u8> },
-    /// Get the current output snapshot (requester sends back via channel).
+    /// Get the current output snapshot as styled-grid JSON (requester sends
+    /// back via channel). Built for human rendering clients
+    /// (`malt-tui`/`maltty`) — for a program-readable variant see
+    /// `GetOutputText`.
     GetOutput { reply: mpsc::Sender<String> },
+    /// Get the current output snapshot as plain text, no styling — built
+    /// for programmatic/agent consumption. Same underlying grid as
+    /// `GetOutput`, different rendering.
+    GetOutputText { reply: mpsc::Sender<String> },
     /// Register a VNP client with this session's renderer.
     RegisterVnpClient {
         client_id: u64,
@@ -146,6 +153,7 @@ impl std::fmt::Debug for SessionCommand {
                 .field("len", &data.len())
                 .finish(),
             Self::GetOutput { .. } => f.debug_struct("GetOutput").finish(),
+            Self::GetOutputText { .. } => f.debug_struct("GetOutputText").finish(),
             Self::RegisterVnpClient { client_id, .. } => f
                 .debug_struct("RegisterVnpClient")
                 .field("client_id", client_id)
@@ -341,6 +349,10 @@ impl SessionExecutor {
                     let output = self.get_grid_output();
                     let _ = reply.send(output);
                 }
+                Ok(SessionCommand::GetOutputText { reply }) => {
+                    let output = self.get_plain_text_output();
+                    let _ = reply.send(output);
+                }
                 Ok(SessionCommand::RegisterVnpClient {
                     client_id,
                     capabilities,
@@ -530,6 +542,29 @@ impl SessionExecutor {
             stderr: String::from_utf8_lossy(&result.stderr).to_string(),
             exit_code: result.exit_code,
         }
+    }
+
+    /// Extract the grid as plain text, no styling — for programmatic/agent
+    /// consumption. Same underlying `TerminalGrid` as `get_grid_output`,
+    /// just characters instead of styled spans.
+    fn get_plain_text_output(&self) -> String {
+        let Some(compat) = &self.compat else {
+            return String::new();
+        };
+        let grid = compat.grid();
+        let mut lines: Vec<String> = grid
+            .rows_data()
+            .iter()
+            .map(|row| row.cells.iter().map(|cell| cell.ch).collect::<String>())
+            .collect();
+
+        // Trim trailing blank lines, matching get_grid_output's equivalent
+        // trim of trailing empty rows.
+        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+            lines.pop();
+        }
+
+        lines.join("\n")
     }
 
     fn recompute_layout(&mut self) {
