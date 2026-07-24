@@ -394,6 +394,15 @@ impl SessionExecutor {
                 Ok(SessionCommand::RunCommand { command, reply }) => {
                     let output = self.run_mash_command(&command);
                     let _ = reply.send(output);
+                    // Gateway/agent-driven execution previously never
+                    // notified attached VNP clients that anything changed
+                    // -- "both see the same authoritative state" didn't
+                    // hold. Partial fix: push one frame once the command
+                    // completes. True incremental streaming during a
+                    // long-running command needs the session executor to
+                    // stop blocking its own command queue on execution
+                    // (see docs/BACKLOG.md's 0b) -- not attempted here.
+                    self.dispatch_render();
                 }
                 Ok(SessionCommand::PtyOutput { data, .. }) => {
                     if let Some(compat) = &mut self.compat {
@@ -407,12 +416,14 @@ impl SessionExecutor {
                         producer_id: 0,
                         payload: data,
                     });
+                    self.dispatch_render();
                 }
                 Ok(SessionCommand::WriteInput { data }) => {
                     let input = String::from_utf8_lossy(&data);
                     let input = input.trim();
                     if !input.is_empty() {
                         let _ = self.run_mash_command(input);
+                        self.dispatch_render();
                     }
                 }
                 Ok(SessionCommand::GetOutput { reply }) => {

@@ -159,6 +159,52 @@ fn key_input_enter_triggers_render_to_client() {
     handle.join().expect("session thread panicked");
 }
 
+/// Confirmed by the 2026-07-24 input/concurrency audit: gateway/agent-driven
+/// execution (`RunCommand`, the Gateway `/exec` path) never notified
+/// attached VNP clients that anything changed, regardless of attach
+/// timing -- "both see the same authoritative state" didn't hold. This
+/// proves the partial fix: a `RunCommand` now pushes a render frame once
+/// the command completes.
+#[test]
+fn run_command_triggers_render_to_attached_client() {
+    let (cmd_tx, handle) =
+        SessionExecutor::spawn(SessionId(1), PaneId(1), IsolationTier::Bare).unwrap();
+    let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (initial_tx, initial_rx) = std::sync::mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RegisterVnpClient {
+            client_id: 1,
+            capabilities: default_capabilities(),
+            render_tx,
+            initial_reply: initial_tx,
+        })
+        .unwrap();
+    let _ = initial_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RunCommand {
+            command: "echo agent-driven".to_string(),
+            reply: reply_tx,
+        })
+        .unwrap();
+    let _ = reply_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+
+    let batch = render_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect(
+            "an attached VNP client must receive a RenderBatch after a \
+             gateway-driven RunCommand completes -- previously nothing \
+             ever notified it",
+        );
+    assert!(!batch.commands.is_empty());
+
+    cmd_tx.send(SessionCommand::Shutdown).unwrap();
+    handle.join().expect("session thread panicked");
+}
+
 #[test]
 fn ack_frame_does_not_crash() {
     let (cmd_tx, handle) =

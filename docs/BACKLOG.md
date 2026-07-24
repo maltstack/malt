@@ -122,19 +122,25 @@ original ten, in order. Each links to its detail below.
   with its own client-side JSON synthesis — the "authoritative" VNP path
   shows a blank screen for shell content regardless. See
   `docs/findings/2026-07-24-audit-input-concurrency.md` §3a.
-- **Gateway/agent-driven execution never notifies attached VNP clients
-  that anything happened — "both see the same authoritative state" does
-  not hold today.** `dispatch_render()` is called from exactly three call
-  sites in `session_thread.rs` (lines 370, 377, 381), all inside
-  `KeyInput`'s handler. `RunCommand` (the Gateway `/exec` path — ADR-0002's
-  "canonical agent control plane"), `WriteInput`, and `PtyOutput` never
-  call it. If an agent runs `cargo test` via `POST /exec` while a human is
-  attached via VNP, the human's client receives **no RenderBatch
-  reflecting that command, ever** — not during execution, not after
-  completion — independent of the `WriteRaw` bug above. Only the human's
-  *own* next keystroke happens to trigger a (stale) frame push. A partial
-  fix (push one frame at command completion) is available without 0b;
-  streaming intermediate output correctly needs 0b first. See
+- **Gateway/agent-driven execution never notified attached VNP clients
+  that anything happened — PARTIAL FIX 2026-07-25.** `dispatch_render()`
+  was called only from `KeyInput`'s handler; `RunCommand` (the Gateway
+  `/exec` path — ADR-0002's "canonical agent control plane"), `WriteInput`,
+  and `PtyOutput` never called it, so if an agent ran `cargo test` via
+  `POST /exec` while a human was attached via VNP, the human's client
+  received no `RenderBatch` reflecting that command, ever. Now all three
+  call `dispatch_render()` once their handling completes — `RunCommand`
+  after the command finishes, `PtyOutput` after each chunk is fed to the
+  grid, `WriteInput` after its (currently `RunCommand`-equivalent, see the
+  raw-input item above) execution completes. New test
+  `run_command_triggers_render_to_attached_client`
+  (`malt-daemon/tests/session_thread.rs`) proves an attached VNP client
+  now receives a real `RenderBatch` after a gateway-driven `RunCommand`.
+  **Still partial, as scoped**: this pushes one frame at completion, not
+  incremental output during a long-running command — true streaming needs
+  0b (decoupling execution from the session's single command-dispatch
+  thread) first, since the handler can't push intermediate frames while
+  it's still blocked inside `run_mash_command`. See
   `docs/findings/2026-07-24-audit-input-concurrency.md` §3b (recommendation 2).
 
 ## P1 — real gaps, worth fixing soon
