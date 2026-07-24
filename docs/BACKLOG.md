@@ -225,11 +225,15 @@ original ten, in order. Each links to its detail below.
   only and reuses freed IDs (not monotonic). New test
   `exec_reports_a_real_monotonic_command_id`
   (`malt-daemon/tests/gateway_backend.rs`) asserts strictly increasing IDs
-  across three successive `exec` calls on one session. Does **not** yet
-  survive session persistence/restore — the counter resets to 0 on
-  restore, same as any other in-memory session state; revisit once
-  persistent execution history (below) is wired, since that's the point
-  restart-survival for this counter would actually matter.
+  across three successive `exec` calls on one session. **Restore-survival
+  added 2026-07-25** as part of the persistent-execution-history work
+  below: `spawn_with_cwd` now sets `next_command_id` to
+  `max(command_id)` over the restored history (0 if none), so
+  post-restore executions continue the sequence instead of restarting at
+  1 and colliding with persisted ids. Derived from the history itself
+  rather than persisted separately — a second source of truth could only
+  disagree. Asserted by
+  `command_history_survives_dormant_restore_and_ids_stay_monotonic`.
 - **`CommandStarted`/`CommandFinished` are schema-defined with correct
   codec constants but have zero producers anywhere — and even if
   published, nothing would deliver them.** Grepped the whole workspace:
@@ -244,27 +248,87 @@ original ten, in order. Each links to its detail below.
   by ADR-0002. See
   `docs/findings/2026-07-24-audit-execution-correctness.md` §3
   (recommendations 4 and 6).
-- **Persistent execution history has two independent, stacked gaps — both
-  need closing, not just the one ADR-0002 already flagged.** Gap A
-  (in-memory): `malt-session::pane::CommandBlock`/`push_command_block`
-  are fully built, ring-buffered, and unit-tested but never constructed
-  from `malt-daemon` — zero non-test callers. Concrete touch points:
-  capture `started_at` before `execute_list` and construct/push the block
-  right after, in `run_mash_command`
-  (`session_thread.rs:458-510`), reusing the `exit_code` already available
-  via `CommandOutput`. Gap B (persistence schema, not previously flagged):
-  even once Gap A lands, history still wouldn't survive a daemon restart —
-  `schemas/persist/session.vexil`'s `PersistedPane` has **no field for
-  command history at all**, and `build_persisted_session`
-  (`session_thread.rs:599-658`) has no access path to `PaneRuntime`'s
-  `command_blocks()`. Needs a `command_blocks: array<CommandBlock>`-shaped
-  schema field plus read/write wiring in `build_persisted_session`/
-  restore. Recommend sequencing both gaps as one coordinated piece of
-  work, not two independent tickets — this is ADR-0002 Phase 3/4. See
+- **Persistent execution history (ADR-0002 Phase 3/4) — both stacked gaps
+  FIXED 2026-07-25**, sequenced as one coordinated change per the
+  original recommendation. Full Spec Kit treatment:
+  `specs/003-command-execution-history/`.
+  **Gap A (in-memory, `CommandBlock` had zero non-test constructors):**
+  `SessionExecutor` now owns a `PaneRuntime`, and `run_mash_command`
+  pushes an *open* block (`finished_at`/`exit_code` absent) **before**
+  parsing or executing, finalizing it on all three return paths (parse
+  error → 1, empty input → 0, real execution → real exit code). Recording
+  before rather than after is load-bearing, not stylistic: it is what
+  makes a daemon that dies mid-command leave an honest "started, never
+  confirmed complete" record instead of no record at all, with no
+  special-case code. Two new `PaneRuntime` methods back this:
+  `finalize_current_block` (no-op on an already-completed block, which is
+  what keeps restored history immutable) and `with_blocks` (restore
+  seeding, truncating oldest-first past `max_blocks`).
+  **Gap B (persistence schema):** new `PersistedCommandBlock` message and
+  a `command_blocks : array<PersistedCommandBlock>` field on
+  `PersistedPane` — on the message, not the `Shell` variant, since
+  history is a pane property that `Compat` panes should inherit. Additive:
+  pre-existing `.vxb` files decode to an empty list, `schema_version`
+  stays 1. `build_persisted_session` writes it; `spawn_with_cwd` seeds
+  the `PaneRuntime` and resumes `next_command_id` from it.
+  **Retrieval surface** (follows the `get_output_text` chain end-to-end):
+  `SessionCommand::GetCommandHistory` →
+  `Coordinator::get_session_command_history` →
+  `GatewayBackend::get_command_history` → `GET /sessions/{id}/history`
+  (`AuthScope::Read`, same sensitivity class as `/output` — command text
+  can contain secrets typed at the prompt), plus `malt history <ID>` and
+  a 7th MCP tool `get_command_history`. A **dormant** session answers
+  from its persisted snapshot rather than being woken — listing what a
+  session already ran should not restore it as a side effect. An unknown
+  session is 404, never an empty 200, so "no such session" stays
+  distinguishable from "ran nothing yet".
+  Evidence: `command_history_records_each_execution_with_real_status`,
+  `command_history_records_a_parse_error_as_a_failed_execution`,
+  `command_history_for_unknown_session_is_not_found`,
+  `command_history_survives_dormant_restore_and_ids_stay_monotonic`
+  (`malt-daemon/tests/gateway_backend.rs`);
+  `get_command_history_reflects_executions_on_the_session_thread`,
+  `restored_history_seeds_the_pane_and_resumes_command_ids`
+  (`malt-daemon/tests/session_thread.rs`);
+  `command_history_survives_the_bitpack_round_trip`,
+  `a_session_with_no_command_history_round_trips_as_empty`
+  (`malt-daemon/tests/store.rs`); 4 route/auth tests in
+  `malt-gateway/tests/routes.rs`; 8 `PaneRuntime` tests in
+  `malt-session/tests/pane.rs`; 2 MCP tool tests.
+  **Still open, deliberately not folded in:** history records execution
+  *metadata* only, not per-command output/scrollback (a separate concern
+  — see the terminal-grid items); and `CommandStarted`/`CommandFinished`
+  bus events remain producerless, since that needs the bus-consumer work
+  above, not this. Original analysis:
   `docs/findings/2026-07-24-audit-execution-correctness.md` §4
   (recommendation 5) and
   `docs/findings/2026-07-24-audit-persistence-restore.md` §1
   (recommendation 2).
+- **`exec`/`get_output_text` report an unknown session as an *internal
+  error*, not a 404.** Found 2026-07-25 while validating command history
+  against a live daemon (`docs/findings/2026-07-25-command-execution-history.md`).
+  `exec_command` and `get_output_text` in `gateway_backend.rs` map every
+  `DaemonError` through `GatewayError::Internal`, so `malt exec 1 "..."`
+  on a nonexistent session prints `internal error: session not found:
+  SessionId(1)` (500-shaped) where `malt history 1` correctly prints
+  `session not found: 1` (404). `get_command_history` avoids this by
+  resolving the pane first, which doubles as the existence check — the
+  same fix would work for both, but it changes observable HTTP status
+  codes and deserves its own change with its own tests. Small, isolated,
+  good first item.
+- **`vexilc` 0.5.1 attaches a field-level `@doc` to the *preceding*
+  field.** Found 2026-07-25 while adding `PersistedCommandBlock`: a
+  `@doc` written immediately above a field lands on the field before it
+  in the generated Rust. Not new — the already-committed `EnvSnapshot`
+  has the same misattribution in its generated docs (`"name -> source
+  text, re-parsed on restore"` sits on `aliases` instead of `functions`;
+  `"signal -> action string"` sits on `cwd` instead of `traps`).
+  Cosmetic only: field order, wire format, and encode/decode are all
+  correct — it misleads readers of the generated code, nothing else.
+  Worked around in the new message by putting all field documentation in
+  the message-level `@doc` block. Needs reporting upstream to
+  `vexil-lang`; the existing `EnvSnapshot` annotations should get the
+  same treatment once it's fixed or confirmed wontfix.
 - **`mash::Env::to_snapshot()`/`apply_snapshot()` wired into persistence —
   FIXED 2026-07-25, and a real latent bug in `apply_snapshot` itself found
   and fixed in the process.** Extended `schemas/persist/session.vexil`

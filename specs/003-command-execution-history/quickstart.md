@@ -30,12 +30,11 @@ cargo run -p malt-bin -- start
 cargo run -p malt-bin -- history 1
 ```
 
-**Expected**: all pre-restart entries present with identical content (ids, text, timestamps, exit codes). A command executed after restart gets a `command_id` **greater** than every persisted id (monotonicity resumes, research R4):
+**Expected**: all pre-restart entries present with identical content (ids, text, timestamps, exit codes).
 
-```powershell
-cargo run -p malt-bin -- exec 1 "echo after-restart"
-cargo run -p malt-bin -- history 1
-```
+Note that history reads work on the restored-but-dormant session *without* waking it — that is the intended design (research R5), verified against a real daemon.
+
+**Post-restore id monotonicity is not verifiable from the CLI.** A session restored from disk is `Dormant`, and `malt exec` on a dormant session is refused (`attach to restore it`) — pre-existing behavior, unrelated to this feature. Only attaching wakes it. The behavior is covered by `command_history_survives_dormant_restore_and_ids_stay_monotonic` (`malt-daemon/tests/gateway_backend.rs`), which drives the restore through `register_vnp_client` the way a real attach does. See `docs/findings/2026-07-25-command-execution-history.md`.
 
 ## Scenario 3 — Automation surface parity (User Story 3)
 

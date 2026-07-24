@@ -95,11 +95,11 @@
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T025 [P] Update `docs/BACKLOG.md`: mark Gap A + Gap B (persistent execution history) FIXED with evidence (test names), and update the `command_id` restore-reset caveat (now resumes monotonically); note anything discovered during implementation.
-- [ ] T026 [P] Update `AGENTS.md`: add `malt history ID` to CLI Commands; bump MCP tool count 6 → 7 with `get_command_history`; update the "What's Implemented" daemon/MCP bullets.
-- [ ] T027 [P] Update `docs/design/architecture.md` only if it claims command-block wiring is absent (check; it describes target state, so likely no change needed).
-- [ ] T028 Run full quickstart.md validation manually (all three scenarios against a real daemon) and record the outcome in a dated `docs/findings/` entry if anything surprising surfaces.
-- [ ] T029 Final `cargo build --workspace && cargo test --workspace` green run; final commit.
+- [X] T025 [P] Update `docs/BACKLOG.md`: mark Gap A + Gap B (persistent execution history) FIXED with evidence (test names), and update the `command_id` restore-reset caveat (now resumes monotonically); note anything discovered during implementation.
+- [X] T026 [P] Update `AGENTS.md`: add `malt history ID` to CLI Commands; bump MCP tool count 6 → 7 with `get_command_history`; update the "What's Implemented" daemon/MCP bullets.
+- [X] T027 [P] Update `docs/design/architecture.md` — checked: line 1325 only lists "command block ring buffer" in the layer summary, still accurate for a target-state doc. No change needed.
+- [X] T028 Run full quickstart.md validation manually (all three scenarios against a real daemon) and record the outcome in a dated `docs/findings/` entry if anything surprising surfaces.
+- [X] T029 Final `cargo build --workspace && cargo test --workspace` green run; final commit.
 - [ ] T030 Rebase/merge check against feature 002 (responsive session control) once it lands on main: `run_mash_command`, `SessionCommand`, `coordinator.rs`, and `gateway_backend.rs` are touched by both features (research R6). Re-run the full test suite after resolving; verify `GetCommandHistory` is serviced without waiting behind a running command post-002 (FR-004 becomes observable mid-execution).
 
 ---

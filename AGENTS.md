@@ -181,6 +181,7 @@ malt list                     # List sessions
 malt attach [ID]              # Open TUI connected to session (VNP + HTTP fallback)
 malt exec ID "command"        # Run command via mash, return output
 malt output ID                # Print session's current output as plain text
+malt history ID               # List the session's command execution history
 malt send ID "input"          # Send raw input to session
 malt kill ID                  # Destroy session
 ```
@@ -201,6 +202,7 @@ doesn't have a token mechanism yet.
 - **Coordinator:** Session lifecycle, message routing, output retrieval via reply channels; `DebouncedStore` field; counter restore from `DaemonState` on startup; session name uniqueness (auto-suffix `-2`…`-100`); `persist_daemon_state` after every create/destroy
 - **Process supervisor:** spawn_with_pty, kill, check_exited, resize (for future compat pane processes) — not yet wired to session isolation tiers, unlike mash's own external-command spawn path (see `docs/BACKLOG.md`)
 - **Session store:** Bitpack persistence (Pack/Unpack), atomic writes (temp+rename → `.bak` backup), corruption quarantine (`.corrupt.{ts}.vxb`), save/load/list/delete; `DebouncedStore` wrapper with background 1s flush thread and `flush_all()`
+- **Command execution history (2026-07-25, spec 003):** `SessionExecutor` owns a `PaneRuntime`; `run_mash_command` pushes an *open* `CommandBlock` before executing and finalizes it after, so a daemon that stops mid-command persists an honestly-unfinished record. Persisted via `PersistedPane.command_blocks`, restored on `spawn_with_cwd` (which also resumes `next_command_id` from the restored max). Retrieved via `GET /sessions/{id}/history`, `malt history`, or the MCP `get_command_history` tool — a dormant session answers from its snapshot rather than being woken. See `specs/003-command-execution-history/`.
 - **VNP listener:** TCP socket on port+1, VNP handshake, typed bitpack envelope dispatch post-handshake — KeyEvent/Resize/FrameAck inbound, RenderBatch/InitialState outbound. No JSON in the message loop.
 - **Input bridge:** `input_bridge` module — `vnp_key_to_input_event` converts VNP `KeyEvent` → mash `InputEvent`
 - **RendererHost + Editor wiring:** Session executor owns a `RendererHost` and `Editor`; `RegisterVnpClient` returns `InitialState`, `KeyInput` drives the line editor, `dispatch_render` pushes `RenderBatch` to per-client `SyncSender<RenderBatch>(4)` channels
@@ -230,7 +232,7 @@ doesn't have a token mechanism yet.
 
 ### MCP Server (malt-mcp)
 - JSON-RPC 2.0 over stdio
-- 6 tools: list_sessions, create_session, run_command, get_output, send_input, destroy_session
+- 7 tools: list_sessions, create_session, run_command, get_output, get_command_history, send_input, destroy_session
 - Delegates to daemon HTTP API — confirmed working by calling the underlying gateway routes directly (`/sessions/{id}/send` etc.), not just by reading the code
 
 ### WASM Plugin Host (malt-plugin-sdk)

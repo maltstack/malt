@@ -64,3 +64,6 @@ release/
 .agents/*.token
 .agents/credentials*
 /.claude/worktrees
+
+# mash test artifacts (redirect targets written by executor tests)
+infile_*
