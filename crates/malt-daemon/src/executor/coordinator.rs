@@ -469,12 +469,13 @@ impl Coordinator {
                 SessionLifecycle::Dormant { .. } => return Ok(()), // nothing to unregister
             }
         }
-        // Transition to Dormant if the last client just detached.
+        // Ask the control actor to decide quiescence if the last client just
+        // detached. The actor's mailbox ordering includes already queued
+        // editor/input commands, unlike an ingress sample taken here.
         let should_go_dormant = match self.sessions.get(&session_id.0) {
             Some(h) => matches!(
                 &h.lifecycle,
-                SessionLifecycle::Active { client_count, ingress, .. }
-                    if *client_count == 0 && ingress.is_idle()
+                SessionLifecycle::Active { client_count, .. } if *client_count == 0
             ),
             None => false,
         };
@@ -752,49 +753,72 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Transition an Active session to Dormant.
+    /// Transition a quiescent Active session to Dormant.
     ///
-    /// Sends a `Snapshot` command to the session thread and waits up to 5 s
-    /// for the reply. On success:
+    /// Sends a FIFO `PrepareDormancy` barrier to the session control actor.
+    /// The actor only returns a snapshot after every earlier control event has
+    /// been processed and confirms that no execution or finalization exists.
+    /// On success:
     ///   1. Persists the snapshot synchronously via `flush_all`.
     ///   2. Sends `Shutdown` to the session thread and joins it.
     ///   3. Replaces the session lifecycle with `Dormant { persisted }`.
     ///   4. Updates the persisted daemon state.
     ///
-    /// If the snapshot times out, the session is left Active and a warning is
-    /// logged — this is a best-effort degradation path, not a hard error.
+    /// If the control actor reports work or does not reply promptly, the
+    /// session is left Active. Detach is never cancellation.
     fn go_dormant(&mut self, id: SessionId) {
-        let (cmd_tx_clone, session_name, session_isolation) = {
+        let (cmd_tx_clone, ingress, session_name, session_isolation) = {
             let handle = match self.sessions.get(&id.0) {
                 Some(h) => h,
                 None => return,
             };
             match &handle.lifecycle {
-                SessionLifecycle::Active { cmd_tx, .. } => {
-                    (cmd_tx.clone(), handle.name.clone(), handle.isolation)
+                SessionLifecycle::Active { cmd_tx, ingress, .. } => {
+                    (
+                        cmd_tx.clone(),
+                        ingress.clone(),
+                        handle.name.clone(),
+                        handle.isolation,
+                    )
                 }
                 SessionLifecycle::Dormant { .. } => return,
             }
         };
 
-        // Request a snapshot from the session thread.
+        // Request a FIFO quiescence decision and snapshot from the control
+        // actor. This is ordered after any already accepted editor/input work.
         let (reply_tx, reply_rx) = mpsc::channel();
-        let _ = cmd_tx_clone.send(SessionCommand::Snapshot {
-            reply: reply_tx,
-            name: session_name,
-            isolation: session_isolation,
-        });
+        if cmd_tx_clone
+            .send(SessionCommand::PrepareDormancy {
+                reply: reply_tx,
+                name: session_name,
+                isolation: session_isolation,
+            })
+            .is_err()
+        {
+            warn!(
+                ?id,
+                "go_dormant: control actor unavailable; leaving session Active"
+            );
+            return;
+        }
 
-        let persisted = match reply_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(p) => p,
+        let persisted = match reply_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(Some(persisted)) => persisted,
+            Ok(None) => return,
             Err(_) => {
                 warn!(
                     ?id,
-                    "go_dormant: Snapshot timed out; leaving session Active"
+                    "go_dormant: quiescence check timed out; leaving session Active"
                 );
                 return;
             }
         };
+
+        // The coordinator mutex remains held by unregister_vnp_client while
+        // this transition runs. Closing ingress after the FIFO barrier rejects
+        // any later producer before the snapshot becomes Dormant.
+        ingress.close();
 
         // Persist synchronously so state is on disk before killing the thread.
         self.store.mark_dirty(id.clone(), persisted.clone());
@@ -803,8 +827,7 @@ impl Coordinator {
         // Shut down the session worker and control actor.
         let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
         if let Some(handle) = self.sessions.get_mut(&id.0) {
-            if let SessionLifecycle::Active { ingress, control_thread, worker_thread, .. } = &mut handle.lifecycle {
-                ingress.close();
+            if let SessionLifecycle::Active { control_thread, worker_thread, .. } = &mut handle.lifecycle {
                 if let Some(t) = control_thread.take() {
                     let _ = t.join();
                 }

@@ -307,3 +307,7 @@ the finalization handshake would violate the feature's core invariants.
   accepted command.
 - 0a Gateway authorization remains a prerequisite; these tasks neither replace
   nor weaken it.
+
+## Phase 7: Convergence
+
+- [X] T043 Make last-client dormancy atomic with queued control-actor command admission and finalization, so an editor/input command accepted at the detach boundary remains Active and reaches its defined outcome; add deterministic regression coverage in `crates/malt-daemon/src/executor/coordinator.rs`, `crates/malt-daemon/src/executor/session_thread.rs`, and `crates/malt-daemon/tests/coordinator.rs` per FR-008, FR-012, US2/AC4, and T026 (partial)

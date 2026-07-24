@@ -189,6 +189,14 @@ pub enum SessionCommand {
         name: Option<String>,
         isolation: IsolationTier,
     },
+    /// Decide whether the last client may transition this session to Dormant.
+    /// Because this command is ordered behind all earlier control events, it
+    /// observes editor/input admission and finalization without racing them.
+    PrepareDormancy {
+        reply: mpsc::Sender<Option<PersistedSession>>,
+        name: Option<String>,
+        isolation: IsolationTier,
+    },
     /// Graceful shutdown.
     Shutdown,
 }
@@ -249,6 +257,7 @@ impl std::fmt::Debug for SessionCommand {
                 .field("frame_seq", frame_seq)
                 .finish(),
             Self::Snapshot { .. } => write!(f, "Snapshot"),
+            Self::PrepareDormancy { .. } => write!(f, "PrepareDormancy"),
             Self::Shutdown => write!(f, "Shutdown"),
         }
     }
@@ -563,6 +572,29 @@ impl SessionExecutor {
                         isolation,
                         &self.env_snapshot,
                     );
+                    let _ = reply.send(persisted);
+                }
+                Ok(SessionCommand::PrepareDormancy {
+                    reply,
+                    name,
+                    isolation,
+                }) => {
+                    // This mailbox barrier is deliberately evaluated on the
+                    // control actor. All earlier editor/input commands have
+                    // already attempted ingress admission, so an accepted
+                    // request is visible through `is_idle`; finalization is
+                    // actor-owned and cannot be observed halfway through.
+                    let persisted = if self.finalization.is_none() && self.ingress.is_idle() {
+                        Some(build_persisted_session(
+                            self.session.id(),
+                            self.session.focused_pane(),
+                            name.as_deref(),
+                            isolation,
+                            &self.env_snapshot,
+                        ))
+                    } else {
+                        None
+                    };
                     let _ = reply.send(persisted);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}

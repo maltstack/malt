@@ -870,6 +870,52 @@ fn last_detach_while_execution_is_busy_keeps_the_session_active() {
 }
 
 #[test]
+fn last_detach_after_queued_write_input_keeps_session_active_and_runs_command() {
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
+    let id = coord
+        .create_session(None, IsolationTier::Bare, None)
+        .unwrap();
+    let (render_tx, _render_rx) = mpsc::sync_channel(4);
+    coord
+        .register_vnp_client(id.clone(), 1, caps(), render_tx)
+        .unwrap();
+
+    // This command is deliberately queued on the control actor immediately
+    // before the final detach. Dormancy must observe its admission in FIFO
+    // order rather than decide from an earlier ingress-idle sample.
+    coord
+        .send_command(
+            id.clone(),
+            SessionCommand::WriteInput {
+                data: b"sleep 1; echo queued-at-detach\n".to_vec(),
+            },
+        )
+        .unwrap();
+    coord.unregister_vnp_client(id.clone(), 1).unwrap();
+
+    assert!(coord
+        .list_sessions()
+        .iter()
+        .any(|session| { session.session_id == id && session.state == SessionState::Active }));
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut output = String::new();
+    while Instant::now() < deadline {
+        output = coord.get_session_output_text(id.clone()).unwrap();
+        if output.contains("queued-at-detach") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(output.contains("queued-at-detach"), "output was {output:?}");
+    coord.destroy_session(id);
+}
+
+#[test]
 fn destroy_closes_intake_promptly_but_finalizes_active_work_once() {
     use std::time::{Duration, Instant};
 
