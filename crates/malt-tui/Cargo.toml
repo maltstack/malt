@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 malt-protocol = { path = "../malt-protocol" }
+malt-compat = { path = "../malt-compat" }
 ratatui = "0.30"
 crossterm = "0.29"
 reqwest = { version = "0.13", features = ["blocking", "json"] }

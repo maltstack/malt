@@ -1,21 +1,32 @@
 // TUI renderer: applies RenderCommands to a ratatui Buffer.
 
+use malt_compat::CompatTranslator;
 use malt_protocol::render::RenderCommand;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 
 /// Applies a stream of `RenderCommand`s to a ratatui `Buffer`.
 ///
-/// Tracks clip state across commands. Commands like `Flush`, `SetCursor`,
-/// and `WriteRaw` are not handled here — they are the responsibility of
-/// the application-level display loop.
+/// Tracks clip state across commands. `Flush` and `SetCursor` are not
+/// handled here — they are the responsibility of the application-level
+/// display loop. `WriteRaw` (VT passthrough for compat/shell panes) *is*
+/// handled here, via an owned `CompatTranslator` — reusing the one crate
+/// that's allowed to touch VT escape codes (Hard Invariant #1) rather than
+/// hand-rolling VT parsing in this client.
 pub struct TuiRenderer {
     clip: Option<Rect>,
+    /// Client-side VT grid for `WriteRaw` content. Single instance,
+    /// matching today's single-pane-per-session model; resized to match
+    /// whatever `(width, height)` the next `WriteRaw` command carries.
+    compat: CompatTranslator,
 }
 
 impl TuiRenderer {
     pub fn new() -> Self {
-        Self { clip: None }
+        Self {
+            clip: None,
+            compat: CompatTranslator::new(1, 1),
+        }
     }
 
     /// Apply a list of RenderCommands to a ratatui Buffer.
@@ -127,8 +138,38 @@ impl TuiRenderer {
                 self.clip = None;
             }
 
-            // Flush, SetCursor, WriteRaw, and other commands are handled
-            // at the application level, not by the buffer renderer.
+            RenderCommand::WriteRaw {
+                data,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if self.compat.grid().cols() != *width as usize
+                    || self.compat.grid().rows() != *height as usize
+                {
+                    self.compat.resize(*width, *height);
+                }
+                self.compat.feed(data);
+
+                let grid = self.compat.grid();
+                for (row_idx, row) in grid.rows_data().iter().enumerate() {
+                    let Some(draw_y) = y.checked_add(row_idx as u16) else {
+                        break;
+                    };
+                    for (col_idx, cell) in row.cells.iter().enumerate() {
+                        let Some(draw_x) = x.checked_add(col_idx as u16) else {
+                            break;
+                        };
+                        let rat_style = crate::style::to_ratatui_style(&cell.style);
+                        self.set_cell(buf, draw_x, draw_y, cell.ch, rat_style);
+                    }
+                }
+            }
+
+            // Flush and SetCursor are handled at the application level,
+            // not by the buffer renderer. Unknown future commands are
+            // skipped for forward compatibility.
             _ => {}
         }
     }

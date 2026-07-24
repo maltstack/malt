@@ -80,6 +80,95 @@ fn clear_resets_buffer() {
 }
 
 #[test]
+fn write_raw_renders_plain_text() {
+    let mut renderer = TuiRenderer::new();
+    let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
+    let cmds = vec![RenderCommand::WriteRaw {
+        data: b"hello".to_vec(),
+        x: 2,
+        y: 3,
+        width: 20,
+        height: 5,
+    }];
+    renderer.apply(&cmds, &mut buf);
+
+    let cell = buf.cell(Position::new(2, 3)).unwrap();
+    assert_eq!(
+        cell.symbol(),
+        "h",
+        "WriteRaw must actually render VT bytes to the buffer, not be \
+         silently dropped"
+    );
+    let cell = buf.cell(Position::new(6, 3)).unwrap();
+    assert_eq!(cell.symbol(), "o");
+}
+
+#[test]
+fn write_raw_renders_sgr_styled_text() {
+    let mut renderer = TuiRenderer::new();
+    let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
+    // ESC[1m = bold, ESC[31m = red foreground (256/16-color, but the VT
+    // parser should still register bold via SGR regardless of the exact
+    // color mapping malt-compat applies for the basic palette).
+    let cmds = vec![RenderCommand::WriteRaw {
+        data: b"\x1b[1mBOLD".to_vec(),
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 5,
+    }];
+    renderer.apply(&cmds, &mut buf);
+
+    let cell = buf.cell(Position::new(0, 0)).unwrap();
+    assert_eq!(cell.symbol(), "B");
+    assert!(
+        cell.modifier.contains(ratatui::style::Modifier::BOLD),
+        "SGR bold (ESC[1m) must survive through CompatTranslator -> \
+         TerminalGrid -> ratatui Style, not just plain characters"
+    );
+}
+
+#[test]
+fn write_raw_accumulates_across_multiple_feeds_without_resetting() {
+    // Two WriteRaw commands in the same frame batch (or across frames) --
+    // the second must not wipe out content the first one placed elsewhere
+    // on the grid, since CompatTranslator's grid is persistent state, not
+    // reset per feed() call (that was the P0 staircase bug's fix).
+    let mut renderer = TuiRenderer::new();
+    let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
+    renderer.apply(
+        &[RenderCommand::WriteRaw {
+            data: b"line one\r\n".to_vec(),
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 10,
+        }],
+        &mut buf,
+    );
+    renderer.apply(
+        &[RenderCommand::WriteRaw {
+            data: b"line two".to_vec(),
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 10,
+        }],
+        &mut buf,
+    );
+
+    let first_line_cell = buf.cell(Position::new(0, 0)).unwrap();
+    assert_eq!(
+        first_line_cell.symbol(),
+        "l",
+        "first line's content must still be present after a second WriteRaw \
+         command feeds more bytes into the same persistent grid"
+    );
+    let second_line_cell = buf.cell(Position::new(0, 1)).unwrap();
+    assert_eq!(second_line_cell.symbol(), "l");
+}
+
+#[test]
 fn multiple_commands_applied_in_order() {
     let mut renderer = TuiRenderer::new();
     let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));

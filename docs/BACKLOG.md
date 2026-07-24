@@ -137,19 +137,30 @@ original ten, in order. Each links to its detail below.
   restricted|capped|contained` on every platform. See
   `docs/findings/2026-07-24-audit-isolation-safety.md` (full catalog + a
   concrete `IsolationPolicy` proposal — implementation detail in P1 below).
-- **The VNP client (`malt-tui`) — the path architecture.md treats as
-  authoritative — never renders shell output at all, on first attach or
-  any subsequent one.** `TuiRenderer::apply_one`
-  (`crates/malt-tui/src/render.rs:130-132`) has no handler for
-  `RenderCommand::WriteRaw`, and nothing at the application level handles
-  it either (`app.rs:36` calls the same function). Since `CompatTranslator`
-  only ever emits `VtPassthrough` → `WriteRaw`, every `RenderBatch`/
-  `InitialState` a real VNP client receives for actual shell content is
-  silently dropped on arrival. The reason this wasn't caught earlier: the
-  P0 rendering bug fixed today was observed via the HTTP `/output` route
-  (`HttpConnection`), which bypasses the RenderCommand pipeline entirely
-  with its own client-side JSON synthesis — the "authoritative" VNP path
-  shows a blank screen for shell content regardless. See
+- **The VNP client (`malt-tui`) never rendered shell output at all — FIXED
+  2026-07-25.** `TuiRenderer::apply_one` had no handler for
+  `RenderCommand::WriteRaw`, so every `RenderBatch`/`InitialState` a real
+  VNP client received for actual shell content was silently dropped —
+  this was the "authoritative" client showing a blank screen regardless
+  of the P0 rendering fix, which was only ever observed via the HTTP
+  `/output` route's separate client-side JSON synthesis. Went through a
+  short design pass before implementing (per the project owner's request)
+  rather than full Spec Kit ceremony, since the shape was clear
+  (reuse `malt-compat`, don't reinvent VT parsing) but still had a real
+  design question (state lifetime, invariant compliance) worth confirming
+  first. Fix: `TuiRenderer` now owns a `CompatTranslator`
+  (`malt-compat` added as a `malt-tui` dependency) — the sanctioned way to
+  get VT rendering in a second place without violating Hard Invariant #1
+  ("VT codes in `malt-compat` only"). On `WriteRaw`, resizes the
+  translator to match the command's `(width, height)` if needed, feeds
+  the bytes, then paints each cell's `(ch, fg, bg, bold, ...)` onto the
+  ratatui buffer via the existing clip-aware `set_cell`. Three new tests
+  in `crates/malt-tui/tests/render.rs`: plain text actually renders
+  (previously silently dropped), SGR bold survives the full
+  `CompatTranslator` → `TerminalGrid` → ratatui `Style` pipeline, and a
+  second `WriteRaw` in a later frame doesn't wipe out content from an
+  earlier one (the grid is persistent state, matching the P0 fix's
+  replace-not-truncate semantics). See
   `docs/findings/2026-07-24-audit-input-concurrency.md` §3a.
 - **Gateway/agent-driven execution never notified attached VNP clients
   that anything happened — PARTIAL FIX 2026-07-25.** `dispatch_render()`

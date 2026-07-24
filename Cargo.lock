@@ -2389,6 +2389,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
+ "malt-compat",
  "malt-protocol",
  "ratatui",
  "reqwest",
