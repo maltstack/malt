@@ -74,6 +74,35 @@ fn exec_reports_real_exit_code_for_failure() {
 }
 
 #[test]
+fn exec_reports_a_real_monotonic_command_id() {
+    let backend = make_backend();
+    let created = backend.create_session(None, None).unwrap();
+    let first = backend
+        .exec_command(created.id, "echo one".to_string())
+        .unwrap();
+    let second = backend
+        .exec_command(created.id, "echo two".to_string())
+        .unwrap();
+    let third = backend
+        .exec_command(created.id, "echo three".to_string())
+        .unwrap();
+
+    assert_ne!(first.command_id, 0, "command_id must not be the old hardcoded 0");
+    assert!(
+        second.command_id > first.command_id,
+        "command_id must increase across successive commands on the same session: {} then {}",
+        first.command_id,
+        second.command_id
+    );
+    assert!(
+        third.command_id > second.command_id,
+        "command_id must keep increasing: {} then {}",
+        second.command_id,
+        third.command_id
+    );
+}
+
+#[test]
 fn exec_reports_stderr_separately_from_stdout() {
     let backend = make_backend();
     let created = backend.create_session(None, None).unwrap();

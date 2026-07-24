@@ -172,19 +172,22 @@ original ten, in order. Each links to its detail below.
   architecture.md's claims about it until that work happens. See
   `docs/findings/2026-07-24-audit-input-concurrency.md` §2 (recommendation 5),
   and §4 for the related dead-cleanup-on-detach note.
-- **Real monotonic `command_id` generation is missing.** `exec_command`
-  (`gateway_backend.rs:111`) hardcodes `command_id: 0`. mash's own
-  `next_job_id()` (`crates/mash/src/env.rs:1008-1017`) is unsuitable — it's
-  scoped to `&`-backgrounded jobs only, reuses freed IDs (not monotonic),
-  and is never called from the foreground/`exec` path at all. Needs a new
-  `next_command_id: u32` field on `SessionExecutor`, assigned inside
-  `run_mash_command` at all three call sites that reach it (`:306` exec,
-  `:326` WriteInput, `:368` KeyInput-accept) if interactively-typed
-  commands should be in history too. Should be decided together with
-  whether this counter needs to survive session persistence/restore
-  (below) before finalizing its placement. See
-  `docs/findings/2026-07-24-audit-execution-correctness.md` §2
-  (recommendation 3).
+- **Real monotonic `command_id` generation — FIXED 2026-07-24.** Added a
+  `next_command_id: u32` field to `SessionExecutor`, incremented once at
+  the top of `run_mash_command` (covering all three return paths — parse
+  error, empty input, and real execution — and all three call sites that
+  reach it: exec, `WriteInput`, `KeyInput`-accept), threaded through
+  `CommandOutput` → `ExecResult.command_id`, replacing
+  `gateway_backend.rs`'s hardcoded `0`. Confirmed unsuitable and not
+  reused: mash's own `next_job_id()` is scoped to `&`-backgrounded jobs
+  only and reuses freed IDs (not monotonic). New test
+  `exec_reports_a_real_monotonic_command_id`
+  (`malt-daemon/tests/gateway_backend.rs`) asserts strictly increasing IDs
+  across three successive `exec` calls on one session. Does **not** yet
+  survive session persistence/restore — the counter resets to 0 on
+  restore, same as any other in-memory session state; revisit once
+  persistent execution history (below) is wired, since that's the point
+  restart-survival for this counter would actually matter.
 - **`CommandStarted`/`CommandFinished` are schema-defined with correct
   codec constants but have zero producers anywhere — and even if
   published, nothing would deliver them.** Grepped the whole workspace:

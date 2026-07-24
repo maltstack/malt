@@ -56,6 +56,7 @@ fn apply_session_isolation(env: &mut Env, session_id: SessionId, isolation: Isol
 /// would be).
 #[derive(Debug, Clone)]
 pub struct CommandOutput {
+    pub command_id: u32,
     pub output: String,
     pub stderr: String,
     pub exit_code: i32,
@@ -181,6 +182,12 @@ pub struct SessionExecutor {
     editor: Editor,
     render_pushers: HashMap<u64, SyncSender<RenderBatch>>,
     resolved_panes: Vec<ResolvedPane>,
+    /// Monotonically increasing id assigned to each command run via
+    /// `run_mash_command`, starting at 1 (0 is reserved to mean "no real id
+    /// assigned yet" for any response path that hasn't been wired to this
+    /// counter). Does not survive a session restore — see
+    /// `docs/BACKLOG.md`'s persistent-execution-history item.
+    next_command_id: u32,
 }
 
 impl SessionExecutor {
@@ -210,6 +217,7 @@ impl SessionExecutor {
                     editor: Editor::new(EditMode::Emacs),
                     render_pushers: HashMap::new(),
                     resolved_panes: Vec::new(),
+                    next_command_id: 0,
                 };
                 executor.run(rx);
             })
@@ -258,6 +266,7 @@ impl SessionExecutor {
                     editor: Editor::new(EditMode::Emacs),
                     render_pushers: HashMap::new(),
                     resolved_panes: Vec::new(),
+                    next_command_id: 0,
                 };
                 executor.run(rx);
             })
@@ -458,6 +467,12 @@ impl SessionExecutor {
     /// Parse and execute a command string via mash, feeding output through the
     /// compat translator and returning the plain stdout text.
     fn run_mash_command(&mut self, input: &str) -> CommandOutput {
+        // Every call is one distinct execution, including parse errors and
+        // empty input -- assign the id once, up front, so all three return
+        // paths below get a real, unique, monotonically-increasing id.
+        self.next_command_id += 1;
+        let command_id = self.next_command_id;
+
         let commands = match parser::parse(input) {
             Ok(cmds) => cmds,
             Err(e) => {
@@ -468,6 +483,7 @@ impl SessionExecutor {
                 // Matches mash's own CLI convention (crates/mash/src/main.rs)
                 // of exiting 1 on a parse error.
                 return CommandOutput {
+                    command_id,
                     output: err_msg,
                     stderr: String::new(),
                     exit_code: 1,
@@ -477,6 +493,7 @@ impl SessionExecutor {
 
         if commands.is_empty() {
             return CommandOutput {
+                command_id,
                 output: String::new(),
                 stderr: String::new(),
                 exit_code: 0,
@@ -508,6 +525,7 @@ impl SessionExecutor {
         }
 
         CommandOutput {
+            command_id,
             output: String::from_utf8_lossy(&result.stdout).to_string(),
             stderr: String::from_utf8_lossy(&result.stderr).to_string(),
             exit_code: result.exit_code,

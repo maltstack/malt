@@ -108,7 +108,7 @@ impl GatewayBackend for DaemonBackend {
             .map_err(|_| GatewayError::Internal("command timed out".to_string()))?;
 
         Ok(ExecResult {
-            command_id: 0,
+            command_id: result.command_id,
             output: result.output,
             stderr: result.stderr,
             exit_code: Some(result.exit_code),
