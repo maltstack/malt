@@ -174,7 +174,7 @@ fn sequential_commands() {
 #[test]
 fn append_redirection_preserves_existing_file_contents() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let old_cwd = std::env::current_dir().expect("current dir");
     std::env::set_current_dir(dir.path()).expect("chdir tempdir");
 
@@ -194,7 +194,7 @@ fn append_redirection_preserves_existing_file_contents() {
 #[test]
 fn append_redirection_accumulates_printf_output() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let old_cwd = std::env::current_dir().expect("current dir");
     std::env::set_current_dir(dir.path()).expect("chdir tempdir");
 
@@ -364,7 +364,7 @@ fn pipeline_subshell_can_write_to_snapshotted_shell_stdout_fd() {
 #[test]
 #[cfg(windows)]
 fn subshell_pipeline_preserves_times_ioerror_status() {
-    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let sleep = temp.path().join("sleep.cmd");
     let capture = temp.path().join("capture.txt");
@@ -434,7 +434,7 @@ fn redirect_clobber() {
 
 #[test]
 fn ln_symbolic_links_satisfy_test_predicates() {
-    let _guard = CWD_LOCK.lock().unwrap();
+    let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     #[cfg(windows)]
     if !windows_symlink_creation_available() {
         return;
@@ -1369,10 +1369,7 @@ fn redirected_subshell_exit_trap_respects_redirected_stdout() {
 #[test]
 fn subshell_trap_listing_stays_before_subshell_exit_trap_output() {
     let output = run_stdout("trap 'echo bye' EXIT; (trap 'echo so long' EXIT; trap); echo done");
-    assert_eq!(
-        output,
-        "trap -- 'echo so long' EXIT\nso long\ndone\nbye\n"
-    );
+    assert_eq!(output, "trap -- 'echo so long' EXIT\nso long\ndone\nbye\n");
 }
 
 #[test]
@@ -1513,7 +1510,7 @@ history >hist2
 grep echo >/dev/null hist2 && exit 4
 echo ok
 ";
-    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let saved = std::env::current_dir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -1556,7 +1553,7 @@ grep \"$pid\" job_info >/dev/null || exit 2
 kill $pid
 echo ok
 ";
-    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let saved = std::env::current_dir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -1619,7 +1616,10 @@ echo after:$?
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&result.stdout), "first\nafter:143\n");
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout),
+        "first\nafter:143\n"
+    );
 }
 
 #[test]
@@ -1629,7 +1629,7 @@ exec <in
 cat &
 wait
 ";
-    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let saved = std::env::current_dir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -1654,7 +1654,7 @@ wait
 #[test]
 fn exec_input_redirect_registers_readable_shell_fd() {
     let input = "exec <in\n";
-    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let saved = std::env::current_dir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -1979,7 +1979,7 @@ echo $foo $baz
 
 #[test]
 fn test_newer_older_with_absent_file_is_boolean_not_error() {
-    let _cwd_guard = CWD_LOCK.lock().unwrap();
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let saved = std::env::current_dir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -2073,16 +2073,29 @@ fn builtin_read_eof_returns_1() {
 
 #[test]
 fn builtin_read_uses_redirected_loop_stdin() {
+    // This writes then reads a relative-path file across two commands in
+    // one script. That's only safe if the process CWD is stable for the
+    // whole script — but other tests call `cd` (mutating the process-wide
+    // CWD via std::env::set_current_dir) and only guarded that with
+    // CWD_LOCK, which this test never acquired. Under parallel test
+    // execution a concurrent `cd` could change the CWD between this
+    // test's write and its read, intermittently producing empty output
+    // that looked like a `read` bug but wasn't. Renaming away from the
+    // `infile` name shared with builtin_read_uses_redirected_function_stdin
+    // below removed one race but not this one — holding CWD_LOCK for the
+    // whole script is the actual fix.
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let output = run_stdout(
-        "printf 'one\\ntwo\\n' > infile; while IFS='' read -r line; do printf '[%s]\\n' \"$line\"; done < infile",
+        "printf 'one\\ntwo\\n' > infile_loop_stdin; while IFS='' read -r line; do printf '[%s]\\n' \"$line\"; done < infile_loop_stdin",
     );
     assert_eq!(output, "[one]\n[two]\n");
 }
 
 #[test]
 fn builtin_read_uses_redirected_function_stdin() {
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let output = run_stdout(
-        "printf 'one\\ntwo\\n' > infile; f() { while IFS='' read -r line; do printf '[%s]\\n' \"$line\"; done; }; f < infile",
+        "printf 'one\\ntwo\\n' > infile_function_stdin; f() { while IFS='' read -r line; do printf '[%s]\\n' \"$line\"; done; }; f < infile_function_stdin",
     );
     assert_eq!(output, "[one]\n[two]\n");
 }

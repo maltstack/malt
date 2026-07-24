@@ -676,7 +676,7 @@ fn windows_shell_path_variable_expands_without_truncation() {
 
 #[test]
 fn pathname_glob_supports_posix_bracket_forms() {
-    let _guard = CWD_LOCK.lock().unwrap();
+    let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let prev = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -700,7 +700,7 @@ fn pathname_glob_supports_posix_bracket_forms() {
 
 #[test]
 fn pathname_glob_preserves_explicit_double_slash_segment() {
-    let _guard = CWD_LOCK.lock().unwrap();
+    let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let prev = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -721,7 +721,7 @@ fn pathname_glob_preserves_explicit_double_slash_segment() {
 
 #[test]
 fn pathname_glob_synthesizes_dot_and_dotdot_matches() {
-    let _guard = CWD_LOCK.lock().unwrap();
+    let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let prev = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();

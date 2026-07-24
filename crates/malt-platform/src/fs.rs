@@ -376,6 +376,16 @@ pub fn is_posix_windows_path(path: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Tests that mutate the process-wide `MALT_SESSION_ID` env var must
+    /// hold this lock for the duration of their mutation + assertions.
+    /// Without it, `test_to_windows_path_tmp` and `test_malt_tmp_dir` can
+    /// interleave under parallel test execution — one setting the var to
+    /// "test-123" while the other expects "test-456", or reads it after
+    /// the first test removed it. Caught the same way as the CWD_LOCK gaps
+    /// in mash's test suite: intermittent failure only under parallel runs.
+    #[cfg(windows)]
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_normalize_device_path() {
         assert_eq!(normalize_device_path("/dev/null"), "NUL");
@@ -488,6 +498,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn test_to_windows_path_tmp() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("MALT_SESSION_ID", "test-123");
         let tmp = to_windows_path(Path::new("/tmp"));
         assert!(tmp.to_string_lossy().contains("malt"));
@@ -496,6 +507,9 @@ mod tests {
         let tmp_file = to_windows_path(Path::new("/tmp/file.txt"));
         assert!(tmp_file.to_string_lossy().contains("malt"));
         assert!(tmp_file.to_string_lossy().contains("file.txt"));
+
+        // Don't leak MALT_SESSION_ID into whichever test runs next.
+        std::env::remove_var("MALT_SESSION_ID");
     }
 
     #[test]
@@ -529,6 +543,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn test_malt_tmp_dir() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("MALT_SESSION_ID", "test-456");
         let tmp = malt_tmp_dir();
         assert!(tmp.to_string_lossy().contains("malt"));
