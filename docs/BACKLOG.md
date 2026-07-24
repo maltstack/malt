@@ -115,13 +115,21 @@ near-term, evidence-based items, not the whole product roadmap.
   constant against its schema message name plus a dedicated
   `live_wire_path_constants_are_unchanged` regression test. All
   `malt-protocol`/`malt-tui`/`malt-daemon` tests green.
-- **Two dead-code architecture detours, either finish or remove:**
-  `crates/mash/src/builtins.rs`'s `Builtin` trait/`BuiltinRegistry` is
-  never referenced anywhere (all builtins actually run through an inline
-  match in `executor.rs`); `crates/malt-compat/src/parser.rs`'s second VT
-  parser API (`VtEvent`/`CsiParams`/`EventCollector`, ~150 lines) is `pub`
-  but unused and not re-exported, likely orphaned scaffolding for the
-  never-wired Phase H out-of-process compat worker.
+- **Two dead-code architecture detours — RESOLVED 2026-07-24, one removed,
+  one kept and documented.** `crates/mash/src/builtins.rs`'s `Builtin`
+  trait/`BuiltinRegistry` was the original Phase 2 spec design
+  (`docs/design/legacy-specs/phase2-mash-executor.md`), superseded during
+  implementation by the inline `match` in `executor.rs` that actually ships
+  today. Zero references, zero tests, no current architecture doc calls for
+  it — deleted (`crates/mash/src/builtins.rs` removed, `pub mod builtins`
+  dropped from `lib.rs`). `crates/malt-compat/src/parser.rs`'s second VT
+  parser API (`VtEvent`/`CsiParams`/`EventCollector`) is different: it has
+  4 passing tests and is the documented approach for Phase H's not-yet-built
+  out-of-process compat worker (needs parsed VT events to cross a process
+  boundary, hence the fixed-capacity allocation-free params storage instead
+  of `GridPerformer`'s in-place grid mutation) — kept, with a doc comment
+  added explaining why two VT parsing paths coexist and that it's parked,
+  not orphaned, pending Phase H.
 - **`malt-renderer`: two designed safety mechanisms aren't actually wired
   in.** `WalkConfig.max_output_bytes` (1 MiB cap) is defaulted but never
   read in `walker.rs` despite the design calling it "Enforced".

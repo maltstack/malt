@@ -503,6 +503,17 @@ impl std::fmt::Debug for Intermediates {
 }
 
 /// Event-mode VT parser output used by compatibility adapters and tests.
+///
+/// This is a second, deliberately separate VT parsing path from
+/// `GridPerformer` (used by `CompatTranslator`, which mutates a shared
+/// `TerminalGrid` in place). `GridPerformer` is right for the in-process
+/// compat pane path used today. This one exists for Phase H's not-yet-built
+/// out-of-process compat worker (`docs/design/architecture.md`), which needs
+/// parsed VT events to cross a process boundary — hence the fixed-capacity,
+/// allocation-free `CsiParams`/`Intermediates` storage instead of `vte::Params`
+/// borrows tied to the parser's lifetime. Not wired into anything yet; keep
+/// it and its tests (`event_parser_tests` below) until Phase H lands or is
+/// dropped from the roadmap.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum VtEvent {

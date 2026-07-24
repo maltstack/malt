@@ -1,7 +1,6 @@
 //! MASH — POSIX shell for MALT.
 
 pub mod ast;
-pub mod builtins;
 pub mod depth;
 pub mod env;
 pub mod executor;
