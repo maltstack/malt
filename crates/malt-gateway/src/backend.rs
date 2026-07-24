@@ -1,5 +1,5 @@
 use crate::error::GatewayError;
-use crate::types::{ExecResult, PaneResponse, SessionResponse};
+use crate::types::{CommandHistoryEntry, ExecResult, PaneResponse, SessionResponse};
 
 /// Trait abstracting the daemon operations that the gateway delegates to.
 ///
@@ -27,6 +27,13 @@ pub trait GatewayBackend: Send + Sync + 'static {
     /// Plain-text variant of `get_output`, for programmatic/agent
     /// consumption — same underlying content, no styling.
     fn get_output_text(&self, session_id: u32) -> Result<String, GatewayError>;
+
+    /// This session's command execution history, oldest first, capped at the
+    /// pane's retention bound.
+    fn get_command_history(
+        &self,
+        session_id: u32,
+    ) -> Result<Vec<CommandHistoryEntry>, GatewayError>;
 
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError>;
 

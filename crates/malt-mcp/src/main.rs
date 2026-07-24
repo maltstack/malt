@@ -45,6 +45,17 @@ fn tools_schema() -> Value {
             }
         },
         {
+            "name": "get_command_history",
+            "description": "List a session's command execution history (command text, start/finish times, exit codes), oldest first. Entries with null finished_at/exit_code are not confirmed complete -- still running, or interrupted by a daemon stop.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "integer", "description": "Session ID"}
+                },
+                "required": ["session_id"]
+            }
+        },
+        {
             "name": "send_input",
             "description": "Send raw input to a session",
             "inputSchema": {
@@ -244,6 +255,19 @@ fn dispatch_tool(
             Ok(resp.text()?)
         }
 
+        "get_command_history" => {
+            let session_id = arguments
+                .get("session_id")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("missing session_id"))?;
+            let resp = authed(
+                client.get(format!("{api_addr}/sessions/{session_id}/history")),
+                token,
+            )
+            .send()?;
+            Ok(resp.text()?)
+        }
+
         "send_input" => {
             let session_id = arguments
                 .get("session_id")
@@ -350,6 +374,47 @@ mod tests {
             .as_array()
             .expect("tools should be an array");
         assert!(tools.len() >= 5);
+    }
+
+    #[test]
+    fn get_command_history_tool_is_advertised_with_a_session_id_schema() {
+        let req = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+        let client = reqwest::blocking::Client::new();
+        let resp = handle_request(&req, &client, "http://localhost:9999", None);
+        let tools = resp["result"]["tools"]
+            .as_array()
+            .expect("tools should be an array");
+
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == "get_command_history")
+            .expect("get_command_history must be advertised to agents");
+
+        assert_eq!(tool["inputSchema"]["properties"]["session_id"]["type"], "integer");
+        assert_eq!(
+            tool["inputSchema"]["required"],
+            json!(["session_id"]),
+            "session_id must be required -- there is no sensible default session"
+        );
+    }
+
+    #[test]
+    fn get_command_history_requires_a_session_id_argument() {
+        // Dispatch must reject the call before it ever builds a request URL,
+        // rather than silently querying some fallback session.
+        let client = reqwest::blocking::Client::new();
+        let err = dispatch_tool(
+            "get_command_history",
+            &json!({}),
+            &client,
+            "http://localhost:9999",
+            None,
+        )
+        .expect_err("a missing session_id must be an error");
+        assert!(
+            err.to_string().contains("session_id"),
+            "the error must name the missing argument, got: {err}"
+        );
     }
 
     #[test]

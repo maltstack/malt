@@ -45,6 +45,116 @@ fn session_executor_processes_input() {
 }
 
 #[test]
+fn get_command_history_reflects_executions_on_the_session_thread() {
+    use std::sync::mpsc;
+
+    let (cmd_tx, handle) =
+        SessionExecutor::spawn(SessionId(1), PaneId(1), IsolationTier::Bare).unwrap();
+
+    let (run_tx, run_rx) = mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RunCommand {
+            command: "echo thread-level".to_string(),
+            reply: run_tx,
+        })
+        .unwrap();
+    let output = run_rx.recv().expect("command should reply");
+
+    let (hist_tx, hist_rx) = mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::GetCommandHistory { reply: hist_tx })
+        .unwrap();
+    let history = hist_rx.recv().expect("history query should reply");
+
+    assert_eq!(history.len(), 1, "the execution must be recorded: {history:?}");
+    let block = &history[0];
+    assert_eq!(block.cmd, "echo thread-level");
+    assert_eq!(
+        block.command_id, output.command_id,
+        "the history entry must carry the same id the caller was handed back"
+    );
+    assert!(
+        block.finished_at.is_some() && block.exit_code.is_some(),
+        "a completed command must be finalized, not left open: {block:?}"
+    );
+
+    cmd_tx.send(SessionCommand::Shutdown).unwrap();
+    handle.join().expect("session thread panicked");
+}
+
+#[test]
+fn restored_history_seeds_the_pane_and_resumes_command_ids() {
+    use malt_session::pane::CommandBlock;
+    use std::sync::mpsc;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // An interrupted command (finished_at/exit_code absent) alongside a
+    // completed one -- exactly what a daemon killed mid-execution leaves
+    // behind.
+    let restored = vec![
+        CommandBlock {
+            command_id: 7,
+            cmd: "echo restored".to_string(),
+            started_at: 1_000,
+            finished_at: Some(1_050),
+            exit_code: Some(0),
+        },
+        CommandBlock {
+            command_id: 8,
+            cmd: "sleep 300".to_string(),
+            started_at: 2_000,
+            finished_at: None,
+            exit_code: None,
+        },
+    ];
+
+    let (cmd_tx, handle) = SessionExecutor::spawn_with_cwd(
+        SessionId(1),
+        PaneId(1),
+        IsolationTier::Bare,
+        dir.path().to_path_buf(),
+        None,
+        None,
+        restored.clone(),
+    )
+    .unwrap();
+
+    let (run_tx, run_rx) = mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RunCommand {
+            command: "echo after".to_string(),
+            reply: run_tx,
+        })
+        .unwrap();
+    let output = run_rx.recv().expect("command should reply");
+    assert!(
+        output.command_id > 8,
+        "ids must resume past the restored history, got {}",
+        output.command_id
+    );
+
+    let (hist_tx, hist_rx) = mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::GetCommandHistory { reply: hist_tx })
+        .unwrap();
+    let history = hist_rx.recv().expect("history query should reply");
+
+    assert_eq!(history.len(), 3);
+    assert_eq!(history[0], restored[0]);
+    assert_eq!(
+        history[1], restored[1],
+        "an interrupted command must stay un-finalized after restore -- \
+         never retroactively completed by the next command's finalize"
+    );
+    assert_eq!(history[2].cmd, "echo after");
+    assert!(history[2].finished_at.is_some());
+
+    cmd_tx.send(SessionCommand::Shutdown).unwrap();
+    handle.join().expect("session thread panicked");
+}
+
+#[test]
 fn session_executor_attach_detach() {
     let (cmd_tx, handle) =
         SessionExecutor::spawn(SessionId(1), PaneId(1), IsolationTier::Bare).unwrap();

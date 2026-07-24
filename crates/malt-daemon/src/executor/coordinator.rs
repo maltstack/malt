@@ -1,6 +1,8 @@
 use crate::bus::BusMessage;
 use crate::executor::pools::PoolConfig;
-use crate::executor::session_thread::{CommandOutput, SessionCommand, SessionExecutor};
+use crate::executor::session_thread::{
+    from_persisted_command_block, CommandOutput, SessionCommand, SessionExecutor,
+};
 use crate::executor::ExecutionIngress;
 use crate::store::{DebouncedStore, StoreError};
 use crate::supervisor::ProcessSupervisor;
@@ -12,6 +14,7 @@ use malt_protocol::input::KeyEvent;
 use malt_protocol::persist::daemon::DaemonState;
 use malt_protocol::persist::session::PersistedSession;
 use malt_protocol::render::{InitialState, RenderBatch};
+use malt_session::pane::CommandBlock;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -180,6 +183,7 @@ impl Coordinator {
             pane_id.clone(),
             isolation,
             self.pool_config.session_channel_size,
+            Vec::new(),
         )?;
 
         info!(?session_id, name = %final_name, "session created with in-process mash shell");
@@ -259,6 +263,43 @@ impl Coordinator {
                 Ok(reply_rx)
             }
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
+    }
+
+    /// Get a session's command execution history, oldest first.
+    ///
+    /// A dormant session answers from its persisted snapshot rather than
+    /// being woken — history is a pure read, and restoring a session just to
+    /// list what it already ran would be a side effect the caller never asked
+    /// for.
+    pub fn get_session_command_history(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Vec<CommandBlock>, DaemonError> {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                cmd_tx
+                    .send(SessionCommand::GetCommandHistory { reply: reply_tx })
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
+                reply_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+            }
+            SessionLifecycle::Dormant { persisted } => Ok(persisted
+                .panes
+                .get(&handle.first_pane.0)
+                .map(|pane| {
+                    pane.command_blocks
+                        .iter()
+                        .map(from_persisted_command_block)
+                        .collect()
+                })
+                .unwrap_or_default()),
         }
     }
 
@@ -654,6 +695,11 @@ impl Coordinator {
 
         let pane_id = PaneId(*pane_id_raw);
         let cwd = std::path::PathBuf::from(&pane.cwd);
+        let command_blocks: Vec<CommandBlock> = pane
+            .command_blocks
+            .iter()
+            .map(from_persisted_command_block)
+            .collect();
 
         let spawned = match &pane.pane_type {
             malt_protocol::persist::session::PersistedPaneType::Shell {
@@ -671,6 +717,7 @@ impl Coordinator {
                     Some(shell_path.clone()),
                     env_snapshot,
                     self.pool_config.session_channel_size,
+                    command_blocks,
                 )
                 .map_err(|e| DaemonError::RestoreFailed(id.clone(), e.to_string()))?
             }
@@ -695,6 +742,7 @@ impl Coordinator {
                     None,
                     None,
                     self.pool_config.session_channel_size,
+                    command_blocks,
                 )
                 .map_err(|e| DaemonError::RestoreFailed(id.clone(), e.to_string()))?;
 

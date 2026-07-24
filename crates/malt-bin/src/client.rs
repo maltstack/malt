@@ -87,6 +87,21 @@ pub struct OutputTextData {
     pub text: String,
 }
 
+/// One entry from `GET /sessions/{id}/history`.
+///
+/// `finished_at`/`exit_code` are absent when the command is not confirmed
+/// complete — still running, or interrupted by a daemon stop.
+#[derive(Debug, Deserialize)]
+pub struct CommandHistoryEntry {
+    pub command_id: u32,
+    pub cmd: String,
+    pub started_at: u64,
+    pub finished_at: Option<u64>,
+    pub exit_code: Option<i32>,
+    #[allow(dead_code)]
+    pub pane_id: u32,
+}
+
 pub struct MaltClient {
     addr: String,
     http: Client,
@@ -197,6 +212,17 @@ impl MaltClient {
         let envelope: ApiEnvelope<OutputTextData> =
             resp.json().context("invalid output response")?;
         envelope.into_data("get output")
+    }
+
+    /// Fetch the session's command execution history, oldest first.
+    pub fn get_command_history(&self, id: u32) -> Result<Vec<CommandHistoryEntry>> {
+        let resp = self
+            .authed(self.http.get(self.url(&format!("/sessions/{id}/history"))))
+            .send()
+            .context("failed to reach daemon")?;
+        let envelope: ApiEnvelope<Vec<CommandHistoryEntry>> =
+            resp.json().context("invalid history response")?;
+        envelope.into_data("get command history")
     }
 
     pub fn send_input(&self, id: u32, input: &str) -> Result<()> {

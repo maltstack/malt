@@ -5,7 +5,7 @@
 //! and then acknowledges it.  That acknowledgement is the ordering barrier
 //! which prevents the next command from observing half-finalized state.
 
-use super::session_thread::{CommandOutput, SessionCommand};
+use super::session_thread::{now_epoch_ms, CommandOutput, SessionCommand};
 use crate::DaemonError;
 use malt_protocol::common::SessionId;
 use mash::env::Env;
@@ -180,17 +180,24 @@ impl ExecutionIngress {
     }
 }
 
+/// Spawn the sole owner of this session's MASH state.
+///
+/// `start_command_id` seeds the execution id sequence. It is the highest id
+/// already present in restored history (0 for a fresh session), so ids stay
+/// unique within a pane's history across a daemon restart instead of
+/// restarting at 1 and colliding with persisted records.
 pub fn spawn_command_worker(
     session_id: SessionId,
     mut env: Env,
     requests: mpsc::Receiver<ExecutionRequest>,
     control_tx: mpsc::Sender<SessionCommand>,
     ingress: ExecutionIngress,
+    start_command_id: u32,
 ) -> Result<JoinHandle<()>, DaemonError> {
     thread::Builder::new()
         .name(format!("session-exec-{}", session_id.0))
         .spawn(move || {
-            let mut next_command_id = 0u32;
+            let mut next_command_id = start_command_id;
             while let Ok(request) = requests.recv() {
                 ingress.worker_received();
                 if ingress.is_closing() {
@@ -199,6 +206,22 @@ pub fn spawn_command_worker(
                 }
                 ingress.set_active(true);
                 next_command_id = next_command_id.saturating_add(1);
+                // Announce the start before running, so a command that is
+                // still executing is visible in history, and one interrupted
+                // by a daemon stop leaves an honestly-unfinished record. The
+                // control actor owns the history buffer; the worker owns
+                // MASH -- neither reaches into the other.
+                if control_tx
+                    .send(SessionCommand::ExecutionStarted {
+                        command_id: next_command_id,
+                        command: request.command.clone(),
+                        started_at: now_epoch_ms(),
+                    })
+                    .is_err()
+                {
+                    ingress.mark_unavailable();
+                    break;
+                }
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     run_command(&mut env, &request.command, next_command_id)
                 }))
@@ -346,6 +369,7 @@ mod tests {
             requests,
             control_tx,
             ingress.clone(),
+            0,
         )
         .unwrap();
         let (active_reply, active_result) = mpsc::channel();
@@ -354,6 +378,14 @@ mod tests {
             .submit("__malt_test_injected_worker_panic".to_string(), active_reply)
             .unwrap();
         ingress.submit("echo must-not-run".to_string(), pending_reply).unwrap();
+
+        // The start is announced before the command runs, so even a command
+        // that panics the worker leaves a recorded execution behind rather
+        // than vanishing.
+        let SessionCommand::ExecutionStarted { command_id, .. } = control_rx.recv().unwrap() else {
+            panic!("worker must announce the start before running a request");
+        };
+        assert_eq!(command_id, 1);
 
         let SessionCommand::ExecutionCompleted(completion) = control_rx.recv().unwrap() else {
             panic!("worker must report a completion to the control actor");

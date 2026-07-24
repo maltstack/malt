@@ -19,10 +19,31 @@ message PersistedSession {
 }
 
 @doc("Persisted pane state within a session.")
+@doc("command_blocks is the pane's command execution history, oldest first,")
+@doc("capped at the pane's retention bound (1000). Empty for sessions")
+@doc("persisted before this field existed. It lives on the message rather")
+@doc("than the Shell variant -- history is a pane property, and Compat panes")
+@doc("inherit the same shape.")
 message PersistedPane {
-    cwd       @0 : string
-    title     @1 : optional<string>
-    pane_type @2 : PersistedPaneType
+    cwd            @0 : string
+    title          @1 : optional<string>
+    pane_type      @2 : PersistedPaneType
+    command_blocks @3 : array<PersistedCommandBlock>
+}
+
+@doc("One command execution record. Mirrors malt-session::pane::CommandBlock.")
+@doc("started_at/finished_at are epoch milliseconds. finished_at and")
+@doc("exit_code are both absent while a command is running, and stay absent")
+@doc("permanently if the daemon stopped mid-command -- such a record is")
+@doc("never reinterpreted as having succeeded.")
+@doc("(Field docs are message-level here on purpose: vexilc 0.5.1 attaches a")
+@doc("field-level @doc to the *preceding* field. See docs/BACKLOG.md.)")
+message PersistedCommandBlock {
+    command_id  @0 : u32
+    cmd         @1 : string
+    started_at  @2 : u64
+    finished_at @3 : optional<u64>
+    exit_code   @4 : optional<i32>
 }
 
 @non_exhaustive

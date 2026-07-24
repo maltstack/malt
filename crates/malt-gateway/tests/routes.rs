@@ -12,7 +12,9 @@ use malt_gateway::backend::GatewayBackend;
 use malt_gateway::error::GatewayError;
 use malt_gateway::rate_limit::RateLimiter;
 use malt_gateway::server::build_router;
-use malt_gateway::types::{ExecResult, PaneResponse, SessionResponse};
+use malt_gateway::types::{
+    CommandHistoryEntry, ExecResult, PaneResponse, SessionResponse,
+};
 use malt_gateway::with_auth;
 
 struct MockBackend {
@@ -100,6 +102,34 @@ impl GatewayBackend for MockBackend {
             return Err(GatewayError::SessionNotFound(session_id));
         }
         Ok("mock plain text output".to_string())
+    }
+
+    fn get_command_history(
+        &self,
+        session_id: u32,
+    ) -> Result<Vec<CommandHistoryEntry>, GatewayError> {
+        if !self.sessions.iter().any(|s| s.id == session_id) {
+            return Err(GatewayError::SessionNotFound(session_id));
+        }
+        Ok(vec![
+            CommandHistoryEntry {
+                command_id: 1,
+                cmd: "echo hello".to_string(),
+                started_at: 1_784_070_000_123,
+                finished_at: Some(1_784_070_000_456),
+                exit_code: Some(0),
+                pane_id: 1,
+            },
+            // Not confirmed complete -- exercises the null/null wire shape.
+            CommandHistoryEntry {
+                command_id: 2,
+                cmd: "sleep 300".to_string(),
+                started_at: 1_784_070_060_000,
+                finished_at: None,
+                exit_code: None,
+                pane_id: 1,
+            },
+        ])
     }
 
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError> {
@@ -305,6 +335,146 @@ async fn output_text_returns_plain_text_shape() {
     assert_eq!(json["ok"], true);
     assert_eq!(json["data"]["type"], "PlainText");
     assert_eq!(json["data"]["text"], "mock plain text output");
+}
+
+#[tokio::test]
+async fn history_route_returns_chronological_entries() {
+    let (router, token) = app();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/1/history")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["ok"], true);
+
+    let entries = json["data"].as_array().expect("data must be an array");
+    assert_eq!(entries.len(), 2);
+
+    assert_eq!(entries[0]["command_id"], 1);
+    assert_eq!(entries[0]["cmd"], "echo hello");
+    assert_eq!(entries[0]["started_at"], 1_784_070_000_123u64);
+    assert_eq!(entries[0]["finished_at"], 1_784_070_000_456u64);
+    assert_eq!(entries[0]["exit_code"], 0);
+    assert_eq!(entries[0]["pane_id"], 1);
+
+    // A command that never reported completion must serialize both fields as
+    // null -- never as a zero exit code, which would read as success.
+    assert_eq!(entries[1]["command_id"], 2);
+    assert!(
+        entries[1]["finished_at"].is_null(),
+        "an unfinished command must report finished_at as null, got {}",
+        entries[1]["finished_at"]
+    );
+    assert!(
+        entries[1]["exit_code"].is_null(),
+        "an unfinished command must report exit_code as null, got {}",
+        entries[1]["exit_code"]
+    );
+}
+
+#[tokio::test]
+async fn history_for_unknown_session_is_not_found() {
+    let (router, token) = app();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/999/history")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Must be 404, not 200 with an empty list -- an unknown session and a
+    // real session that has run nothing are different answers.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let body = BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "session_not_found");
+}
+
+#[tokio::test]
+async fn history_requires_a_token() {
+    let (router, _token) = app();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/1/history")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "command history must not be readable without a token -- command \
+         text can contain paths, arguments, and secrets typed at the prompt"
+    );
+}
+
+#[tokio::test]
+async fn history_requires_read_scope() {
+    // Monitor is for liveness/inventory only; history is session content and
+    // must sit behind Read, like /output.
+    let token_store = Arc::new(TokenStore::new());
+    let monitor_token = token_store.generate_token(AuthScope::Monitor);
+    let read_token = token_store.generate_token(AuthScope::Read);
+    let rate_limiter = Arc::new(RateLimiter::new(1000));
+    let router = with_auth(
+        build_router(Arc::new(MockBackend::new())),
+        token_store,
+        rate_limiter,
+    );
+
+    let forbidden = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/1/history")
+                .header("authorization", format!("Bearer {monitor_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    let allowed = router
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/1/history")
+                .header("authorization", format!("Bearer {read_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        allowed.status(),
+        StatusCode::OK,
+        "a Read-scoped token must be sufficient for history"
+    );
 }
 
 #[tokio::test]

@@ -215,6 +215,160 @@ fn exec_reports_stderr_separately_from_stdout() {
 }
 
 #[test]
+fn command_history_records_each_execution_with_real_status() {
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap();
+
+    // A fresh session has no history -- and that is an empty list, not an
+    // error, so callers can tell "nothing run yet" from "no such session".
+    let empty = backend.get_command_history(session.id).unwrap();
+    assert!(
+        empty.is_empty(),
+        "a session that has run nothing must report empty history, got {empty:?}"
+    );
+
+    backend
+        .exec_command(session.id, "echo history-one".to_string())
+        .unwrap();
+    backend.exec_command(session.id, "false".to_string()).unwrap();
+
+    let history = backend.get_command_history(session.id).unwrap();
+    assert_eq!(history.len(), 2, "both executions must be recorded: {history:?}");
+
+    assert_eq!(history[0].cmd, "echo history-one");
+    assert_eq!(history[0].exit_code, Some(0));
+    assert_eq!(history[1].cmd, "false");
+    assert_eq!(
+        history[1].exit_code,
+        Some(1),
+        "a failing command's real exit code must be recorded, not flattened to 0"
+    );
+
+    // Chronological order, ascending ids, and every completed entry actually
+    // finalized with a finish time at or after its start.
+    assert!(history[0].command_id < history[1].command_id);
+    for entry in &history {
+        let finished = entry
+            .finished_at
+            .unwrap_or_else(|| panic!("completed command must have finished_at: {entry:?}"));
+        assert!(
+            finished >= entry.started_at,
+            "finished_at must not precede started_at: {entry:?}"
+        );
+        assert_eq!(
+            entry.pane_id, 1,
+            "history entries must carry the session's real pane id"
+        );
+    }
+}
+
+#[test]
+fn command_history_records_a_parse_error_as_a_failed_execution() {
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap();
+
+    // An unterminated quote never reaches the executor -- it still counts as
+    // an execution the user attempted, so it must appear in history.
+    backend
+        .exec_command(session.id, "echo 'unterminated".to_string())
+        .unwrap();
+
+    let history = backend.get_command_history(session.id).unwrap();
+    assert_eq!(history.len(), 1, "a parse error is still an execution: {history:?}");
+    assert_eq!(history[0].cmd, "echo 'unterminated");
+    assert_eq!(
+        history[0].exit_code,
+        Some(1),
+        "a parse error must be finalized as a failure, not left open"
+    );
+    assert!(history[0].finished_at.is_some());
+}
+
+#[test]
+fn command_history_for_unknown_session_is_not_found() {
+    use malt_gateway::error::GatewayError;
+
+    let backend = make_backend();
+    let err = backend.get_command_history(9999).unwrap_err();
+    assert!(
+        matches!(err, GatewayError::SessionNotFound(9999)),
+        "an unknown session must be NotFound, not an empty history: {err:?}"
+    );
+}
+
+#[test]
+fn command_history_survives_dormant_restore_and_ids_stay_monotonic() {
+    use malt_protocol::common::SessionId;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let session_id;
+    let before: Vec<_>;
+    {
+        let backend = make_backend_with_store(&dir);
+        let created = backend.create_session(None, None).unwrap();
+        session_id = created.id;
+
+        backend
+            .exec_command(session_id, "echo before-restart-one".to_string())
+            .unwrap();
+        backend.exec_command(session_id, "false".to_string()).unwrap();
+
+        before = backend.get_command_history(session_id).unwrap();
+        assert_eq!(before.len(), 2);
+
+        // Detaching the only client makes the session Dormant, which
+        // snapshots and persists it.
+        let coord_arc = backend.coordinator().clone();
+        let mut coord = coord_arc.lock().unwrap();
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+        coord
+            .register_vnp_client(SessionId(session_id), 1, test_caps(), render_tx)
+            .unwrap();
+        coord.unregister_vnp_client(SessionId(session_id), 1).unwrap();
+    }
+
+    // Fresh Coordinator over the same on-disk store == daemon restart.
+    let backend2 = make_backend_with_store(&dir);
+    {
+        let coord_arc = backend2.coordinator().clone();
+        let mut coord = coord_arc.lock().unwrap();
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+        coord
+            .register_vnp_client(SessionId(session_id), 2, test_caps(), render_tx)
+            .unwrap();
+    }
+
+    let after = backend2.get_command_history(session_id).unwrap();
+    assert_eq!(
+        after, before,
+        "history must survive a daemon restart unchanged -- every field, not just the count"
+    );
+
+    // The id sequence must resume past the restored history rather than
+    // restarting at 1 and colliding with it.
+    let highest_before = before.iter().map(|e| e.command_id).max().unwrap();
+    let result = backend2
+        .exec_command(session_id, "echo after-restart".to_string())
+        .unwrap();
+    assert!(
+        result.command_id > highest_before,
+        "a post-restore execution must get an id above every persisted one \
+         ({} vs {highest_before})",
+        result.command_id
+    );
+
+    let final_history = backend2.get_command_history(session_id).unwrap();
+    assert_eq!(final_history.len(), 3);
+    assert_eq!(final_history[2].cmd, "echo after-restart");
+    let ids: Vec<u32> = final_history.iter().map(|e| e.command_id).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(ids, sorted, "command ids must stay unique and ascending: {ids:?}");
+}
+
+#[test]
 fn shell_env_state_survives_dormant_restore_via_env_snapshot() {
     use malt_protocol::common::SessionId;
 

@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use malt_protocol::common::{PaneId, PaneKind, PaneState};
 
 /// Default maximum number of command blocks retained per pane.
-const DEFAULT_MAX_BLOCKS: usize = 1000;
+pub const DEFAULT_MAX_BLOCKS: usize = 1000;
 
 /// A single command execution record within a pane.
 #[derive(Debug, Clone, PartialEq)]

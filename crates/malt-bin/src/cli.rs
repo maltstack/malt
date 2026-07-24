@@ -44,6 +44,8 @@ pub enum Command {
     Send { session_id: u32, input: String },
     /// Print a session's current output as plain text
     Output { session_id: u32 },
+    /// List a session's command execution history, oldest first
+    History { session_id: u32 },
 }
 
 /// Canonical command-line spellings for the session isolation tiers.

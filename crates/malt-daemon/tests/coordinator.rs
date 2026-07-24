@@ -340,6 +340,7 @@ fn spawn_with_cwd_uses_provided_directory() {
         cwd.clone(),
         None,
         None,
+        Vec::new(),
     )
     .unwrap();
 
@@ -649,6 +650,7 @@ fn app_restore_returns_error() {
             app_id: "test-app".to_string(),
             config: None,
         },
+        command_blocks: vec![],
         _unknown: vec![],
     };
     let mut panes = BTreeMap::new();
@@ -743,6 +745,7 @@ fn restore_compat_pane_relaunches_process_and_forwards_real_output() {
                 "compat-restore-marker".to_string(),
             ],
         },
+        command_blocks: vec![],
         _unknown: vec![],
     };
     let mut panes = BTreeMap::new();

@@ -21,6 +21,7 @@ pub fn build_router(backend: Arc<dyn GatewayBackend>) -> Router {
             "/sessions/{id}/output/text",
             get(routes::sessions::output_text),
         )
+        .route("/sessions/{id}/history", get(routes::sessions::history))
         .route("/sessions/{id}/panes", get(routes::panes::list))
         .route("/sessions/{id}/panes/split", post(routes::panes::split))
         .route(

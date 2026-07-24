@@ -7,7 +7,9 @@ use axum::Json;
 
 use crate::backend::GatewayBackend;
 use crate::error::GatewayError;
-use crate::types::{ApiResponse, CreateSessionRequest, ExecRequest, SendInputRequest};
+use crate::types::{
+    ApiResponse, CommandHistoryEntry, CreateSessionRequest, ExecRequest, SendInputRequest,
+};
 
 pub async fn list(
     State(backend): State<Arc<dyn GatewayBackend>>,
@@ -64,6 +66,15 @@ pub async fn output(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, GatewayError> {
     let data = backend.get_output(id)?;
     Ok(Json(ApiResponse::success(data)))
+}
+
+/// This session's command execution history, oldest first.
+pub async fn history(
+    State(backend): State<Arc<dyn GatewayBackend>>,
+    Path(id): Path<u32>,
+) -> Result<Json<ApiResponse<Vec<CommandHistoryEntry>>>, GatewayError> {
+    let entries = backend.get_command_history(id)?;
+    Ok(Json(ApiResponse::success(entries)))
 }
 
 /// Plain-text variant of `output`, for programmatic/agent consumption.

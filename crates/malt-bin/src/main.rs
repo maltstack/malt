@@ -29,6 +29,7 @@ fn main() -> Result<()> {
         }) => handle_exec(&client, session_id, &command),
         Some(Command::Send { session_id, input }) => handle_send(&client, session_id, &input),
         Some(Command::Output { session_id }) => handle_output(&client, session_id),
+        Some(Command::History { session_id }) => handle_history(&client, session_id),
     }
 }
 
@@ -237,6 +238,56 @@ fn handle_output(client: &MaltClient, session_id: u32) -> Result<()> {
     let result = client.get_output_text(session_id)?;
     print!("{}", result.text);
     Ok(())
+}
+
+fn handle_history(client: &MaltClient, session_id: u32) -> Result<()> {
+    let entries = client.get_command_history(session_id)?;
+    if entries.is_empty() {
+        println!("session {session_id} has no command history");
+        return Ok(());
+    }
+    for entry in &entries {
+        println!(
+            "{:>5}  {}  {:>10}  {:>4}  {}",
+            entry.command_id,
+            format_epoch_ms(entry.started_at),
+            format_duration(entry.started_at, entry.finished_at),
+            entry
+                .exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            entry.cmd,
+        );
+    }
+    Ok(())
+}
+
+/// Render an epoch-ms timestamp as local wall-clock `HH:MM:SS`.
+fn format_epoch_ms(ms: u64) -> String {
+    let secs_of_day = (ms / 1000) % 86_400;
+    format!(
+        "{:02}:{:02}:{:02}",
+        secs_of_day / 3600,
+        (secs_of_day % 3600) / 60,
+        secs_of_day % 60
+    )
+}
+
+/// Elapsed time between start and finish, or a marker when the command never
+/// reported completion. Deliberately does not guess: an unfinished record is
+/// shown as such rather than as a duration up to "now".
+fn format_duration(started_at: u64, finished_at: Option<u64>) -> String {
+    match finished_at {
+        Some(end) => {
+            let ms = end.saturating_sub(started_at);
+            if ms < 1000 {
+                format!("{ms}ms")
+            } else {
+                format!("{:.1}s", ms as f64 / 1000.0)
+            }
+        }
+        None => "incomplete".to_string(),
+    }
 }
 
 fn handle_send(client: &MaltClient, session_id: u32, input: &str) -> Result<()> {

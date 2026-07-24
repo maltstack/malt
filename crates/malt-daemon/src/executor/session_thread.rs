@@ -7,16 +7,19 @@ use crate::DaemonError;
 use malt_compat::CompatTranslator;
 use malt_layout::resolve::compute_resolved_panes;
 use malt_layout::{LayoutConfig, Rect};
-use malt_protocol::common::{ClientCapabilities, IsolationTier, PaneId, ResolvedPane, SessionId};
+use malt_protocol::common::{
+    ClientCapabilities, IsolationTier, PaneId, PaneKind, ResolvedPane, SessionId,
+};
 use malt_protocol::input::KeyEvent;
 use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
 use malt_protocol::priority::Priority;
 use malt_protocol::render::{InitialState, RenderBatch};
 use malt_renderer::host::{PaneFrame, RendererHost};
+use malt_session::pane::{CommandBlock, PaneRuntime, DEFAULT_MAX_BLOCKS};
 use malt_session::session::SessionRuntime;
 use malt_term::{EditMode, EditResult, Editor};
 use mash::env::{Env, EnvSnapshot, Variable};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -46,6 +49,16 @@ fn job_object_limits_for_tier(isolation: IsolationTier) -> (u64, u32) {
             (CAPPED_MEMORY_LIMIT_MB, CAPPED_CPU_RATE_PERCENT)
         }
     }
+}
+
+/// Milliseconds since the Unix epoch, saturating to 0 if the system clock is
+/// before the epoch. Used for render staleness tracking and command history
+/// timestamps.
+pub(crate) fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Apply a session's isolation tier to its MASH environment: sets the opaque
@@ -155,6 +168,14 @@ pub enum SessionCommand {
         command: String,
         reply: mpsc::Sender<CommandOutput>,
     },
+    /// The sole MASH owner announcing that it has begun a request. Recorded
+    /// as an open history block; the matching `ExecutionCompleted` finalizes
+    /// it.
+    ExecutionStarted {
+        command_id: u32,
+        command: String,
+        started_at: u64,
+    },
     /// A result sent by the sole MASH owner. It is committed on this actor
     /// before the worker may take another request.
     ExecutionCompleted(ExecutionCompletion),
@@ -169,6 +190,10 @@ pub enum SessionCommand {
     /// for programmatic/agent consumption. Same underlying grid as
     /// `GetOutput`, different rendering.
     GetOutputText { reply: mpsc::Sender<String> },
+    /// Get this session's command execution history, oldest first.
+    GetCommandHistory {
+        reply: mpsc::Sender<Vec<CommandBlock>>,
+    },
     /// Register a VNP client with this session's renderer.
     RegisterVnpClient {
         client_id: u64,
@@ -232,6 +257,10 @@ impl std::fmt::Debug for SessionCommand {
                 .debug_struct("RunCommand")
                 .field("command", command)
                 .finish(),
+            Self::ExecutionStarted { command_id, .. } => f
+                .debug_struct("ExecutionStarted")
+                .field("command_id", command_id)
+                .finish(),
             Self::ExecutionCompleted(_) => f.debug_struct("ExecutionCompleted").finish(),
             Self::WriteInput { data } => f
                 .debug_struct("WriteInput")
@@ -239,6 +268,7 @@ impl std::fmt::Debug for SessionCommand {
                 .finish(),
             Self::GetOutput { .. } => f.debug_struct("GetOutput").finish(),
             Self::GetOutputText { .. } => f.debug_struct("GetOutputText").finish(),
+            Self::GetCommandHistory { .. } => f.debug_struct("GetCommandHistory").finish(),
             Self::RegisterVnpClient { client_id, .. } => f
                 .debug_struct("RegisterVnpClient")
                 .field("client_id", client_id)
@@ -281,6 +311,14 @@ pub struct SessionExecutor {
     resolved_panes: Vec<ResolvedPane>,
     finalization: Option<Finalization>,
     expected_completion_sequence: u64,
+    /// Command execution history for this session's first (shell) pane.
+    ///
+    /// The worker announces each execution as it starts (`ExecutionStarted`)
+    /// and this actor pushes an *open* block; the matching
+    /// `ExecutionCompleted` finalizes it. Recording the start separately is
+    /// what keeps a running command visible in history and what leaves an
+    /// honestly-unfinished record if the daemon stops mid-command.
+    pane_runtime: PaneRuntime,
 }
 
 impl SessionExecutor {
@@ -291,7 +329,8 @@ impl SessionExecutor {
         first_pane: PaneId,
         isolation: IsolationTier,
     ) -> Result<(mpsc::Sender<SessionCommand>, JoinHandle<()>), DaemonError> {
-        let spawned = Self::spawn_with_capacity(session_id, first_pane, isolation, 256)?;
+        let spawned =
+            Self::spawn_with_capacity(session_id, first_pane, isolation, 256, Vec::new())?;
         Ok((spawned.control_tx, spawned.control_thread))
     }
 
@@ -302,11 +341,19 @@ impl SessionExecutor {
         first_pane: PaneId,
         isolation: IsolationTier,
         capacity: usize,
+        command_blocks: Vec<CommandBlock>,
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
         apply_session_isolation(&mut env, session_id.clone(), isolation);
-        Self::spawn_with_env(session_id, first_pane, isolation, capacity, env)
+        Self::spawn_with_env(
+            session_id,
+            first_pane,
+            isolation,
+            capacity,
+            env,
+            command_blocks,
+        )
     }
 
     /// Spawn a new session executor on a dedicated thread, setting the working
@@ -328,6 +375,7 @@ impl SessionExecutor {
         initial_cwd: std::path::PathBuf,
         shell_path: Option<String>,
         env_snapshot: Option<mash::env::EnvSnapshot>,
+        command_blocks: Vec<CommandBlock>,
     ) -> Result<(mpsc::Sender<SessionCommand>, JoinHandle<()>), DaemonError> {
         let spawned = Self::spawn_with_cwd_and_capacity(
             session_id,
@@ -337,6 +385,7 @@ impl SessionExecutor {
             shell_path,
             env_snapshot,
             256,
+            command_blocks,
         )?;
         Ok((spawned.control_tx, spawned.control_thread))
     }
@@ -349,6 +398,7 @@ impl SessionExecutor {
         shell_path: Option<String>,
         env_snapshot: Option<EnvSnapshot>,
         capacity: usize,
+        command_blocks: Vec<CommandBlock>,
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
@@ -369,7 +419,14 @@ impl SessionExecutor {
         } else {
             warn!(?initial_cwd, "spawn_with_cwd: directory no longer exists; falling back to OS cwd");
         }
-        Self::spawn_with_env(session_id, first_pane, isolation, capacity, env)
+        Self::spawn_with_env(
+            session_id,
+            first_pane,
+            isolation,
+            capacity,
+            env,
+            command_blocks,
+        )
     }
 
     fn spawn_with_env(
@@ -378,8 +435,27 @@ impl SessionExecutor {
         isolation: IsolationTier,
         capacity: usize,
         env: Env,
+        command_blocks: Vec<CommandBlock>,
     ) -> Result<SessionSpawn, DaemonError> {
         let snapshot = env.to_snapshot();
+        let pane_cwd = env.get_str("PWD").to_string();
+        // Resume the id sequence past everything already recorded so restored
+        // history and new executions cannot collide on command_id. Derived
+        // from the history itself rather than persisted separately -- a second
+        // source of truth could only ever disagree with it. The worker owns id
+        // assignment, so it is seeded here rather than on the control actor.
+        let start_command_id = command_blocks
+            .iter()
+            .map(|block| block.command_id)
+            .max()
+            .unwrap_or(0);
+        let pane_runtime = PaneRuntime::with_blocks(
+            first_pane.clone(),
+            PaneKind::Shell,
+            pane_cwd,
+            DEFAULT_MAX_BLOCKS,
+            command_blocks,
+        );
         let (control_tx, control_rx) = mpsc::channel();
         let (ingress, requests) = ExecutionIngress::new(session_id.clone(), capacity)?;
         let worker_thread = spawn_command_worker(
@@ -388,6 +464,7 @@ impl SessionExecutor {
             requests,
             control_tx.clone(),
             ingress.clone(),
+            start_command_id,
         )?;
         let control_ingress = ingress.clone();
         let control_thread = thread::Builder::new()
@@ -408,6 +485,7 @@ impl SessionExecutor {
                     resolved_panes: Vec::new(),
                     finalization: None,
                     expected_completion_sequence: 1,
+                    pane_runtime,
                 };
                 executor.run(control_rx);
             })
@@ -468,6 +546,19 @@ impl SessionExecutor {
                 Ok(SessionCommand::RunCommand { command, reply }) => {
                     self.submit_legacy_command(command, reply);
                 }
+                Ok(SessionCommand::ExecutionStarted {
+                    command_id,
+                    command,
+                    started_at,
+                }) => {
+                    self.pane_runtime.push_command_block(CommandBlock {
+                        command_id,
+                        cmd: command,
+                        started_at,
+                        finished_at: None,
+                        exit_code: None,
+                    });
+                }
                 Ok(SessionCommand::ExecutionCompleted(completion)) => self.begin_finalization(completion),
                 Ok(SessionCommand::PtyOutput { data, .. }) => {
                     if let Some(compat) = &mut self.compat {
@@ -497,6 +588,11 @@ impl SessionExecutor {
                 Ok(SessionCommand::GetOutputText { reply }) => {
                     let output = self.get_plain_text_output();
                     let _ = reply.send(output);
+                }
+                Ok(SessionCommand::GetCommandHistory { reply }) => {
+                    let history: Vec<CommandBlock> =
+                        self.pane_runtime.command_blocks().iter().cloned().collect();
+                    let _ = reply.send(history);
                 }
                 Ok(SessionCommand::RegisterVnpClient {
                     client_id,
@@ -571,6 +667,7 @@ impl SessionExecutor {
                         name.as_deref(),
                         isolation,
                         &self.env_snapshot,
+                        self.pane_runtime.command_blocks(),
                     );
                     let _ = reply.send(persisted);
                 }
@@ -591,6 +688,7 @@ impl SessionExecutor {
                             name.as_deref(),
                             isolation,
                             &self.env_snapshot,
+                            self.pane_runtime.command_blocks(),
                         ))
                     } else {
                         None
@@ -609,10 +707,7 @@ impl SessionExecutor {
 
     /// Dispatch a render frame to all registered VNP clients.
     fn dispatch_render(&mut self) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = now_epoch_ms();
         for stale_id in self.renderer.shed_stale_clients(now_ms) {
             // Dropping the sender here closes the VNP listener's render_rx,
             // which its main loop already treats as a disconnect signal
@@ -760,6 +855,8 @@ impl SessionExecutor {
             });
         }
         self.env_snapshot = finalization.snapshot;
+        self.pane_runtime
+            .finalize_current_block(now_epoch_ms(), finalization.output.exit_code);
         self.expected_completion_sequence = finalization.sequence.saturating_add(1);
         self.dispatch_render();
         let _ = finalization.reply.send(Ok(finalization.output));
@@ -886,6 +983,36 @@ impl SessionExecutor {
         }
 
         serde_json::to_string(&rows_json).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
+/// Convert a live `CommandBlock` to its persisted shape. Lossless — see
+/// `from_persisted_command_block` for the reverse direction.
+pub(crate) fn to_persisted_command_block(
+    block: &CommandBlock,
+) -> malt_protocol::persist::session::PersistedCommandBlock {
+    malt_protocol::persist::session::PersistedCommandBlock {
+        command_id: block.command_id,
+        cmd: block.cmd.clone(),
+        started_at: block.started_at,
+        finished_at: block.finished_at,
+        exit_code: block.exit_code,
+        _unknown: Vec::new(),
+    }
+}
+
+/// Convert a persisted command record back to its live shape. A record whose
+/// `finished_at`/`exit_code` are absent stays absent — a command interrupted
+/// by a daemon stop is never reinterpreted as complete.
+pub(crate) fn from_persisted_command_block(
+    block: &malt_protocol::persist::session::PersistedCommandBlock,
+) -> CommandBlock {
+    CommandBlock {
+        command_id: block.command_id,
+        cmd: block.cmd.clone(),
+        started_at: block.started_at,
+        finished_at: block.finished_at,
+        exit_code: block.exit_code,
     }
 }
 
@@ -1066,6 +1193,7 @@ fn build_persisted_session(
     name: Option<&str>,
     isolation: IsolationTier,
     env: &EnvSnapshot,
+    command_blocks: &VecDeque<CommandBlock>,
 ) -> PersistedSession {
     let shell_path = snapshot_string(env, "SHELL").unwrap_or_else(default_shell_path);
     let cwd = snapshot_string(env, "PWD").unwrap_or_else(|| {
@@ -1080,6 +1208,7 @@ fn build_persisted_session(
             shell_path,
             env_snapshot,
         },
+        command_blocks: command_blocks.iter().map(to_persisted_command_block).collect(),
         _unknown: vec![],
     };
 

@@ -2,7 +2,7 @@ use crate::executor::coordinator::Coordinator;
 use crate::DaemonError;
 use malt_gateway::backend::GatewayBackend;
 use malt_gateway::error::GatewayError;
-use malt_gateway::types::{ExecResult, PaneResponse, SessionResponse};
+use malt_gateway::types::{CommandHistoryEntry, ExecResult, PaneResponse, SessionResponse};
 use malt_protocol::common::{IsolationTier, SessionId};
 use std::sync::{Arc, Mutex};
 
@@ -176,6 +176,33 @@ impl GatewayBackend for DaemonBackend {
         reply
             .recv_timeout(std::time::Duration::from_secs(2))
             .map_err(|_| GatewayError::Internal("session output timed out".to_string()))
+    }
+
+    fn get_command_history(
+        &self,
+        session_id: u32,
+    ) -> Result<Vec<CommandHistoryEntry>, GatewayError> {
+        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+        // Resolve the pane first: it doubles as the existence check, so an
+        // unknown session is a 404 rather than an empty history that looks
+        // like a real session which has run nothing.
+        let pane_id = coord
+            .session_first_pane(SessionId(session_id))
+            .ok_or(GatewayError::SessionNotFound(session_id))?;
+        let blocks = coord
+            .get_session_command_history(SessionId(session_id))
+            .map_err(|e| GatewayError::Internal(e.to_string()))?;
+        Ok(blocks
+            .into_iter()
+            .map(|b| CommandHistoryEntry {
+                command_id: b.command_id,
+                cmd: b.cmd,
+                started_at: b.started_at,
+                finished_at: b.finished_at,
+                exit_code: b.exit_code,
+                pane_id: pane_id.0,
+            })
+            .collect())
     }
 
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError> {

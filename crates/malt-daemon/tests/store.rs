@@ -26,6 +26,7 @@ fn make_session(id: u32) -> PersistedSession {
                         shell_path: "/bin/bash".to_string(),
                         env_snapshot: None,
                     },
+                    command_blocks: Vec::new(),
                     _unknown: Vec::new(),
                 },
             );
@@ -59,6 +60,70 @@ fn save_and_load_session() {
     assert_eq!(loaded.id, SessionId(1));
     assert_eq!(loaded.name, Some("session-1".to_string()));
     assert_eq!(loaded.schema_version, 1);
+}
+
+#[test]
+fn command_history_survives_the_bitpack_round_trip() {
+    use malt_protocol::persist::session::PersistedCommandBlock;
+
+    let dir = tempdir().unwrap();
+    let store = SessionStore::new(dir.path().to_path_buf());
+
+    let mut session = make_session(1);
+    session.panes.get_mut(&1).unwrap().command_blocks = vec![
+        PersistedCommandBlock {
+            command_id: 1,
+            cmd: "cargo test --workspace".to_string(),
+            started_at: 1_784_070_000_123,
+            finished_at: Some(1_784_070_042_456),
+            exit_code: Some(0),
+            _unknown: Vec::new(),
+        },
+        PersistedCommandBlock {
+            command_id: 2,
+            cmd: "false".to_string(),
+            started_at: 1_784_070_050_000,
+            finished_at: Some(1_784_070_050_010),
+            exit_code: Some(1),
+            _unknown: Vec::new(),
+        },
+        // Interrupted: the daemon stopped while this was still running. Both
+        // optional fields must come back absent -- a record that says "not
+        // confirmed complete" is the whole point, and a decoder that filled
+        // in a default 0 here would silently report a success that never
+        // happened.
+        PersistedCommandBlock {
+            command_id: 3,
+            cmd: "sleep 300".to_string(),
+            started_at: 1_784_070_060_000,
+            finished_at: None,
+            exit_code: None,
+            _unknown: Vec::new(),
+        },
+    ];
+
+    store.save_session(&SessionId(1), &session).unwrap();
+    let loaded = store.load_session(&SessionId(1)).unwrap();
+
+    let blocks = &loaded.panes.get(&1).unwrap().command_blocks;
+    assert_eq!(
+        blocks,
+        &session.panes.get(&1).unwrap().command_blocks,
+        "every field of every command block must survive encode/decode"
+    );
+    assert!(blocks[2].finished_at.is_none());
+    assert!(blocks[2].exit_code.is_none());
+}
+
+#[test]
+fn a_session_with_no_command_history_round_trips_as_empty() {
+    // The field is additive: sessions persisted before it existed decode
+    // with an empty list rather than failing to load at all.
+    let dir = tempdir().unwrap();
+    let store = SessionStore::new(dir.path().to_path_buf());
+    store.save_session(&SessionId(1), &make_session(1)).unwrap();
+    let loaded = store.load_session(&SessionId(1)).unwrap();
+    assert!(loaded.panes.get(&1).unwrap().command_blocks.is_empty());
 }
 
 #[test]
@@ -141,6 +206,7 @@ fn roundtrip_app_pane() {
                         app_id: "com.example.widget".to_string(),
                         config: Some(config_bytes.clone()),
                     },
+                    command_blocks: Vec::new(),
                     _unknown: Vec::new(),
                 },
             );
@@ -187,6 +253,7 @@ fn roundtrip_compat_pane() {
                         program: "/usr/bin/vim".to_string(),
                         args: vec!["--clean".to_string(), "file.txt".to_string()],
                     },
+                    command_blocks: Vec::new(),
                     _unknown: Vec::new(),
                 },
             );
@@ -244,6 +311,7 @@ fn roundtrip_complex_layout() {
                         shell_path: "/bin/bash".to_string(),
                         env_snapshot: None,
                     },
+                    command_blocks: Vec::new(),
                     _unknown: Vec::new(),
                 },
             );
@@ -256,6 +324,7 @@ fn roundtrip_complex_layout() {
                         shell_path: "/bin/bash".to_string(),
                         env_snapshot: None,
                     },
+                    command_blocks: Vec::new(),
                     _unknown: Vec::new(),
                 },
             );

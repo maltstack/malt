@@ -54,6 +54,23 @@ pub struct ExecResult {
     pub exit_code: Option<i32>,
 }
 
+/// One command execution record returned by the history API.
+///
+/// `finished_at` and `exit_code` are both `None` when the command is not
+/// confirmed complete — either still running, or interrupted by a daemon
+/// stop. Neither case is ever reported as a successful exit.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CommandHistoryEntry {
+    pub command_id: u32,
+    pub cmd: String,
+    /// Epoch milliseconds.
+    pub started_at: u64,
+    /// Epoch milliseconds; `None` if not confirmed complete.
+    pub finished_at: Option<u64>,
+    pub exit_code: Option<i32>,
+    pub pane_id: u32,
+}
+
 /// Request body for sending raw input.
 #[derive(Debug, Deserialize)]
 pub struct SendInputRequest {
