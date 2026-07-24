@@ -40,7 +40,11 @@ fn run_shell(shell: &Path, script: &str) -> Result<RunResult, String> {
     })
 }
 
-fn run_program<S: AsRef<OsStr>>(program: S, args: &[&str], cwd: &Path) -> Result<RunResult, String> {
+fn run_program<S: AsRef<OsStr>>(
+    program: S,
+    args: &[&str],
+    cwd: &Path,
+) -> Result<RunResult, String> {
     let output = Command::new(program)
         .args(args)
         .current_dir(cwd)
@@ -254,7 +258,10 @@ fn modernish_capability_probes() {
     let mash = mash_binary();
     let cap_dir = modernish_cap_dir();
     if !cap_dir.is_dir() {
-        eprintln!("modernish cap dir not found at {}; skipping", cap_dir.display());
+        eprintln!(
+            "modernish cap dir not found at {}; skipping",
+            cap_dir.display()
+        );
         return;
     }
 

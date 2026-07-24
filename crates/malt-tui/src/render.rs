@@ -143,14 +143,7 @@ impl TuiRenderer {
     }
 
     /// Set a single cell, respecting clip bounds and buffer area.
-    fn set_cell(
-        &self,
-        buf: &mut Buffer,
-        x: u16,
-        y: u16,
-        ch: char,
-        style: ratatui::style::Style,
-    ) {
+    fn set_cell(&self, buf: &mut Buffer, x: u16, y: u16, ch: char, style: ratatui::style::Style) {
         if let Some(clip) = &self.clip {
             if x < clip.x || x >= clip.x + clip.width || y < clip.y || y >= clip.y + clip.height {
                 return;

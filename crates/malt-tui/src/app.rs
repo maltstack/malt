@@ -28,7 +28,11 @@ impl App {
     }
 
     /// Process incoming render commands and apply them to the buffer.
-    pub fn process_commands(&mut self, commands: &[RenderCommand], buf: &mut ratatui::buffer::Buffer) {
+    pub fn process_commands(
+        &mut self,
+        commands: &[RenderCommand],
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
         self.renderer.apply(commands, buf);
     }
 }

@@ -88,11 +88,7 @@ impl GatewayBackend for DaemonBackend {
         Ok(())
     }
 
-    fn exec_command(
-        &self,
-        session_id: u32,
-        command: String,
-    ) -> Result<ExecResult, GatewayError> {
+    fn exec_command(&self, session_id: u32, command: String) -> Result<ExecResult, GatewayError> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         {
             let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());

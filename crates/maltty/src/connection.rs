@@ -28,10 +28,7 @@ impl HttpConnection {
     ///
     /// Returns `None` if no new content is available or the daemon is unreachable.
     pub fn poll_styled(&mut self) -> Option<Vec<Vec<StyledSpan>>> {
-        let url = format!(
-            "{}/sessions/{}/output",
-            self.base_url, self.session_id
-        );
+        let url = format!("{}/sessions/{}/output", self.base_url, self.session_id);
         let resp = self.http.get(&url).send().ok()?;
         let json: serde_json::Value = resp.json().ok()?;
         let data = json.get("data")?;
@@ -57,10 +54,7 @@ impl HttpConnection {
                             .to_string();
                         let fg = parse_rgb(span.get("fg"));
                         let bg = parse_rgb(span.get("bg"));
-                        let bold = span
-                            .get("b")
-                            .and_then(|b| b.as_bool())
-                            .unwrap_or(false);
+                        let bold = span.get("b").and_then(|b| b.as_bool()).unwrap_or(false);
                         spans.push(StyledSpan { text, fg, bg, bold });
                     }
                 }
@@ -83,10 +77,7 @@ impl HttpConnection {
 
     /// Send raw input text to the daemon session.
     pub fn send_input(&mut self, input: &str) {
-        let url = format!(
-            "{}/sessions/{}/send",
-            self.base_url, self.session_id
-        );
+        let url = format!("{}/sessions/{}/send", self.base_url, self.session_id);
         let _ = self
             .http
             .post(&url)

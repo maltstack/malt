@@ -1,7 +1,6 @@
 use malt_protocol::codec::{
-    make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, MSG_ATTACH_SESSION,
-    MSG_FRAME_ACK, MSG_HELLO, MSG_HELLO_ACK, MSG_INITIAL_STATE, MSG_KEY_EVENT, MSG_RENDER_BATCH,
-    MSG_RESIZE,
+    make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, MSG_ATTACH_SESSION, MSG_FRAME_ACK,
+    MSG_HELLO, MSG_HELLO_ACK, MSG_INITIAL_STATE, MSG_KEY_EVENT, MSG_RENDER_BATCH, MSG_RESIZE,
 };
 use malt_protocol::common::{InputAuthority, ResolvedStyle, SessionId};
 use malt_protocol::envelope::{decode_envelope, encode_message};
@@ -86,7 +85,9 @@ fn parse_rgb(val: Option<&serde_json::Value>) -> (u8, u8, u8) {
 fn key_event_to_text(event: &KeyEvent) -> Option<String> {
     use malt_protocol::input::{KeyValue, NamedKey};
 
-    let ctrl = event.modifiers.contains(malt_protocol::common::KeyModifiers::CTRL);
+    let ctrl = event
+        .modifiers
+        .contains(malt_protocol::common::KeyModifiers::CTRL);
     match &event.key {
         KeyValue::Char { codepoint } => {
             let c = char::from_u32(*codepoint)?;
@@ -170,10 +171,7 @@ impl HttpConnection {
 
 impl DaemonConnection for HttpConnection {
     fn poll_commands(&mut self) -> Option<Vec<RenderCommand>> {
-        let url = format!(
-            "{}/sessions/{}/output",
-            self.base_url, self.session_id
-        );
+        let url = format!("{}/sessions/{}/output", self.base_url, self.session_id);
         let resp = self.http.get(&url).send().ok()?;
         let json: serde_json::Value = resp.json().ok()?;
         let data = json.get("data")?;

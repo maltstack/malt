@@ -58,10 +58,7 @@ fn render_template(
             match chars[i + 1] {
                 'w' => {
                     // Last component of cwd
-                    let base = cwd
-                        .rsplit(['/', '\\'])
-                        .next()
-                        .unwrap_or(cwd);
+                    let base = cwd.rsplit(['/', '\\']).next().unwrap_or(cwd);
                     result.push_str(base);
                     i += 2;
                 }

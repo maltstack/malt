@@ -97,9 +97,14 @@ fn normalize_generated_file(path: &Path) {
             match_depth = 0;
         }
 
+        let indent_len = line.len().saturating_sub(trimmed.len());
+        let indent = &line[..indent_len];
         let mut rewritten = line.to_string();
         if in_match_self {
             rewritten = rewrite_pack_match_loop_line(line);
+        }
+        if trimmed == "use vexil_runtime::*;" {
+            rewritten = format!("{indent}#[allow(unused_imports)]\n{indent}use vexil_runtime::*;");
         }
 
         out.push_str(&rewritten);

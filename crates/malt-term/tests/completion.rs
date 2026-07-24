@@ -1,6 +1,6 @@
 use malt_term::completion::{
-    Candidate, CompletionCoordinator, CompletionKind, CompletionSource, PathCompletionSource,
-    common_prefix,
+    common_prefix, Candidate, CompletionCoordinator, CompletionKind, CompletionSource,
+    PathCompletionSource,
 };
 
 /// A mock source that returns fixed candidates.

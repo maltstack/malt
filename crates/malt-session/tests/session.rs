@@ -1,6 +1,4 @@
-use malt_protocol::common::{
-    InputAuthority, IsolationTier, PaneId, SessionId, SessionState,
-};
+use malt_protocol::common::{InputAuthority, IsolationTier, PaneId, SessionId, SessionState};
 use malt_session::session::SessionRuntime;
 
 fn make_session() -> SessionRuntime {

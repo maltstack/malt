@@ -11,7 +11,10 @@ pub struct Cell {
 
 impl Default for Cell {
     fn default() -> Self {
-        Self { ch: ' ', style: default_style() }
+        Self {
+            ch: ' ',
+            style: default_style(),
+        }
     }
 }
 
@@ -23,10 +26,15 @@ pub struct Row {
 
 impl Row {
     pub fn new(cols: usize) -> Self {
-        Self { cells: vec![Cell::default(); cols], dirty: false }
+        Self {
+            cells: vec![Cell::default(); cols],
+            dirty: false,
+        }
     }
     pub fn clear(&mut self) {
-        for cell in &mut self.cells { *cell = Cell::default(); }
+        for cell in &mut self.cells {
+            *cell = Cell::default();
+        }
         self.dirty = true;
     }
     pub fn resize(&mut self, cols: usize) {
@@ -37,9 +45,15 @@ impl Row {
 
 pub fn default_style() -> ResolvedStyle {
     ResolvedStyle {
-        fg: DEFAULT_FG, bg: DEFAULT_BG,
-        bold: false, italic: false, underline: false,
-        dim: false, strikethrough: false, reverse: false, blink: false,
+        fg: DEFAULT_FG,
+        bg: DEFAULT_BG,
+        bold: false,
+        italic: false,
+        underline: false,
+        dim: false,
+        strikethrough: false,
+        reverse: false,
+        blink: false,
         token_name: None,
         _unknown: Vec::new(),
     }

@@ -37,9 +37,7 @@ fn convert_key_code(code: ct::KeyCode) -> Option<KeyValue> {
         ct::KeyCode::Esc => Some(KeyValue::Named {
             key: NamedKey::Escape,
         }),
-        ct::KeyCode::Tab => Some(KeyValue::Named {
-            key: NamedKey::Tab,
-        }),
+        ct::KeyCode::Tab => Some(KeyValue::Named { key: NamedKey::Tab }),
         ct::KeyCode::Backspace => Some(KeyValue::Named {
             key: NamedKey::Backspace,
         }),
@@ -52,18 +50,14 @@ fn convert_key_code(code: ct::KeyCode) -> Option<KeyValue> {
         ct::KeyCode::Home => Some(KeyValue::Named {
             key: NamedKey::Home,
         }),
-        ct::KeyCode::End => Some(KeyValue::Named {
-            key: NamedKey::End,
-        }),
+        ct::KeyCode::End => Some(KeyValue::Named { key: NamedKey::End }),
         ct::KeyCode::PageUp => Some(KeyValue::Named {
             key: NamedKey::PageUp,
         }),
         ct::KeyCode::PageDown => Some(KeyValue::Named {
             key: NamedKey::PageDown,
         }),
-        ct::KeyCode::Up => Some(KeyValue::Named {
-            key: NamedKey::Up,
-        }),
+        ct::KeyCode::Up => Some(KeyValue::Named { key: NamedKey::Up }),
         ct::KeyCode::Down => Some(KeyValue::Named {
             key: NamedKey::Down,
         }),

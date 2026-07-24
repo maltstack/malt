@@ -17,9 +17,8 @@ fn startup_u_enables_nounset_for_c_command() {
         out.status.code(),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("undefined variable: UNSET_FOR_STARTUP_OPT_TEST")
-    );
+    assert!(String::from_utf8_lossy(&out.stderr)
+        .contains("undefined variable: UNSET_FOR_STARTUP_OPT_TEST"));
 }
 
 #[test]

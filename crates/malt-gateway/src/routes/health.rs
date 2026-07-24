@@ -1,7 +1,7 @@
 // Health check endpoint — GET /health.
 
-use axum::Json;
 use crate::types::ApiResponse;
+use axum::Json;
 use serde::Serialize;
 
 #[derive(Serialize)]

@@ -58,10 +58,7 @@ impl History {
         if self.entries.len() >= self.max_entries {
             self.entries.pop_front();
         }
-        self.entries.push_back(HistoryEntry {
-            line,
-            timestamp: 0,
-        });
+        self.entries.push_back(HistoryEntry { line, timestamp: 0 });
     }
 
     /// Number of entries.
@@ -136,10 +133,7 @@ impl History {
 
                 if next == '!' {
                     // !! — last command
-                    let last = self
-                        .entries
-                        .back()
-                        .ok_or_else(|| HistoryError::Empty)?;
+                    let last = self.entries.back().ok_or_else(|| HistoryError::Empty)?;
                     result.push_str(&last.line);
                     i += 2;
                 } else if next == '-' || next.is_ascii_digit() {
@@ -197,10 +191,7 @@ impl History {
     // --- private helpers ---
 
     fn expand_caret_subst(&self, rest: &str) -> Result<String, HistoryError> {
-        let last = self
-            .entries
-            .back()
-            .ok_or(HistoryError::Empty)?;
+        let last = self.entries.back().ok_or(HistoryError::Empty)?;
 
         let parts: Vec<&str> = rest.splitn(2, '^').collect();
         if parts.is_empty() {

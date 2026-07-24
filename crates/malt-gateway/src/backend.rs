@@ -18,11 +18,7 @@ pub trait GatewayBackend: Send + Sync + 'static {
 
     fn destroy_session(&self, id: u32) -> Result<(), GatewayError>;
 
-    fn exec_command(
-        &self,
-        session_id: u32,
-        command: String,
-    ) -> Result<ExecResult, GatewayError>;
+    fn exec_command(&self, session_id: u32, command: String) -> Result<ExecResult, GatewayError>;
 
     fn send_input(&self, session_id: u32, input: String) -> Result<(), GatewayError>;
 

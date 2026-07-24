@@ -99,12 +99,8 @@ impl RendererHost {
             }
 
             // Walk all visible panes
-            let commands = walk_visible_panes(
-                panes,
-                layout,
-                entry.state.capabilities(),
-                &self.walk_config,
-            );
+            let commands =
+                walk_visible_panes(panes, layout, entry.state.capabilities(), &self.walk_config);
 
             // Dirty-diff against previous frame
             let delta = entry.dirty.diff(&commands);
@@ -153,9 +149,7 @@ impl RendererHost {
                 pane_id: first.pane_id.clone(),
             }
         } else {
-            malt_protocol::common::LayoutNode::Leaf {
-                pane_id: PaneId(0),
-            }
+            malt_protocol::common::LayoutNode::Leaf { pane_id: PaneId(0) }
         };
 
         InitialState {
@@ -194,7 +188,9 @@ fn walk_visible_panes(
 
     for pane_frame in panes {
         // Find the resolved pane in layout to get position/size
-        let resolved = layout.iter().find(|rp| rp.pane_id.0 == pane_frame.pane_id.0);
+        let resolved = layout
+            .iter()
+            .find(|rp| rp.pane_id.0 == pane_frame.pane_id.0);
         let resolved = match resolved {
             Some(rp) if rp.visible => rp,
             _ => continue,

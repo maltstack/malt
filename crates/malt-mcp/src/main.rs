@@ -70,16 +70,9 @@ fn tools_schema() -> Value {
     ])
 }
 
-fn handle_request(
-    request: &Value,
-    client: &reqwest::blocking::Client,
-    api_addr: &str,
-) -> Value {
+fn handle_request(request: &Value, client: &reqwest::blocking::Client, api_addr: &str) -> Value {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let method = request
-        .get("method")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
+    let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
     match method {
         "initialize" => json!({
@@ -112,10 +105,7 @@ fn handle_request(
 
         "tools/call" => {
             let params = request.get("params").cloned().unwrap_or(json!({}));
-            let tool_name = params
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("");
+            let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
             match dispatch_tool(tool_name, &arguments, client, api_addr) {
@@ -230,8 +220,8 @@ fn dispatch_tool(
 }
 
 fn main() -> anyhow::Result<()> {
-    let api_addr = std::env::var("MALT_API_ADDR")
-        .unwrap_or_else(|_| "http://127.0.0.1:7700".to_string());
+    let api_addr =
+        std::env::var("MALT_API_ADDR").unwrap_or_else(|_| "http://127.0.0.1:7700".to_string());
     let client = reqwest::blocking::Client::new();
 
     let stdin = io::stdin();
@@ -276,7 +266,9 @@ mod tests {
         let req = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
         let client = reqwest::blocking::Client::new();
         let resp = handle_request(&req, &client, "http://localhost:9999");
-        let tools = resp["result"]["tools"].as_array().expect("tools should be an array");
+        let tools = resp["result"]["tools"]
+            .as_array()
+            .expect("tools should be an array");
         assert!(tools.len() >= 5);
     }
 

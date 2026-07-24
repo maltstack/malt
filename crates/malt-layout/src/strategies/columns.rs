@@ -46,9 +46,7 @@ impl LayoutStrategy for ColumnsStrategy {
 
     fn rebuild(&self, panes: &[PaneId], _terminal: Rect) -> LayoutNode {
         if panes.is_empty() {
-            return LayoutNode::Leaf {
-                pane_id: PaneId(0),
-            };
+            return LayoutNode::Leaf { pane_id: PaneId(0) };
         }
         if panes.len() == 1 {
             return LayoutNode::Leaf {

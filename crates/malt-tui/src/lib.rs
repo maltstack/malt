@@ -1,5 +1,5 @@
-pub mod style;
-pub mod render;
-pub mod input;
-pub mod connection;
 pub mod app;
+pub mod connection;
+pub mod input;
+pub mod render;
+pub mod style;

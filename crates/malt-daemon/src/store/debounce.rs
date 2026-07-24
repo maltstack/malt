@@ -269,9 +269,7 @@ mod tests {
             schema_version: 1,
             id: sid.clone(),
             name: Some("test".to_string()),
-            layout: LayoutNode::Leaf {
-                pane_id: PaneId(1),
-            },
+            layout: LayoutNode::Leaf { pane_id: PaneId(1) },
             focus: PaneId(1),
             panes: BTreeMap::new(),
             theme: None,

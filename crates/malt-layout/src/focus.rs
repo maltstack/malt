@@ -8,11 +8,7 @@ use malt_protocol::common::{FocusDir, PaneId, ResolvedPane};
 /// direction, then picks the nearest by Euclidean distance from center to center.
 ///
 /// For Next/Prev: cycles through visible pane IDs in order, wrapping around.
-pub fn focus_direction(
-    panes: &[ResolvedPane],
-    focused: PaneId,
-    dir: FocusDir,
-) -> Option<PaneId> {
+pub fn focus_direction(panes: &[ResolvedPane], focused: PaneId, dir: FocusDir) -> Option<PaneId> {
     let visible: Vec<&ResolvedPane> = panes.iter().filter(|p| p.visible).collect();
 
     let current = visible.iter().find(|p| p.pane_id == focused)?;

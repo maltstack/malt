@@ -269,9 +269,7 @@ fn compute_split_rects(
         let size = if i < sizes.len() {
             match &sizes[i] {
                 SplitSize::Fixed { value } => *value,
-                SplitSize::Ratio { value } => {
-                    ((*value) * (total as f32)).round() as u16
-                }
+                SplitSize::Ratio { value } => ((*value) * (total as f32)).round() as u16,
                 SplitSize::Min { value } => *value,
                 SplitSize::Max { value } => (*value).min(total),
                 _ => {

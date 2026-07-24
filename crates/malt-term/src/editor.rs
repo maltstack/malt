@@ -514,5 +514,4 @@ impl Editor {
         self.vi_mode = ViMode::Insert;
         self.undo_stack = UndoStack::default();
     }
-
 }

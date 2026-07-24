@@ -124,9 +124,7 @@ fn unpack_from_bytes<T: Unpack>(bytes: &[u8], path: &Path) -> Result<T, StoreErr
                 .unwrap_or(0);
             let corrupt_name = format!(
                 "{}.corrupt.{}.vxb",
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("file"),
+                path.file_stem().and_then(|s| s.to_str()).unwrap_or("file"),
                 unix_secs
             );
             let corrupt_path = path

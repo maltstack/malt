@@ -122,8 +122,7 @@ impl MaltClient {
             .json(&serde_json::json!({ "command": cmd }))
             .send()
             .context("failed to reach daemon")?;
-        let envelope: ApiEnvelope<ExecResultData> =
-            resp.json().context("invalid exec response")?;
+        let envelope: ApiEnvelope<ExecResultData> = resp.json().context("invalid exec response")?;
         envelope
             .data
             .ok_or_else(|| anyhow::anyhow!("no data in exec response"))

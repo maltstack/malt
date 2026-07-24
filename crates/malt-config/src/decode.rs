@@ -52,10 +52,7 @@ fn extract_u32(
         Some(Value::U32(v)) => Ok(Some(*v)),
         Some(other) => Err(crate::ConfigError::Invalid {
             path: path.to_path_buf(),
-            reason: format!(
-                "field {name}: expected u32, got {}",
-                value_type_name(other)
-            ),
+            reason: format!("field {name}: expected u32, got {}", value_type_name(other)),
         }),
     }
 }
@@ -168,8 +165,7 @@ impl VxDecoder for crate::DaemonConfig {
                 .unwrap_or(defaults.default_tier),
             scrollback_lines: extract_u32(fields, "scrollback_lines", path)?
                 .unwrap_or(defaults.scrollback_lines),
-            log_level: extract_string(fields, "log_level", path)?
-                .unwrap_or(defaults.log_level),
+            log_level: extract_string(fields, "log_level", path)?.unwrap_or(defaults.log_level),
             persist_dir: extract_optional_string(fields, "persist_dir", path)?
                 .or(defaults.persist_dir),
             persist_interval_secs: extract_u32(fields, "persist_interval_secs", path)?
@@ -191,12 +187,9 @@ impl VxDecoder for crate::UserConfig {
         };
         let defaults = crate::UserConfig::default();
         Ok(crate::UserConfig {
-            edit_mode: extract_string(fields, "edit_mode", path)?
-                .unwrap_or(defaults.edit_mode),
-            theme: extract_optional_string(fields, "theme", path)?
-                .or(defaults.theme),
-            shell: extract_optional_string(fields, "shell", path)?
-                .or(defaults.shell),
+            edit_mode: extract_string(fields, "edit_mode", path)?.unwrap_or(defaults.edit_mode),
+            theme: extract_optional_string(fields, "theme", path)?.or(defaults.theme),
+            shell: extract_optional_string(fields, "shell", path)?.or(defaults.shell),
             startup_commands: extract_string_array(fields, "startup_commands", path)?
                 .unwrap_or(defaults.startup_commands),
         })
@@ -217,7 +210,10 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("socket_path".to_string(), Value::None);
         fields.insert("max_sessions".to_string(), Value::U32(64));
-        fields.insert("default_tier".to_string(), Value::String("Bare".to_string()));
+        fields.insert(
+            "default_tier".to_string(),
+            Value::String("Bare".to_string()),
+        );
         fields.insert("scrollback_lines".to_string(), Value::U32(10000));
         fields.insert("log_level".to_string(), Value::String("info".to_string()));
         fields.insert("persist_dir".to_string(), Value::None);
@@ -243,12 +239,18 @@ mod tests {
     #[test]
     fn decoder_all_daemon_fields_present() {
         let v = make_daemon_msg(&[
-            ("socket_path", Value::Some(Box::new(Value::String("/tmp/malt.sock".to_string())))),
+            (
+                "socket_path",
+                Value::Some(Box::new(Value::String("/tmp/malt.sock".to_string()))),
+            ),
             ("max_sessions", Value::U32(32)),
             ("default_tier", Value::String("Restricted".to_string())),
             ("scrollback_lines", Value::U32(5000)),
             ("log_level", Value::String("debug".to_string())),
-            ("persist_dir", Value::Some(Box::new(Value::String("/tmp/malt".to_string())))),
+            (
+                "persist_dir",
+                Value::Some(Box::new(Value::String("/tmp/malt".to_string()))),
+            ),
             ("persist_interval_secs", Value::U32(10)),
         ]);
         let cfg = DaemonConfig::from_vx_value(&v, dummy_path()).unwrap();
@@ -280,7 +282,10 @@ mod tests {
         let v = make_daemon_msg(&[("max_sessions", Value::String("oops".to_string()))]);
         let err = DaemonConfig::from_vx_value(&v, dummy_path()).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("max_sessions"), "error should name the field: {msg}");
+        assert!(
+            msg.contains("max_sessions"),
+            "error should name the field: {msg}"
+        );
     }
 
     #[test]
@@ -297,12 +302,21 @@ mod tests {
     fn decoder_all_user_fields_present() {
         let v = make_user_msg(&[
             ("edit_mode", Value::String("vi".to_string())),
-            ("theme", Value::Some(Box::new(Value::String("dark".to_string())))),
-            ("shell", Value::Some(Box::new(Value::String("/bin/zsh".to_string())))),
-            ("startup_commands", Value::Array(vec![
-                Value::String("echo hello".to_string()),
-                Value::String("ls -la".to_string()),
-            ])),
+            (
+                "theme",
+                Value::Some(Box::new(Value::String("dark".to_string()))),
+            ),
+            (
+                "shell",
+                Value::Some(Box::new(Value::String("/bin/zsh".to_string()))),
+            ),
+            (
+                "startup_commands",
+                Value::Array(vec![
+                    Value::String("echo hello".to_string()),
+                    Value::String("ls -la".to_string()),
+                ]),
+            ),
         ]);
         let cfg = UserConfig::from_vx_value(&v, dummy_path()).unwrap();
         assert_eq!(cfg.edit_mode, "vi");
@@ -324,9 +338,7 @@ mod tests {
 
     #[test]
     fn decoder_startup_commands_wrong_element_type() {
-        let v = make_user_msg(&[
-            ("startup_commands", Value::Array(vec![Value::U32(42)])),
-        ]);
+        let v = make_user_msg(&[("startup_commands", Value::Array(vec![Value::U32(42)]))]);
         let err = UserConfig::from_vx_value(&v, dummy_path()).unwrap_err();
         assert!(err.to_string().contains("startup_commands"), "{err}");
     }

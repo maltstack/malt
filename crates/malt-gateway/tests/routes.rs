@@ -64,11 +64,7 @@ impl GatewayBackend for MockBackend {
         }
     }
 
-    fn exec_command(
-        &self,
-        session_id: u32,
-        command: String,
-    ) -> Result<ExecResult, GatewayError> {
+    fn exec_command(&self, session_id: u32, command: String) -> Result<ExecResult, GatewayError> {
         if !self.sessions.iter().any(|s| s.id == session_id) {
             return Err(GatewayError::SessionNotFound(session_id));
         }

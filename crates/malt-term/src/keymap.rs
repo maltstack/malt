@@ -373,8 +373,8 @@ pub(crate) fn handle_vi_normal(ed: &mut Editor, event: InputEvent) -> EditResult
 
         // -- stubs --
         InputEvent::Key(SpecialKey::Escape) => EditResult::Continue, // no-op in normal
-        InputEvent::Char(':') => EditResult::Continue, // ex mode stub
-        InputEvent::Char('/') => EditResult::Continue, // search stub
+        InputEvent::Char(':') => EditResult::Continue,               // ex mode stub
+        InputEvent::Char('/') => EditResult::Continue,               // search stub
 
         _ => EditResult::Continue,
     }

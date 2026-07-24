@@ -26,7 +26,11 @@ fn sgr_sets_foreground() {
     let mut grid = TerminalGrid::new(80, 24);
     feed(&mut grid, b"\x1b[31mX");
     let cell = grid.cell(0, 0);
-    assert_ne!(cell.style.fg, default_style().fg, "foreground should differ from default after SGR 31");
+    assert_ne!(
+        cell.style.fg,
+        default_style().fg,
+        "foreground should differ from default after SGR 31"
+    );
 }
 
 #[test]
@@ -50,7 +54,11 @@ fn cursor_position_sequence() {
     let mut grid = TerminalGrid::new(80, 24);
     feed(&mut grid, b"\x1b[10;20H");
     assert_eq!(grid.cursor_row(), 9, "CUP row is 1-indexed, so 10 -> row 9");
-    assert_eq!(grid.cursor_col(), 19, "CUP col is 1-indexed, so 20 -> col 19");
+    assert_eq!(
+        grid.cursor_col(),
+        19,
+        "CUP col is 1-indexed, so 20 -> col 19"
+    );
 }
 
 #[test]

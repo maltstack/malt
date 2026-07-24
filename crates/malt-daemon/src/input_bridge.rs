@@ -29,9 +29,9 @@ pub fn vnp_key_to_input_event(key: &KeyEvent) -> Option<InputEvent> {
         }
         KeyValue::Named { key: named } => {
             let special = match named {
-                NamedKey::Enter     => SpecialKey::Enter,
-                NamedKey::Escape    => SpecialKey::Escape,
-                NamedKey::Tab       => {
+                NamedKey::Enter => SpecialKey::Enter,
+                NamedKey::Escape => SpecialKey::Escape,
+                NamedKey::Tab => {
                     // BackTab is Shift+Tab; must be decided before returning Key(Tab).
                     if key.modifiers.contains(KeyModifiers::SHIFT) {
                         return Some(InputEvent::Key(SpecialKey::BackTab));
@@ -39,14 +39,14 @@ pub fn vnp_key_to_input_event(key: &KeyEvent) -> Option<InputEvent> {
                     SpecialKey::Tab
                 }
                 NamedKey::Backspace => SpecialKey::Backspace,
-                NamedKey::Delete    => SpecialKey::Delete,
-                NamedKey::Home      => SpecialKey::Home,
-                NamedKey::End       => SpecialKey::End,
-                NamedKey::Up        => SpecialKey::Up,
-                NamedKey::Down      => SpecialKey::Down,
-                NamedKey::Left      => SpecialKey::Left,
-                NamedKey::Right     => SpecialKey::Right,
-                NamedKey::Insert    => return None, // no Insert in malt-term SpecialKey
+                NamedKey::Delete => SpecialKey::Delete,
+                NamedKey::Home => SpecialKey::Home,
+                NamedKey::End => SpecialKey::End,
+                NamedKey::Up => SpecialKey::Up,
+                NamedKey::Down => SpecialKey::Down,
+                NamedKey::Left => SpecialKey::Left,
+                NamedKey::Right => SpecialKey::Right,
+                NamedKey::Insert => return None, // no Insert in malt-term SpecialKey
                 NamedKey::PageUp | NamedKey::PageDown => return None,
                 NamedKey::Unknown(_) => return None,
                 _ => return None, // future NamedKey variants
@@ -66,7 +66,10 @@ mod tests {
     #[test]
     fn unknown_key_returns_none() {
         let event = KeyEvent {
-            key: KeyValue::Unknown { discriminant: 0xdeadbeef, data: Vec::new() },
+            key: KeyValue::Unknown {
+                discriminant: 0xdeadbeef,
+                data: Vec::new(),
+            },
             modifiers: KeyModifiers::empty(),
             _unknown: Vec::new(),
         };
@@ -76,7 +79,9 @@ mod tests {
     #[test]
     fn invalid_codepoint_returns_none() {
         let event = KeyEvent {
-            key: KeyValue::Char { codepoint: 0xffffffff },
+            key: KeyValue::Char {
+                codepoint: 0xffffffff,
+            },
             modifiers: KeyModifiers::empty(),
             _unknown: Vec::new(),
         };
@@ -90,13 +95,18 @@ mod tests {
             modifiers: KeyModifiers::SHIFT,
             _unknown: Vec::new(),
         };
-        assert_eq!(vnp_key_to_input_event(&event), Some(InputEvent::Key(SpecialKey::BackTab)));
+        assert_eq!(
+            vnp_key_to_input_event(&event),
+            Some(InputEvent::Key(SpecialKey::BackTab))
+        );
     }
 
     #[test]
     fn insert_key_returns_none() {
         let event = KeyEvent {
-            key: KeyValue::Named { key: NamedKey::Insert },
+            key: KeyValue::Named {
+                key: NamedKey::Insert,
+            },
             modifiers: KeyModifiers::empty(),
             _unknown: Vec::new(),
         };
@@ -106,7 +116,9 @@ mod tests {
     #[test]
     fn pageup_returns_none() {
         let event = KeyEvent {
-            key: KeyValue::Named { key: NamedKey::PageUp },
+            key: KeyValue::Named {
+                key: NamedKey::PageUp,
+            },
             modifiers: KeyModifiers::empty(),
             _unknown: Vec::new(),
         };
@@ -116,7 +128,9 @@ mod tests {
     #[test]
     fn pagedown_returns_none() {
         let event = KeyEvent {
-            key: KeyValue::Named { key: NamedKey::PageDown },
+            key: KeyValue::Named {
+                key: NamedKey::PageDown,
+            },
             modifiers: KeyModifiers::empty(),
             _unknown: Vec::new(),
         };
@@ -126,7 +140,9 @@ mod tests {
     #[test]
     fn alt_char_maps_to_alt_event() {
         let event = KeyEvent {
-            key: KeyValue::Char { codepoint: 'x' as u32 },
+            key: KeyValue::Char {
+                codepoint: 'x' as u32,
+            },
             modifiers: KeyModifiers::ALT,
             _unknown: Vec::new(),
         };
@@ -137,7 +153,9 @@ mod tests {
     fn ctrl_lowercase_mapping() {
         // Ctrl-C (uppercase 'C') should map to Ctrl('c')
         let event = KeyEvent {
-            key: KeyValue::Char { codepoint: 'C' as u32 },
+            key: KeyValue::Char {
+                codepoint: 'C' as u32,
+            },
             modifiers: KeyModifiers::CTRL,
             _unknown: Vec::new(),
         };
@@ -147,21 +165,31 @@ mod tests {
     #[test]
     fn escape_key_maps_correctly() {
         let event = KeyEvent {
-            key: KeyValue::Named { key: NamedKey::Escape },
+            key: KeyValue::Named {
+                key: NamedKey::Escape,
+            },
             modifiers: KeyModifiers::empty(),
             _unknown: Vec::new(),
         };
-        assert_eq!(vnp_key_to_input_event(&event), Some(InputEvent::Key(SpecialKey::Escape)));
+        assert_eq!(
+            vnp_key_to_input_event(&event),
+            Some(InputEvent::Key(SpecialKey::Escape))
+        );
     }
 
     #[test]
     fn home_key_maps_correctly() {
         let event = KeyEvent {
-            key: KeyValue::Named { key: NamedKey::Home },
+            key: KeyValue::Named {
+                key: NamedKey::Home,
+            },
             modifiers: KeyModifiers::empty(),
             _unknown: Vec::new(),
         };
-        assert_eq!(vnp_key_to_input_event(&event), Some(InputEvent::Key(SpecialKey::Home)));
+        assert_eq!(
+            vnp_key_to_input_event(&event),
+            Some(InputEvent::Key(SpecialKey::Home))
+        );
     }
 
     #[test]
@@ -171,6 +199,9 @@ mod tests {
             modifiers: KeyModifiers::empty(),
             _unknown: Vec::new(),
         };
-        assert_eq!(vnp_key_to_input_event(&event), Some(InputEvent::Key(SpecialKey::End)));
+        assert_eq!(
+            vnp_key_to_input_event(&event),
+            Some(InputEvent::Key(SpecialKey::End))
+        );
     }
 }

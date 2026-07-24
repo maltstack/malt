@@ -29,9 +29,7 @@ impl LayoutStrategy for MonocleStrategy {
         let tree = self.rebuild(&panes, terminal);
         match tree {
             LayoutNode::Tabbed {
-                split_id,
-                children,
-                ..
+                split_id, children, ..
             } => LayoutNode::Tabbed {
                 split_id,
                 active: (children.len().saturating_sub(1)) as u16,
@@ -54,9 +52,7 @@ impl LayoutStrategy for MonocleStrategy {
 
     fn rebuild(&self, panes: &[PaneId], _terminal: Rect) -> LayoutNode {
         if panes.is_empty() {
-            return LayoutNode::Leaf {
-                pane_id: PaneId(0),
-            };
+            return LayoutNode::Leaf { pane_id: PaneId(0) };
         }
         if panes.len() == 1 {
             return LayoutNode::Leaf {

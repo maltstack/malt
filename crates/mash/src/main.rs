@@ -35,7 +35,10 @@ fn main() {
                     eprintln!("mash: -c: option requires an argument");
                     exit(2);
                 };
-                let arg0 = args.get(i + 2).cloned().unwrap_or_else(|| "mash".to_string());
+                let arg0 = args
+                    .get(i + 2)
+                    .cloned()
+                    .unwrap_or_else(|| "mash".to_string());
                 let positional = if i + 3 <= args.len() {
                     args[i + 3..].to_vec()
                 } else {

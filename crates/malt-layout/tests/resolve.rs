@@ -8,10 +8,9 @@ fn default_config() -> LayoutConfig {
 
 #[test]
 fn single_leaf_fills_terminal() {
-    let tree = LayoutNode::Leaf {
-        pane_id: PaneId(1),
-    };
-    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
+    let tree = LayoutNode::Leaf { pane_id: PaneId(1) };
+    let panes =
+        compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
     assert_eq!(panes.len(), 1);
     assert_eq!(panes[0].width, 80);
     assert_eq!(panes[0].height, 24);
@@ -32,7 +31,8 @@ fn vertical_split_two_children() {
             LayoutNode::Leaf { pane_id: PaneId(2) },
         ],
     };
-    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
+    let panes =
+        compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
     assert_eq!(panes.len(), 2);
     assert_eq!(panes[0].width, 40);
     assert_eq!(panes[1].width, 40);
@@ -54,7 +54,8 @@ fn horizontal_split_two_children() {
             LayoutNode::Leaf { pane_id: PaneId(2) },
         ],
     };
-    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
+    let panes =
+        compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
     assert_eq!(panes.len(), 2);
     assert_eq!(panes[0].height, 12);
     assert_eq!(panes[1].height, 12);
@@ -76,7 +77,8 @@ fn three_way_split_ratios() {
             LayoutNode::Leaf { pane_id: PaneId(3) },
         ],
     };
-    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
+    let panes =
+        compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
     assert_eq!(panes.len(), 3);
     assert_eq!(panes[0].width, 40); // 50%
     assert_eq!(panes[1].width, 20); // 25%
@@ -96,7 +98,8 @@ fn fixed_size_allocation() {
             LayoutNode::Leaf { pane_id: PaneId(2) },
         ],
     };
-    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
+    let panes =
+        compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
     assert_eq!(panes[0].width, 20);
     assert_eq!(panes[1].width, 60);
 }
@@ -131,9 +134,7 @@ fn outer_gap_insets() {
         outer_gap: 1,
         ..Default::default()
     };
-    let tree = LayoutNode::Leaf {
-        pane_id: PaneId(1),
-    };
+    let tree = LayoutNode::Leaf { pane_id: PaneId(1) };
     let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &config);
     assert_eq!(panes[0].x, 1);
     assert_eq!(panes[0].y, 1);
@@ -152,7 +153,8 @@ fn tabbed_only_active_visible() {
             LayoutNode::Leaf { pane_id: PaneId(3) },
         ],
     };
-    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(2), &default_config());
+    let panes =
+        compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(2), &default_config());
     assert_eq!(panes.len(), 3);
     let visible: Vec<_> = panes.iter().filter(|p| p.visible).collect();
     assert_eq!(visible.len(), 1);
@@ -168,7 +170,8 @@ fn float_absolute_position() {
         width: 30,
         height: 10,
     };
-    let panes = compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
+    let panes =
+        compute_resolved_panes(&tree, Rect::new(0, 0, 80, 24), PaneId(1), &default_config());
     assert_eq!(panes[0].x, 10);
     assert_eq!(panes[0].y, 5);
     assert_eq!(panes[0].width, 30);

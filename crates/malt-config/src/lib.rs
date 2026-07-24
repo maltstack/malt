@@ -1,7 +1,7 @@
 //! Vexil Store config loading for MALT.
 
-pub mod paths;
 pub mod decode;
+pub mod paths;
 pub use decode::VxDecoder;
 
 // Generated config types from vexilc (or stubs when vexilc is unavailable).
@@ -36,29 +36,26 @@ pub fn load_user_config() -> Result<Config<UserConfig>, ConfigError> {
     load_or_default_user(&config_path)
 }
 
-static DAEMON_SCHEMA_SOURCE: &str =
-    include_str!("../../../schemas/config/daemon.vexil");
-static USER_SCHEMA_SOURCE: &str =
-    include_str!("../../../schemas/config/user.vexil");
+static DAEMON_SCHEMA_SOURCE: &str = include_str!("../../../schemas/config/daemon.vexil");
+static USER_SCHEMA_SOURCE: &str = include_str!("../../../schemas/config/user.vexil");
 
-fn load_from_vx<T: VxDecoder>(
-    path: &Path,
-    schema_source: &str,
-) -> Result<Config<T>, ConfigError> {
+fn load_from_vx<T: VxDecoder>(path: &Path, schema_source: &str) -> Result<Config<T>, ConfigError> {
     let content = std::fs::read_to_string(path)?;
 
     let compile_result = vexil_lang::compile(schema_source);
-    let schema = compile_result.compiled.ok_or_else(|| ConfigError::Invalid {
-        path: path.to_path_buf(),
-        // NOTE: Diagnostic has no Display impl; use message field only. Span is available
-        // but requires external line/col computation from source text (not done here).
-        reason: compile_result
-            .diagnostics
-            .iter()
-            .map(|d| d.message.as_str())
-            .collect::<Vec<_>>()
-            .join("; "),
-    })?;
+    let schema = compile_result
+        .compiled
+        .ok_or_else(|| ConfigError::Invalid {
+            path: path.to_path_buf(),
+            // NOTE: Diagnostic has no Display impl; use message field only. Span is available
+            // but requires external line/col computation from source text (not done here).
+            reason: compile_result
+                .diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        })?;
 
     let values = vexil_store::parse(&content, &schema).map_err(|errors| ConfigError::Invalid {
         path: path.to_path_buf(),
@@ -69,10 +66,13 @@ fn load_from_vx<T: VxDecoder>(
             .join("; "),
     })?;
 
-    let value = values.into_iter().next().ok_or_else(|| ConfigError::Invalid {
-        path: path.to_path_buf(),
-        reason: "config file is empty".to_string(),
-    })?;
+    let value = values
+        .into_iter()
+        .next()
+        .ok_or_else(|| ConfigError::Invalid {
+            path: path.to_path_buf(),
+            reason: "config file is empty".to_string(),
+        })?;
 
     let inner = T::from_vx_value(&value, path)?;
     Ok(Config {

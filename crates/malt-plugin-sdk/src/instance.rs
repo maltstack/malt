@@ -8,7 +8,10 @@ pub struct PluginInstance {
 }
 
 impl PluginInstance {
-    pub fn load(wasm_bytes: &[u8], manifest: crate::manifest::PluginManifest) -> Result<Self, PluginError> {
+    pub fn load(
+        wasm_bytes: &[u8],
+        manifest: crate::manifest::PluginManifest,
+    ) -> Result<Self, PluginError> {
         let mut config = wasmtime::Config::new();
         config.consume_fuel(true);
         let engine = Engine::new(&config).map_err(|e| PluginError::LoadFailed(e.to_string()))?;

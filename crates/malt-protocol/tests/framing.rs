@@ -3,7 +3,10 @@ use std::io::Cursor;
 
 #[test]
 fn roundtrip_empty_payload() {
-    let frame = Frame { flags: FrameFlags::new(), payload: vec![] };
+    let frame = Frame {
+        flags: FrameFlags::new(),
+        payload: vec![],
+    };
     let mut buf = Vec::new();
     FrameWriter::new(&mut buf).write_frame(&frame).unwrap();
     let decoded = FrameReader::new(Cursor::new(&buf)).read_frame().unwrap();
@@ -13,7 +16,10 @@ fn roundtrip_empty_payload() {
 
 #[test]
 fn roundtrip_with_payload() {
-    let frame = Frame { flags: FrameFlags::new(), payload: vec![0xDE, 0xAD, 0xBE, 0xEF] };
+    let frame = Frame {
+        flags: FrameFlags::new(),
+        payload: vec![0xDE, 0xAD, 0xBE, 0xEF],
+    };
     let mut buf = Vec::new();
     FrameWriter::new(&mut buf).write_frame(&frame).unwrap();
     let decoded = FrameReader::new(Cursor::new(&buf)).read_frame().unwrap();
@@ -26,7 +32,10 @@ fn roundtrip_all_flags() {
     flags.set_compressed(true);
     flags.set_json_encoded(true);
     flags.set_continuation(true);
-    let frame = Frame { flags, payload: vec![1, 2, 3] };
+    let frame = Frame {
+        flags,
+        payload: vec![1, 2, 3],
+    };
     let mut buf = Vec::new();
     FrameWriter::new(&mut buf).write_frame(&frame).unwrap();
     let decoded = FrameReader::new(Cursor::new(&buf)).read_frame().unwrap();
@@ -82,7 +91,10 @@ fn reject_reserved_flags() {
 
 #[test]
 fn wire_format_is_length_flags_payload() {
-    let frame = Frame { flags: FrameFlags::new(), payload: vec![0xAA, 0xBB] };
+    let frame = Frame {
+        flags: FrameFlags::new(),
+        payload: vec![0xAA, 0xBB],
+    };
     let mut buf = Vec::new();
     FrameWriter::new(&mut buf).write_frame(&frame).unwrap();
     assert_eq!(buf, vec![2, 0, 0, 0, 0x00, 0xAA, 0xBB]);
@@ -91,13 +103,24 @@ fn wire_format_is_length_flags_payload() {
 #[test]
 fn multiple_frames_sequential() {
     let frames = vec![
-        Frame { flags: FrameFlags::new(), payload: vec![1] },
-        Frame { flags: FrameFlags::new(), payload: vec![2, 3] },
-        Frame { flags: FrameFlags::new(), payload: vec![4, 5, 6] },
+        Frame {
+            flags: FrameFlags::new(),
+            payload: vec![1],
+        },
+        Frame {
+            flags: FrameFlags::new(),
+            payload: vec![2, 3],
+        },
+        Frame {
+            flags: FrameFlags::new(),
+            payload: vec![4, 5, 6],
+        },
     ];
     let mut buf = Vec::new();
     let mut writer = FrameWriter::new(&mut buf);
-    for f in &frames { writer.write_frame(f).unwrap(); }
+    for f in &frames {
+        writer.write_frame(f).unwrap();
+    }
     let mut reader = FrameReader::new(Cursor::new(&buf));
     for expected in &frames {
         let decoded = reader.read_frame().unwrap();

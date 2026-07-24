@@ -10,7 +10,10 @@ use vexil_runtime::{BitReader, BitWriter, DecodeError, Pack, Unpack};
 /// Encode an envelope + message payload into bytes suitable for framing.
 ///
 /// Returns an error if envelope encoding fails (should not happen with valid fields).
-pub fn encode_message(envelope: &Envelope, payload: &[u8]) -> Result<Vec<u8>, vexil_runtime::EncodeError> {
+pub fn encode_message(
+    envelope: &Envelope,
+    payload: &[u8],
+) -> Result<Vec<u8>, vexil_runtime::EncodeError> {
     let mut w = BitWriter::new();
     envelope.pack(&mut w)?;
     let mut bytes = w.finish();
@@ -39,8 +42,7 @@ pub fn decode_envelope(data: &[u8]) -> Result<(Envelope, &[u8]), DecodeError> {
     let envelope = Envelope::unpack(&mut r)?;
 
     // Re-encode to determine consumed byte count
-    let envelope_bytes = encode_envelope(&envelope)
-        .map_err(|_| DecodeError::UnexpectedEof)?;
+    let envelope_bytes = encode_envelope(&envelope).map_err(|_| DecodeError::UnexpectedEof)?;
     let consumed = envelope_bytes.len();
 
     Ok((envelope, &data[consumed..]))

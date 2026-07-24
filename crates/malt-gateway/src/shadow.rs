@@ -53,7 +53,11 @@ pub fn frame_to_json(element: &FrameElement) -> Value {
             "type": "Empty",
         }),
 
-        FrameElement::Split { direction, children, .. } => json!({
+        FrameElement::Split {
+            direction,
+            children,
+            ..
+        } => json!({
             "type": "Split",
             "direction": direction_to_str(direction.as_ref()),
             "children": children.iter().map(frame_to_json).collect::<Vec<_>>(),
@@ -64,7 +68,13 @@ pub fn frame_to_json(element: &FrameElement) -> Value {
             "children": children.iter().map(frame_to_json).collect::<Vec<_>>(),
         }),
 
-        FrameElement::Padded { top, right, bottom, left, child } => json!({
+        FrameElement::Padded {
+            top,
+            right,
+            bottom,
+            left,
+            child,
+        } => json!({
             "type": "Padded",
             "padding": {
                 "top": top,
@@ -91,7 +101,11 @@ pub fn frame_to_json(element: &FrameElement) -> Value {
             "raw_bytes": data.len(),
         }),
 
-        FrameElement::Custom { type_id, data, fallback } => {
+        FrameElement::Custom {
+            type_id,
+            data,
+            fallback,
+        } => {
             let mut obj = json!({
                 "type": "Custom",
                 "type_id": type_id,

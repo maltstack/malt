@@ -19,4 +19,3 @@ pub fn date(args: &[String], _stdin: &[u8]) -> BuiltinResult {
         format!("date: unsupported arguments: {}\n", args.join(" ")).into_bytes(),
     )
 }
-

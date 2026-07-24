@@ -13,7 +13,8 @@ mod tests {
 
     #[test]
     fn manifest_from_json() {
-        let json = r#"{"name":"test","version":"0.1.0","permissions":["output"],"hooks":["on_output"]}"#;
+        let json =
+            r#"{"name":"test","version":"0.1.0","permissions":["output"],"hooks":["on_output"]}"#;
         let manifest = PluginManifest::from_json(json).unwrap();
         assert_eq!(manifest.name, "test");
         assert!(manifest.has_permission("output"));
@@ -23,7 +24,8 @@ mod tests {
 
     #[test]
     fn manifest_custom_fuel() {
-        let json = r#"{"name":"fast","version":"1.0","permissions":[],"hooks":[],"fuel_budget":500}"#;
+        let json =
+            r#"{"name":"fast","version":"1.0","permissions":[],"hooks":[],"fuel_budget":500}"#;
         let manifest = PluginManifest::from_json(json).unwrap();
         assert_eq!(manifest.effective_fuel(), 500);
     }

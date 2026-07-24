@@ -591,7 +591,6 @@ fn backgrounded_child_shell_pid_matches_bang() {
     );
 }
 
-
 #[test]
 fn c_option_sets_positional_arg0_and_arguments() {
     let output = Command::new(env!("CARGO_BIN_EXE_mash"))
@@ -760,8 +759,14 @@ fn pipeline_spawn_overrides_stale_mash_ppid_for_child_shell() {
         .trim()
         .to_string();
 
-    assert_eq!(child, parent, "pipeline child should see the actual outer shell pid");
-    assert_ne!(child, "11111", "stale MASH_PPID should not leak through pipeline spawn");
+    assert_eq!(
+        child, parent,
+        "pipeline child should see the actual outer shell pid"
+    );
+    assert_ne!(
+        child, "11111",
+        "stale MASH_PPID should not leak through pipeline spawn"
+    );
 }
 
 #[test]
@@ -785,8 +790,7 @@ fn cd_physical_option_with_double_dash_is_accepted() {
 #[test]
 #[cfg(not(windows))]
 fn modernish_min_posix_gate_succeeds() {
-    let min_posix =
-        "cd -P -- / && ! { ! case x in ( x ) : ${0##*/} || : $( : ) ;; esac; }";
+    let min_posix = "cd -P -- / && ! { ! case x in ( x ) : ${0##*/} || : $( : ) ;; esac; }";
     let output = Command::new(env!("CARGO_BIN_EXE_mash"))
         .args(["-c", min_posix, "mash"])
         .output()
@@ -805,11 +809,7 @@ fn modernish_min_posix_gate_succeeds() {
 #[cfg(not(windows))]
 fn allexport_option_exports_subsequent_assignments() {
     let output = Command::new(env!("CARGO_BIN_EXE_mash"))
-        .args([
-            "-c",
-            "set -o allexport; FOO=bar; export -p",
-            "mash",
-        ])
+        .args(["-c", "set -o allexport; FOO=bar; export -p", "mash"])
         .output()
         .expect("run mash");
 
@@ -837,10 +837,7 @@ fn sourced_function_wrapper_can_set_caller_variable() {
     std::fs::write(&helper, "_Msh_testFn() { DEFPATH=ok; }\n_Msh_testFn\n").expect("helper");
     std::fs::write(
         &script,
-        format!(
-            ". {}\nprintf '<%s>\\n' \"$DEFPATH\"\n",
-            shell_path(&helper)
-        ),
+        format!(". {}\nprintf '<%s>\\n' \"$DEFPATH\"\n", shell_path(&helper)),
     )
     .expect("script");
 
@@ -887,10 +884,7 @@ fn sourced_trap_zero_is_visible_as_exit_and_runs_at_shell_exit() {
     std::fs::write(&sourced, "trap 'echo ZERO_OK' 0\n").expect("write sourced script");
     std::fs::write(
         &driver,
-        format!(
-            ". {}\necho AFTER\ntrap -p EXIT\n",
-            shell_path(&sourced)
-        ),
+        format!(". {}\necho AFTER\ntrap -p EXIT\n", shell_path(&sourced)),
     )
     .expect("write driver");
 

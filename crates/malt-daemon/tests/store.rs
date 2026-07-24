@@ -4,18 +4,16 @@ use malt_protocol::common::{
     SplitSize,
 };
 use malt_protocol::persist::daemon::{DaemonState, GroupPolicy, GroupState};
-use vexil_runtime::{BitReader, Unpack};
 use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
 use tempfile::tempdir;
+use vexil_runtime::{BitReader, Unpack};
 
 fn make_session(id: u32) -> PersistedSession {
     PersistedSession {
         schema_version: 1,
         id: SessionId(id),
         name: Some(format!("session-{id}")),
-        layout: LayoutNode::Leaf {
-            pane_id: PaneId(1),
-        },
+        layout: LayoutNode::Leaf { pane_id: PaneId(1) },
         focus: PaneId(1),
         panes: {
             let mut m = std::collections::BTreeMap::new();
@@ -66,15 +64,9 @@ fn save_and_load_session() {
 fn list_sessions() {
     let dir = tempdir().unwrap();
     let store = SessionStore::new(dir.path().to_path_buf());
-    store
-        .save_session(&SessionId(1), &make_session(1))
-        .unwrap();
-    store
-        .save_session(&SessionId(2), &make_session(2))
-        .unwrap();
-    store
-        .save_session(&SessionId(3), &make_session(3))
-        .unwrap();
+    store.save_session(&SessionId(1), &make_session(1)).unwrap();
+    store.save_session(&SessionId(2), &make_session(2)).unwrap();
+    store.save_session(&SessionId(3), &make_session(3)).unwrap();
     let mut ids = store.list_sessions().unwrap();
     ids.sort_by_key(|id| id.0);
     assert_eq!(ids.len(), 3);
@@ -86,9 +78,7 @@ fn list_sessions() {
 fn delete_session() {
     let dir = tempdir().unwrap();
     let store = SessionStore::new(dir.path().to_path_buf());
-    store
-        .save_session(&SessionId(1), &make_session(1))
-        .unwrap();
+    store.save_session(&SessionId(1), &make_session(1)).unwrap();
     store.delete_session(&SessionId(1)).unwrap();
     let result = store.load_session(&SessionId(1));
     assert!(result.is_err());
@@ -137,9 +127,7 @@ fn roundtrip_app_pane() {
         schema_version: 1,
         id: SessionId(10),
         name: Some("app-session".to_string()),
-        layout: LayoutNode::Leaf {
-            pane_id: PaneId(1),
-        },
+        layout: LayoutNode::Leaf { pane_id: PaneId(1) },
         focus: PaneId(1),
         panes: {
             let mut m = std::collections::BTreeMap::new();
@@ -185,9 +173,7 @@ fn roundtrip_compat_pane() {
         schema_version: 1,
         id: SessionId(11),
         name: Some("compat-session".to_string()),
-        layout: LayoutNode::Leaf {
-            pane_id: PaneId(1),
-        },
+        layout: LayoutNode::Leaf { pane_id: PaneId(1) },
         focus: PaneId(1),
         panes: {
             let mut m = std::collections::BTreeMap::new();
@@ -241,12 +227,8 @@ fn roundtrip_complex_layout() {
                 SplitSize::Ratio { value: 0.5 },
             ],
             children: vec![
-                LayoutNode::Leaf {
-                    pane_id: PaneId(1),
-                },
-                LayoutNode::Leaf {
-                    pane_id: PaneId(2),
-                },
+                LayoutNode::Leaf { pane_id: PaneId(1) },
+                LayoutNode::Leaf { pane_id: PaneId(2) },
             ],
         },
         focus: PaneId(1),
@@ -368,19 +350,26 @@ fn atomic_write_creates_bak() {
     let store = SessionStore::new(dir.path().to_path_buf());
 
     // First save — no .bak yet
-    store.save_daemon_state(&make_daemon_state_with_id(10)).unwrap();
+    store
+        .save_daemon_state(&make_daemon_state_with_id(10))
+        .unwrap();
     let bak = dir.path().join("daemon.vxb.bak");
     assert!(!bak.exists(), ".bak must not exist after first save");
 
     // Second save — .bak must hold first-save content
-    store.save_daemon_state(&make_daemon_state_with_id(20)).unwrap();
+    store
+        .save_daemon_state(&make_daemon_state_with_id(20))
+        .unwrap();
     assert!(bak.exists(), ".bak must exist after second save");
 
     // .bak must decode as DaemonState with next_session_id=10
     let bak_bytes = std::fs::read(&bak).unwrap();
     let mut r = BitReader::new(&bak_bytes);
     let recovered = DaemonState::unpack(&mut r).unwrap();
-    assert_eq!(recovered.next_session_id, 10, ".bak should contain first-save state");
+    assert_eq!(
+        recovered.next_session_id, 10,
+        ".bak should contain first-save state"
+    );
 
     // Main file must contain the second-save content
     let current = store.load_daemon_state().unwrap();
@@ -394,13 +383,27 @@ fn corrupt_file_quarantined() {
 
     // Write garbage daemon state bytes directly
     std::fs::create_dir_all(dir.path()).unwrap();
-    std::fs::write(dir.path().join("daemon.vxb"), b"this is not valid bitpack data!!!").unwrap();
+    std::fs::write(
+        dir.path().join("daemon.vxb"),
+        b"this is not valid bitpack data!!!",
+    )
+    .unwrap();
 
     let err = store.load_daemon_state().unwrap_err();
     match &err {
-        StoreError::CorruptFile { path, reason: _, moved_to } => {
-            assert!(path.ends_with("daemon.vxb"), "path should be daemon.vxb, got {path:?}");
-            assert!(moved_to.exists(), "corrupt file should have been moved to quarantine path");
+        StoreError::CorruptFile {
+            path,
+            reason: _,
+            moved_to,
+        } => {
+            assert!(
+                path.ends_with("daemon.vxb"),
+                "path should be daemon.vxb, got {path:?}"
+            );
+            assert!(
+                moved_to.exists(),
+                "corrupt file should have been moved to quarantine path"
+            );
             let name = moved_to.file_name().unwrap().to_string_lossy();
             assert!(
                 name.contains(".corrupt.") && name.ends_with(".vxb"),

@@ -131,7 +131,9 @@ mod tests {
     #[test]
     fn date_tool_supports_unix_epoch_format() {
         let registry = Registry::new();
-        let date = registry.get("date").expect("date tool should be registered");
+        let date = registry
+            .get("date")
+            .expect("date tool should be registered");
         let result = date(&["+%s".to_string()], b"");
 
         assert_eq!(result.exit_code, 0);

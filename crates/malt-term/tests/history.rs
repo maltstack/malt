@@ -82,8 +82,8 @@ fn expand_bang_bang() {
 fn expand_bang_n() {
     let mut h = History::new(100);
     h.add("echo hello".into()); // 1
-    h.add("ls -la".into());     // 2
-    h.add("pwd".into());        // 3
+    h.add("ls -la".into()); // 2
+    h.add("pwd".into()); // 3
 
     // !1 → first entry (1-based)
     let expanded = h.expand_bangs("!1").unwrap();

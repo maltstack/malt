@@ -61,8 +61,7 @@ impl Coordinator {
                 next_pane_id = state.next_pane_id;
                 info!(
                     next_session_id,
-                    next_pane_id,
-                    "coordinator: restored counters from daemon state"
+                    next_pane_id, "coordinator: restored counters from daemon state"
                 );
 
                 for sid in &state.sessions {
@@ -79,7 +78,10 @@ impl Coordinator {
                             );
                         }
                         Err(StoreError::SessionNotFound(_)) => {
-                            warn!(?sid, "coordinator startup: persisted session not found; skipping");
+                            warn!(
+                                ?sid,
+                                "coordinator startup: persisted session not found; skipping"
+                            );
                         }
                         Err(e) => {
                             warn!(?sid, %e, "coordinator startup: failed to load persisted session; skipping");
@@ -197,9 +199,7 @@ impl Coordinator {
         if let Some(mut handle) = self.sessions.remove(&id.0) {
             match handle.lifecycle {
                 SessionLifecycle::Active {
-                    cmd_tx,
-                    mut thread,
-                    ..
+                    cmd_tx, mut thread, ..
                 } => {
                     let _ = cmd_tx.send(SessionCommand::Shutdown);
                     if let Some(t) = thread.take() {
@@ -303,7 +303,11 @@ impl Coordinator {
             .get_mut(&session_id.0)
             .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
         match &mut handle.lifecycle {
-            SessionLifecycle::Active { cmd_tx, client_count, .. } => {
+            SessionLifecycle::Active {
+                cmd_tx,
+                client_count,
+                ..
+            } => {
                 let cmd_tx = cmd_tx.clone();
                 // Clone the id upfront to avoid a second borrow of `handle` inside
                 // the error closures below.
@@ -346,7 +350,11 @@ impl Coordinator {
                 .get_mut(&session_id.0)
                 .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
             match &mut handle.lifecycle {
-                SessionLifecycle::Active { cmd_tx, client_count, .. } => {
+                SessionLifecycle::Active {
+                    cmd_tx,
+                    client_count,
+                    ..
+                } => {
                     let _ = cmd_tx.send(SessionCommand::UnregisterVnpClient { client_id });
                     if *client_count > 0 {
                         *client_count -= 1;
@@ -370,11 +378,7 @@ impl Coordinator {
     }
 
     /// Route a typed keyboard event to a session's line editor.
-    pub fn send_key_input(
-        &self,
-        session_id: SessionId,
-        key: KeyEvent,
-    ) -> Result<(), DaemonError> {
+    pub fn send_key_input(&self, session_id: SessionId, key: KeyEvent) -> Result<(), DaemonError> {
         let handle = self
             .sessions
             .get(&session_id.0)
@@ -400,7 +404,10 @@ impl Coordinator {
             .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
         match &handle.lifecycle {
             SessionLifecycle::Active { cmd_tx, .. } => cmd_tx
-                .send(SessionCommand::AckFrame { client_id, frame_seq })
+                .send(SessionCommand::AckFrame {
+                    client_id,
+                    frame_seq,
+                })
                 .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone())),
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
         }
@@ -460,7 +467,10 @@ impl Coordinator {
                     }
                 }
                 Err(_) => {
-                    warn!(?session_id, "shutdown_graceful: Snapshot timeout; skipping save for this session");
+                    warn!(
+                        ?session_id,
+                        "shutdown_graceful: Snapshot timeout; skipping save for this session"
+                    );
                     // Shut down thread anyway so it doesn't linger.
                     let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
                     if let Some(handle) = self.sessions.get_mut(&session_id.0) {
@@ -519,13 +529,9 @@ impl Coordinator {
             }
         };
 
-        let (pane_id_raw, pane) = persisted
-            .panes
-            .iter()
-            .next()
-            .ok_or_else(|| {
-                DaemonError::RestoreFailed(id.clone(), "no panes in persisted session".to_string())
-            })?;
+        let (pane_id_raw, pane) = persisted.panes.iter().next().ok_or_else(|| {
+            DaemonError::RestoreFailed(id.clone(), "no panes in persisted session".to_string())
+        })?;
 
         let pane_id = PaneId(*pane_id_raw);
         let cwd = std::path::PathBuf::from(&pane.cwd);
@@ -601,7 +607,10 @@ impl Coordinator {
         let persisted = match reply_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(p) => p,
             Err(_) => {
-                warn!(?id, "go_dormant: Snapshot timed out; leaving session Active");
+                warn!(
+                    ?id,
+                    "go_dormant: Snapshot timed out; leaving session Active"
+                );
                 return;
             }
         };

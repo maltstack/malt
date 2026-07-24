@@ -135,7 +135,11 @@ fn handle_attach(api_addr: &str, session_id: Option<u32>) -> Result<()> {
     // Find malt-tui binary next to our own executable
     let exe = std::env::current_exe()?;
     let exe_dir = exe.parent().unwrap_or(std::path::Path::new("."));
-    let tui_exe = exe_dir.join(if cfg!(windows) { "malt-tui.exe" } else { "malt-tui" });
+    let tui_exe = exe_dir.join(if cfg!(windows) {
+        "malt-tui.exe"
+    } else {
+        "malt-tui"
+    });
 
     if !tui_exe.exists() {
         anyhow::bail!(
@@ -158,9 +162,12 @@ fn handle_attach(api_addr: &str, session_id: Option<u32>) -> Result<()> {
     // Launch malt-tui as a child process (replaces our terminal)
     let status = std::process::Command::new(&tui_exe)
         .args([
-            "--session", &id.to_string(),
-            "--api-addr", api_addr,
-            "--vnp", &vnp_addr,
+            "--session",
+            &id.to_string(),
+            "--api-addr",
+            api_addr,
+            "--vnp",
+            &vnp_addr,
         ])
         .status()?;
 

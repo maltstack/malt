@@ -156,7 +156,9 @@ fn send_char_key(writer: &mut FrameWriter<TcpStream>, session_id: u32, ch: char)
 /// Send an Enter (Named) KeyEvent.
 fn send_enter_key(writer: &mut FrameWriter<TcpStream>, session_id: u32) {
     let key = KeyEvent {
-        key: KeyValue::Named { key: NamedKey::Enter },
+        key: KeyValue::Named {
+            key: NamedKey::Enter,
+        },
         modifiers: KeyModifiers::empty(),
         _unknown: Vec::new(),
     };

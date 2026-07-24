@@ -840,7 +840,7 @@ impl<'a> Lexer<'a> {
 fn is_word_break(ch: char) -> bool {
     matches!(
         ch,
-        ' ' | '\t' | '\n' | '\r' | '|' | '&' | ';' | '<' | '>' | '(' | ')' | '#'
+        ' ' | '\t' | '\n' | '\r' | '|' | '&' | ';' | '<' | '>' | '(' | ')'
     )
 }
 
@@ -848,29 +848,373 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Result<Spanned<Token>, LexError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.finished {
-            return None;
-        }
+        // Outer loop replaces tail-recursive `return self.next()` calls for
+        // comments and backslash-newline continuations, preventing stack overflow
+        // when sourcing files with many comment lines inside deeply-nested parses.
+        loop {
+            if self.finished {
+                return None;
+            }
 
-        // Drain buffered tokens first (e.g. HereDocBody tokens queued at newline).
-        if let Some(tok) = self.buffered_tokens.pop() {
-            return Some(Ok(tok));
-        }
+            // Drain buffered tokens first (e.g. HereDocBody tokens queued at newline).
+            if let Some(tok) = self.buffered_tokens.pop() {
+                return Some(Ok(tok));
+            }
 
-        // Skip whitespace.
-        self.skip_whitespace();
+            // Skip whitespace.
+            self.skip_whitespace();
 
-        // Get the next character (or emit Eof).
-        let (pos, ch) = match self.peek() {
-            Some(pair) => pair,
-            None => {
-                // Check for pending heredocs at EOF - resolve them now
-                if !self.pending_heredocs.is_empty() {
+            // Get the next character (or emit Eof).
+            let (pos, ch) = match self.peek() {
+                Some(pair) => pair,
+                None => {
+                    self.finished = true;
+                    let eof_pos = self.input.len();
+                    let span = self.make_span(eof_pos, eof_pos);
+                    return Some(Ok(Spanned {
+                        node: Token::Eof,
+                        span,
+                    }));
+                }
+            };
+
+            // Consume the character we just peeked.
+            self.next_char();
+
+            let result = match ch {
+                // Newline
+                '\n' => {
+                    let span = self.make_span(pos, pos + 1);
+                    Ok(Spanned {
+                        node: Token::Newline,
+                        span,
+                    })
+                }
+
+                // CRLF -- treat \r\n as a single newline
+                '\r' => {
+                    if self.peek_char() == Some('\n') {
+                        self.next_char();
+                        let span = self.make_span(pos, pos + 2);
+                        Ok(Spanned {
+                            node: Token::Newline,
+                            span,
+                        })
+                    } else {
+                        // Bare \r treated as newline
+                        let span = self.make_span(pos, pos + 1);
+                        Ok(Spanned {
+                            node: Token::Newline,
+                            span,
+                        })
+                    }
+                }
+
+                // Comment
+                '#' => {
+                    self.skip_comment();
+                    // Restart the outer loop to get the next real token.
+                    continue;
+                }
+
+                // Pipe / OrOr
+                '|' => {
+                    if self.peek_char() == Some('|') {
+                        self.next_char();
+                        let span = self.make_span(pos, pos + 2);
+                        Ok(Spanned {
+                            node: Token::OrOr,
+                            span,
+                        })
+                    } else {
+                        let span = self.make_span(pos, pos + 1);
+                        Ok(Spanned {
+                            node: Token::Pipe,
+                            span,
+                        })
+                    }
+                }
+
+                // Ampersand / AndAnd / &>
+                '&' => {
+                    if pos > 0
+                        && self.input.as_bytes()[pos - 1].is_ascii_digit()
+                        && self.peek_char() == Some('<')
+                    {
+                        Err(LexError::Unexpected {
+                            ch: '&',
+                            pos: pos as u32,
+                        })
+                    } else if self.peek_char() == Some('&') {
+                        self.next_char();
+                        let span = self.make_span(pos, pos + 2);
+                        Ok(Spanned {
+                            node: Token::AndAnd,
+                            span,
+                        })
+                    } else if self.peek_char() == Some('>') {
+                        self.next_char();
+                        let span = self.make_span(pos, pos + 2);
+                        Ok(Spanned {
+                            node: Token::Redirect(RedirectKind::Both),
+                            span,
+                        })
+                    } else {
+                        let span = self.make_span(pos, pos + 1);
+                        Ok(Spanned {
+                            node: Token::Ampersand,
+                            span,
+                        })
+                    }
+                }
+
+                // Semicolon / SemiSemi
+                ';' => {
+                    if self.peek_char() == Some(';') {
+                        self.next_char();
+                        let span = self.make_span(pos, pos + 2);
+                        Ok(Spanned {
+                            node: Token::SemiSemi,
+                            span,
+                        })
+                    } else {
+                        let span = self.make_span(pos, pos + 1);
+                        Ok(Spanned {
+                            node: Token::Semicolon,
+                            span,
+                        })
+                    }
+                }
+
+                // Parens
+                '(' => {
+                    if self.peek_char() == Some('(') {
+                        self.next_char();
+                        let span = self.make_span(pos, pos + 2);
+                        Ok(Spanned {
+                            node: Token::LParenParen,
+                            span,
+                        })
+                    } else {
+                        let span = self.make_span(pos, pos + 1);
+                        Ok(Spanned {
+                            node: Token::LParen,
+                            span,
+                        })
+                    }
+                }
+                ')' => {
+                    if self.peek_char() == Some(')') {
+                        self.next_char();
+                        let span = self.make_span(pos, pos + 2);
+                        Ok(Spanned {
+                            node: Token::RParenParen,
+                            span,
+                        })
+                    } else {
+                        let span = self.make_span(pos, pos + 1);
+                        Ok(Spanned {
+                            node: Token::RParen,
+                            span,
+                        })
+                    }
+                }
+
+                // Braces
+                '{' => {
+                    let standalone = match self.peek_char() {
+                        None => true,
+                        Some(next) => is_word_break(next),
+                    };
+                    if standalone {
+                        let span = self.make_span(pos, pos + 1);
+                        Ok(Spanned {
+                            node: Token::LBrace,
+                            span,
+                        })
+                    } else {
+                        let word_span = match self.read_word(pos, ch) {
+                            Ok(span) => span,
+                            Err(e) => return Some(Err(e)),
+                        };
+                        Ok(Spanned {
+                            node: Token::Word(word_span),
+                            span: word_span,
+                        })
+                    }
+                }
+                '}' => {
+                    let standalone = match self.peek_char() {
+                        None => true,
+                        Some(next) => is_word_break(next),
+                    };
+                    if standalone {
+                        let span = self.make_span(pos, pos + 1);
+                        Ok(Spanned {
+                            node: Token::RBrace,
+                            span,
+                        })
+                    } else {
+                        let word_span = match self.read_word(pos, ch) {
+                            Ok(span) => span,
+                            Err(e) => return Some(Err(e)),
+                        };
+                        Ok(Spanned {
+                            node: Token::Word(word_span),
+                            span: word_span,
+                        })
+                    }
+                }
+
+                // Redirects / process substitution
+                '<' => {
+                    if self.peek_char() == Some('(') {
+                        // Process substitution: <(...)
+                        self.next_char(); // consume '('
+                        let end = match self.read_process_sub(pos) {
+                            Ok(end) => end,
+                            Err(e) => return Some(Err(e)),
+                        };
+                        let span = self.make_span(pos, end);
+                        Ok(Spanned {
+                            node: Token::Word(span),
+                            span,
+                        })
+                    } else {
+                        self.lex_less_than(pos)
+                    }
+                }
+                '>' => {
+                    if self.peek_char() == Some('(') {
+                        // Process substitution: >(...)
+                        self.next_char(); // consume '('
+                        let end = match self.read_process_sub(pos) {
+                            Ok(end) => end,
+                            Err(e) => return Some(Err(e)),
+                        };
+                        let span = self.make_span(pos, end);
+                        Ok(Spanned {
+                            node: Token::Word(span),
+                            span,
+                        })
+                    } else {
+                        self.lex_greater_than(pos)
+                    }
+                }
+
+                // Default: word (includes brackets, quotes, `$`, backslash, etc.)
+                _ => {
+                    // Backslash-newline at the start of a token position is a line
+                    // continuation — skip both characters and restart tokenization.
+                    if ch == '\\' {
+                        if self.peek_char() == Some('\n') {
+                            self.next_char();
+                            continue;
+                        }
+                        if self.peek_char() == Some('\r') {
+                            self.next_char();
+                            if self.peek_char() == Some('\n') {
+                                self.next_char();
+                            }
+                            continue;
+                        }
+                    }
+
+                    // `[` at word start: check for `[[`
+                    if ch == '[' {
+                        if self.peek_char() == Some('[') {
+                            let standalone = match self.input[pos + 2..].chars().next() {
+                                None => true,
+                                Some(next) => is_word_break(next),
+                            };
+                            if standalone {
+                                self.next_char();
+                                let span = self.make_span(pos, pos + 2);
+                                return Some(Ok(Spanned {
+                                    node: Token::LBracketBracket,
+                                    span,
+                                }));
+                            }
+                        }
+                        // Otherwise `[` starts a word -- fall through to word reading.
+                    }
+
+                    // `]` at word start: check for `]]`
+                    if ch == ']' {
+                        if self.peek_char() == Some(']') {
+                            let standalone = match self.input[pos + 2..].chars().next() {
+                                None => true,
+                                Some(next) => is_word_break(next),
+                            };
+                            if standalone {
+                                self.next_char();
+                                let span = self.make_span(pos, pos + 2);
+                                return Some(Ok(Spanned {
+                                    node: Token::RBracketBracket,
+                                    span,
+                                }));
+                            }
+                        }
+                        // Bare `]` is a word.
+                    }
+
+                    // Read the rest of the word.
+                    let word_span = match self.read_word(pos, ch) {
+                        Ok(span) => span,
+                        Err(e) => return Some(Err(e)),
+                    };
+
+                    // IoNumber detection: an all-digit word followed by `<` or `>`.
+                    let word_text = word_span.text(self.input);
+                    if !word_text.is_empty() && word_text.chars().all(|c| c.is_ascii_digit()) {
+                        if let Some('<' | '>') = self.peek_char() {
+                            if let Ok(num) = word_text.parse::<i32>() {
+                                return Some(Ok(Spanned {
+                                    node: Token::IoNumber(num, word_span),
+                                    span: word_span,
+                                }));
+                            }
+                        }
+                    }
+
+                    Ok(Spanned {
+                        node: Token::Word(word_span),
+                        span: word_span,
+                    })
+                }
+            };
+
+            // Phase 2: If the token is a Word and we are awaiting heredoc delimiters,
+            // extract the delimiter from the word text and fill it into the most recent
+            // PendingHeredoc that still has an empty delimiter.
+            if let Ok(ref spanned) = result {
+                if self.awaiting_heredoc_count > 0 {
+                    if let Token::Word(span) = &spanned.node {
+                        let word_text = span.text(self.input);
+                        let (delimiter, quoted) = Self::extract_heredoc_delimiter(word_text);
+                        // Find the first pending heredoc with an empty delimiter.
+                        for hd in &mut self.pending_heredocs {
+                            if hd.delimiter.is_empty() {
+                                hd.delimiter = delimiter;
+                                hd.quoted = quoted;
+                                break;
+                            }
+                        }
+                        self.awaiting_heredoc_count -= 1;
+                    }
+                }
+            }
+
+            // Phase 3: If the token is a Newline and there are pending heredocs with
+            // delimiters ready, resolve their bodies now. Buffer the HereDocBody tokens
+            // to be drained on subsequent next() calls.
+            if let Ok(ref spanned) = result {
+                if matches!(spanned.node, Token::Newline) {
                     let ready = self
                         .pending_heredocs
                         .iter()
                         .all(|hd| !hd.delimiter.is_empty());
-                    if ready {
+                    if ready && !self.pending_heredocs.is_empty() {
                         let heredocs: Vec<PendingHeredoc> =
                             self.pending_heredocs.drain(..).collect();
                         let mut bodies = Vec::new();
@@ -893,386 +1237,12 @@ impl<'a> Iterator for Lexer<'a> {
                         // Reverse so that pop() yields them in order.
                         bodies.reverse();
                         self.buffered_tokens = bodies;
-                        // Return first buffered token (HereDocBody) instead of Eof
-                        if let Some(tok) = self.buffered_tokens.pop() {
-                            return Some(Ok(tok));
-                        }
                     }
                 }
-                self.finished = true;
-                let eof_pos = self.input.len();
-                let span = self.make_span(eof_pos, eof_pos);
-                return Some(Ok(Spanned {
-                    node: Token::Eof,
-                    span,
-                }));
-            }
-        };
-
-        // Consume the character we just peeked.
-        self.next_char();
-
-        let result = match ch {
-            // Newline
-            '\n' => {
-                let span = self.make_span(pos, pos + 1);
-                Ok(Spanned {
-                    node: Token::Newline,
-                    span,
-                })
             }
 
-            // CRLF -- treat \r\n as a single newline
-            '\r' => {
-                if self.peek_char() == Some('\n') {
-                    self.next_char();
-                    let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned {
-                        node: Token::Newline,
-                        span,
-                    })
-                } else {
-                    // Bare \r treated as newline
-                    let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned {
-                        node: Token::Newline,
-                        span,
-                    })
-                }
-            }
-
-            // Comment
-            '#' => {
-                self.skip_comment();
-                // After skipping the comment, we need to return the next token.
-                // Recurse (the iterator will handle the next call).
-                return self.next();
-            }
-
-            // Pipe / OrOr
-            '|' => {
-                if self.peek_char() == Some('|') {
-                    self.next_char();
-                    let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned {
-                        node: Token::OrOr,
-                        span,
-                    })
-                } else {
-                    let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned {
-                        node: Token::Pipe,
-                        span,
-                    })
-                }
-            }
-
-            // Ampersand / AndAnd / &>
-            '&' => {
-                if pos > 0
-                    && self.input.as_bytes()[pos - 1].is_ascii_digit()
-                    && self.peek_char() == Some('<')
-                {
-                    Err(LexError::Unexpected {
-                        ch: '&',
-                        pos: pos as u32,
-                    })
-                } else if self.peek_char() == Some('&') {
-                    self.next_char();
-                    let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned {
-                        node: Token::AndAnd,
-                        span,
-                    })
-                } else if self.peek_char() == Some('>') {
-                    self.next_char();
-                    let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned {
-                        node: Token::Redirect(RedirectKind::Both),
-                        span,
-                    })
-                } else {
-                    let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned {
-                        node: Token::Ampersand,
-                        span,
-                    })
-                }
-            }
-
-            // Semicolon / SemiSemi
-            ';' => {
-                if self.peek_char() == Some(';') {
-                    self.next_char();
-                    let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned {
-                        node: Token::SemiSemi,
-                        span,
-                    })
-                } else {
-                    let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned {
-                        node: Token::Semicolon,
-                        span,
-                    })
-                }
-            }
-
-            // Parens
-            '(' => {
-                if self.peek_char() == Some('(') {
-                    self.next_char();
-                    let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned {
-                        node: Token::LParenParen,
-                        span,
-                    })
-                } else {
-                    let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned {
-                        node: Token::LParen,
-                        span,
-                    })
-                }
-            }
-            ')' => {
-                if self.peek_char() == Some(')') {
-                    self.next_char();
-                    let span = self.make_span(pos, pos + 2);
-                    Ok(Spanned {
-                        node: Token::RParenParen,
-                        span,
-                    })
-                } else {
-                    let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned {
-                        node: Token::RParen,
-                        span,
-                    })
-                }
-            }
-
-            // Braces
-            '{' => {
-                let standalone = match self.peek_char() {
-                    None => true,
-                    Some(next) => is_word_break(next),
-                };
-                if standalone {
-                    let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned {
-                        node: Token::LBrace,
-                        span,
-                    })
-                } else {
-                    let word_span = match self.read_word(pos, ch) {
-                        Ok(span) => span,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    Ok(Spanned {
-                        node: Token::Word(word_span),
-                        span: word_span,
-                    })
-                }
-            }
-            '}' => {
-                let standalone = match self.peek_char() {
-                    None => true,
-                    Some(next) => is_word_break(next),
-                };
-                if standalone {
-                    let span = self.make_span(pos, pos + 1);
-                    Ok(Spanned {
-                        node: Token::RBrace,
-                        span,
-                    })
-                } else {
-                    let word_span = match self.read_word(pos, ch) {
-                        Ok(span) => span,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    Ok(Spanned {
-                        node: Token::Word(word_span),
-                        span: word_span,
-                    })
-                }
-            }
-
-            // Redirects / process substitution
-            '<' => {
-                if self.peek_char() == Some('(') {
-                    // Process substitution: <(...)
-                    self.next_char(); // consume '('
-                    let end = match self.read_process_sub(pos) {
-                        Ok(end) => end,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    let span = self.make_span(pos, end);
-                    Ok(Spanned {
-                        node: Token::Word(span),
-                        span,
-                    })
-                } else {
-                    self.lex_less_than(pos)
-                }
-            }
-            '>' => {
-                if self.peek_char() == Some('(') {
-                    // Process substitution: >(...)
-                    self.next_char(); // consume '('
-                    let end = match self.read_process_sub(pos) {
-                        Ok(end) => end,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    let span = self.make_span(pos, end);
-                    Ok(Spanned {
-                        node: Token::Word(span),
-                        span,
-                    })
-                } else {
-                    self.lex_greater_than(pos)
-                }
-            }
-
-            // Default: word (includes brackets, quotes, `$`, backslash, etc.)
-            _ => {
-                // Backslash-newline at the start of a token position is a line
-                // continuation — skip both characters and restart tokenization.
-                if ch == '\\' {
-                    if self.peek_char() == Some('\n') {
-                        self.next_char();
-                        return self.next();
-                    }
-                    if self.peek_char() == Some('\r') {
-                        self.next_char();
-                        if self.peek_char() == Some('\n') {
-                            self.next_char();
-                        }
-                        return self.next();
-                    }
-                }
-
-                // `[` at word start: check for `[[`
-                if ch == '[' {
-                    if self.peek_char() == Some('[') {
-                        let standalone = match self.input[pos + 2..].chars().next() {
-                            None => true,
-                            Some(next) => is_word_break(next),
-                        };
-                        if standalone {
-                            self.next_char();
-                            let span = self.make_span(pos, pos + 2);
-                            return Some(Ok(Spanned {
-                                node: Token::LBracketBracket,
-                                span,
-                            }));
-                        }
-                    }
-                    // Otherwise `[` starts a word -- fall through to word reading.
-                }
-
-                // `]` at word start: check for `]]`
-                if ch == ']' {
-                    if self.peek_char() == Some(']') {
-                        let standalone = match self.input[pos + 2..].chars().next() {
-                            None => true,
-                            Some(next) => is_word_break(next),
-                        };
-                        if standalone {
-                            self.next_char();
-                            let span = self.make_span(pos, pos + 2);
-                            return Some(Ok(Spanned {
-                                node: Token::RBracketBracket,
-                                span,
-                            }));
-                        }
-                    }
-                    // Bare `]` is a word.
-                }
-
-                // Read the rest of the word.
-                let word_span = match self.read_word(pos, ch) {
-                    Ok(span) => span,
-                    Err(e) => return Some(Err(e)),
-                };
-
-                // IoNumber detection: an all-digit word followed by `<` or `>`.
-                let word_text = word_span.text(self.input);
-                if !word_text.is_empty() && word_text.chars().all(|c| c.is_ascii_digit()) {
-                    if let Some('<' | '>') = self.peek_char() {
-                        if let Ok(num) = word_text.parse::<i32>() {
-                            return Some(Ok(Spanned {
-                                node: Token::IoNumber(num, word_span),
-                                span: word_span,
-                            }));
-                        }
-                    }
-                }
-
-                Ok(Spanned {
-                    node: Token::Word(word_span),
-                    span: word_span,
-                })
-            }
-        };
-
-        // Phase 2: If the token is a Word and we are awaiting heredoc delimiters,
-        // extract the delimiter from the word text and fill it into the most recent
-        // PendingHeredoc that still has an empty delimiter.
-        if let Ok(ref spanned) = result {
-            if self.awaiting_heredoc_count > 0 {
-                if let Token::Word(span) = &spanned.node {
-                    let word_text = span.text(self.input);
-                    let (delimiter, quoted) = Self::extract_heredoc_delimiter(word_text);
-                    // Find the first pending heredoc with an empty delimiter.
-                    for hd in &mut self.pending_heredocs {
-                        if hd.delimiter.is_empty() {
-                            hd.delimiter = delimiter;
-                            hd.quoted = quoted;
-                            break;
-                        }
-                    }
-                    self.awaiting_heredoc_count -= 1;
-                }
-            }
-        }
-
-        // Phase 3: If the token is a Newline and there are pending heredocs with
-        // delimiters ready, resolve their bodies now. Buffer the HereDocBody tokens
-        // to be drained on subsequent next() calls.
-        if let Ok(ref spanned) = result {
-            if matches!(spanned.node, Token::Newline) {
-                let ready = self
-                    .pending_heredocs
-                    .iter()
-                    .all(|hd| !hd.delimiter.is_empty());
-                if ready && !self.pending_heredocs.is_empty() {
-                    let heredocs: Vec<PendingHeredoc> = self.pending_heredocs.drain(..).collect();
-                    let mut bodies = Vec::new();
-                    for hd in heredocs {
-                        match self.read_heredoc_body(&hd.delimiter, hd.strip_tabs) {
-                            Ok(body) => {
-                                let eof_pos = self.input.len();
-                                let span = self.make_span(eof_pos, eof_pos);
-                                bodies.push(Spanned {
-                                    node: Token::HereDocBody {
-                                        body,
-                                        quoted: hd.quoted,
-                                    },
-                                    span,
-                                });
-                            }
-                            Err(e) => return Some(Err(e)),
-                        }
-                    }
-                    // Reverse so that pop() yields them in order.
-                    bodies.reverse();
-                    self.buffered_tokens = bodies;
-                }
-            }
-        }
-
-        Some(result)
+            return Some(result);
+        } // end outer loop
     }
 }
 

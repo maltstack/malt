@@ -1,10 +1,10 @@
 use malt_daemon::connection::handshake::perform_server_handshake;
 use malt_protocol::common::{ClientCapabilities, ColorDepth, ImageProtocol, UnicodeLevel};
+use malt_protocol::envelope::{decode_envelope, encode_message, Envelope};
 use malt_protocol::framing::{Frame, FrameFlags, FrameReader, FrameWriter};
 use malt_protocol::handshake::{Hello, HelloAck};
-use malt_protocol::envelope::{encode_message, decode_envelope, Envelope};
-use vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 use std::io::Cursor;
+use vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
 const WIRE_VERSION: u32 = 1;
 
@@ -65,7 +65,10 @@ fn successful_handshake() {
     let result = perform_server_handshake(&mut input, &mut output, &[]).unwrap();
 
     assert_eq!(result.client_type, "test");
-    assert!(matches!(result.capabilities.color_depth, ColorDepth::TrueColor));
+    assert!(matches!(
+        result.capabilities.color_depth,
+        ColorDepth::TrueColor
+    ));
 
     let ack = decode_hello_ack(&output);
     assert_eq!(ack.negotiated_version, WIRE_VERSION);

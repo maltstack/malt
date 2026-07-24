@@ -14,7 +14,7 @@ use std::path::Path;
 ///
 /// Exit 0 on success, 1 on error.
 pub fn chmod(args: &[String], _stdin: &[u8]) -> BuiltinResult {
-    let mut recursive = false;
+    let mut _recursive = false;
     let mut mode_str: Option<&str> = None;
     let mut paths: Vec<&str> = Vec::new();
 
@@ -27,7 +27,7 @@ pub fn chmod(args: &[String], _stdin: &[u8]) -> BuiltinResult {
         }
 
         match args[i].as_str() {
-            "-R" | "-r" | "--recursive" => recursive = true,
+            "-R" | "-r" | "--recursive" => _recursive = true,
             "-f" | "--force" => { /* ignore errors */ }
             "-v" | "--verbose" => { /* ignored */ }
             _ => {
@@ -212,10 +212,7 @@ mod tests {
         let path = dir.path().join("script.sh");
         fs::write(&path, "echo hi\n").unwrap();
 
-        let result = chmod(
-            &["-r".into(), path.to_string_lossy().into_owned()],
-            b"",
-        );
+        let result = chmod(&["-r".into(), path.to_string_lossy().into_owned()], b"");
 
         assert_eq!(
             result.exit_code,

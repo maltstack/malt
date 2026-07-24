@@ -1,9 +1,7 @@
 //! Layout resolution — tree to concrete screen positions.
 
 use crate::{LayoutConfig, Rect};
-use malt_protocol::common::{
-    Direction, LayoutNode, PaneId, ResolvedPane, SplitSize, TabContext,
-};
+use malt_protocol::common::{Direction, LayoutNode, PaneId, ResolvedPane, SplitSize, TabContext};
 
 /// Walk the layout tree and produce a flat list of resolved pane positions.
 ///
@@ -53,7 +51,9 @@ fn resolve_node(
             children,
             ..
         } => {
-            resolve_split(direction, sizes, children, rect, focused, config, out, float_z, base_z);
+            resolve_split(
+                direction, sizes, children, rect, focused, config, out, float_z, base_z,
+            );
         }
 
         LayoutNode::Tabbed {

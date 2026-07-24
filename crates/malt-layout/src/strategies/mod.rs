@@ -12,7 +12,11 @@ use malt_protocol::common::{Direction, LayoutNode, PaneId, SplitId, SplitSize};
 ///
 /// Shared helper used by multiple strategies. If `panes` has a single element,
 /// returns a Leaf instead of a Split.
-pub(crate) fn make_equal_split(panes: &[PaneId], direction: Direction, base_split_id: u32) -> LayoutNode {
+pub(crate) fn make_equal_split(
+    panes: &[PaneId],
+    direction: Direction,
+    base_split_id: u32,
+) -> LayoutNode {
     debug_assert!(!panes.is_empty());
     if panes.len() == 1 {
         return LayoutNode::Leaf {

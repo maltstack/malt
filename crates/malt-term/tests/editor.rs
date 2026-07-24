@@ -112,8 +112,8 @@ fn vi_normal_motions() {
     ed.feed(InputEvent::Char('b'));
     ed.feed(InputEvent::Char('c'));
     ed.feed(InputEvent::Key(SpecialKey::Escape)); // normal mode
-    // Cursor moves back one on Escape (vi convention), now on 'c' (index 2)
-    // h twice: index 0 -> on 'a'
+                                                  // Cursor moves back one on Escape (vi convention), now on 'c' (index 2)
+                                                  // h twice: index 0 -> on 'a'
     ed.feed(InputEvent::Char('h')); // move left -> on 'b'
     ed.feed(InputEvent::Char('h')); // move left -> on 'a'
     ed.feed(InputEvent::Char('x')); // delete char at cursor ('a')
@@ -216,7 +216,10 @@ fn reset_after_accept_is_safe() {
     let mut ed = Editor::new(EditMode::Emacs);
     ed.feed(InputEvent::Char('a'));
     let result = ed.feed(InputEvent::Key(SpecialKey::Enter));
-    assert!(matches!(result, EditResult::Accept(s) if s == "a"), "expected Accept(\"a\")");
+    assert!(
+        matches!(result, EditResult::Accept(s) if s == "a"),
+        "expected Accept(\"a\")"
+    );
     // After Accept, the line text is consumed by the caller.
     // reset() must still work without panicking.
     ed.reset();
@@ -230,13 +233,21 @@ fn reset_vi_normal_returns_to_insert() {
     ed.feed(InputEvent::Char('h'));
     ed.feed(InputEvent::Char('i'));
     ed.feed(InputEvent::Key(SpecialKey::Escape));
-    assert_eq!(ed.vi_mode_indicator(), "NOR", "should be in Normal mode before reset");
+    assert_eq!(
+        ed.vi_mode_indicator(),
+        "NOR",
+        "should be in Normal mode before reset"
+    );
 
     ed.reset();
 
     assert_eq!(ed.line(), "", "line must be empty after reset");
     assert_eq!(ed.cursor(), 0, "cursor must be at 0 after reset");
-    assert_eq!(ed.vi_mode_indicator(), "INS", "reset must return Vi editor to Insert mode");
+    assert_eq!(
+        ed.vi_mode_indicator(),
+        "INS",
+        "reset must return Vi editor to Insert mode"
+    );
 }
 
 #[test]

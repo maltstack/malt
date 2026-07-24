@@ -295,7 +295,12 @@ fn build_runner_env(
     } else if inherited_path.is_empty() {
         mash_dir.to_string_lossy().into_owned()
     } else {
-        format!("{}{}{}", mash_dir.to_string_lossy(), path_sep, inherited_path)
+        format!(
+            "{}{}{}",
+            mash_dir.to_string_lossy(),
+            path_sep,
+            inherited_path
+        )
     };
     #[cfg(windows)]
     let test_shell = mash

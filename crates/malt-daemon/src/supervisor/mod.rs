@@ -3,7 +3,7 @@ pub mod process;
 
 use std::collections::HashMap;
 
-use malt_platform::pty::{self, spawn_with_pty, WinSize};
+use malt_platform::pty::{spawn_with_pty, WinSize};
 use malt_protocol::common::PaneId;
 
 pub use error::SupervisorError;
@@ -32,8 +32,8 @@ impl ProcessSupervisor {
             rows: req.rows,
         };
 
-        let pty_proc = spawn_with_pty(&req.program, &req.args, &req.cwd, size)
-            .map_err(|e| match e {
+        let mut pty_proc =
+            spawn_with_pty(&req.program, &req.args, &req.cwd, size).map_err(|e| match e {
                 malt_platform::pty::PtySpawnError::Pty(e) => SupervisorError::PtyError(e),
                 malt_platform::pty::PtySpawnError::Spawn(e) => SupervisorError::SpawnFailed(e),
                 malt_platform::pty::PtySpawnError::Io(e) => SupervisorError::Io(e),
@@ -56,8 +56,14 @@ impl ProcessSupervisor {
         let (reader, writer) = (pty_proc.reader, pty_proc.writer);
 
         let key = req.pane_id.0;
-        let managed =
-            ManagedProcess::new(req.pane_id, pid, pty_proc.child, pty_proc.pty, reader, writer);
+        let managed = ManagedProcess::new(
+            req.pane_id,
+            pid,
+            pty_proc.child,
+            pty_proc.pty,
+            reader,
+            writer,
+        );
         self.processes.insert(key, managed);
 
         Ok(())

@@ -18,7 +18,9 @@ pub fn split_pane(
     if !contains_pane(tree, &target) {
         return None;
     }
-    Some(split_node(tree, &target, &dir, &size, &new_pane, &new_split))
+    Some(split_node(
+        tree, &target, &dir, &size, &new_pane, &new_split,
+    ))
 }
 
 fn split_node(
@@ -30,17 +32,19 @@ fn split_node(
     new_split: &SplitId,
 ) -> LayoutNode {
     match node {
-        LayoutNode::Leaf { pane_id } if pane_id == target => {
-            LayoutNode::Split {
-                split_id: new_split.clone(),
-                direction: dir.clone(),
-                sizes: vec![SplitSize::Ratio { value: 0.5 }, size.clone()],
-                children: vec![
-                    LayoutNode::Leaf { pane_id: target.clone() },
-                    LayoutNode::Leaf { pane_id: new_pane.clone() },
-                ],
-            }
-        }
+        LayoutNode::Leaf { pane_id } if pane_id == target => LayoutNode::Split {
+            split_id: new_split.clone(),
+            direction: dir.clone(),
+            sizes: vec![SplitSize::Ratio { value: 0.5 }, size.clone()],
+            children: vec![
+                LayoutNode::Leaf {
+                    pane_id: target.clone(),
+                },
+                LayoutNode::Leaf {
+                    pane_id: new_pane.clone(),
+                },
+            ],
+        },
 
         LayoutNode::Split {
             split_id,
@@ -58,7 +62,9 @@ fn split_node(
             new_sizes.insert(idx + 1, size.clone());
             new_children.insert(
                 idx + 1,
-                LayoutNode::Leaf { pane_id: new_pane.clone() },
+                LayoutNode::Leaf {
+                    pane_id: new_pane.clone(),
+                },
             );
             LayoutNode::Split {
                 split_id: split_id.clone(),
@@ -188,7 +194,10 @@ fn close_in_node(node: &LayoutNode, target: &PaneId) -> LayoutNode {
                     .cloned()
                     .collect();
                 if new_children.len() == 1 {
-                    new_children.into_iter().next().unwrap_or_else(|| node.clone())
+                    new_children
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| node.clone())
                 } else {
                     let new_active = if (*active as usize) >= new_children.len() {
                         (new_children.len().saturating_sub(1)) as u16
@@ -334,7 +343,9 @@ fn resize_in_node(
                 let mut new_children = children.clone();
                 let mut found = false;
                 for child in &mut new_children {
-                    if let Some(updated) = resize_in_node(child, target_split, child_index, new_size) {
+                    if let Some(updated) =
+                        resize_in_node(child, target_split, child_index, new_size)
+                    {
                         *child = updated;
                         found = true;
                         break;

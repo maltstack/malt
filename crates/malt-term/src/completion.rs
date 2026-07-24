@@ -130,10 +130,7 @@ fn complete_path(partial: &str) -> Vec<Candidate> {
         (path, "")
     } else {
         let parent = path.parent().unwrap_or(Path::new("."));
-        let stem = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let stem = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         (parent, stem)
     };
 
@@ -144,11 +141,7 @@ fn complete_path(partial: &str) -> Vec<Candidate> {
 
     let mut candidates: Vec<Candidate> = read_dir
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with(stem)
-        })
+        .filter(|e| e.file_name().to_string_lossy().starts_with(stem))
         .map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             let full = if dir == Path::new(".") {

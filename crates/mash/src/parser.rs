@@ -26,10 +26,26 @@ pub fn parse(input: &str) -> Result<Vec<Spanned<Command>>, ParseError> {
 /// (including after `|`, `&&`, `||`, `;`, newline). It does NOT expand
 /// inside compound commands (if/while/for/case/function bodies) because
 /// those contexts do not support aliases.
+///
+/// Iterates until no more substitutions are made, supporting aliases that
+/// expand to text containing other alias references. A recursion guard
+/// prevents infinite loops (an alias expanding to itself).
 pub fn preparse_expanded(input: &str, aliases: &HashMap<String, String>) -> String {
     if aliases.is_empty() {
         return input.to_string();
     }
+    let mut current = input.to_string();
+    for _ in 0..100 {
+        let next = preparse_expanded_pass(&current, aliases);
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
+fn preparse_expanded_pass(input: &str, aliases: &HashMap<String, String>) -> String {
     let mut lexer = Lexer::new(input);
     let mut result = String::with_capacity(input.len());
     let mut last_end = 0usize;
@@ -49,12 +65,10 @@ pub fn preparse_expanded(input: &str, aliases: &HashMap<String, String>) -> Stri
                 let word = span.text(input);
                 if let Some(replacement) = aliases.get(word) {
                     result.push_str(replacement);
-                    // If replacement ends with whitespace, next word is
-                    // still in command position.
                     let ends_with_sep = replacement
                         .as_bytes()
                         .last()
-                        .map(|b| b" \t\n".contains(b))
+                        .map(|b| b" \t\n;|&".contains(b))
                         .unwrap_or(false);
                     in_command_position = ends_with_sep;
                 } else {
@@ -64,10 +78,16 @@ pub fn preparse_expanded(input: &str, aliases: &HashMap<String, String>) -> Stri
             }
             _ => {
                 result.push_str(&input[s..e]);
-                // After certain tokens the next word is in command position.
                 in_command_position = matches!(
                     tok.node,
-                    Token::Semicolon | Token::Newline | Token::Pipe | Token::AndAnd | Token::OrOr
+                    Token::Semicolon
+                        | Token::Newline
+                        | Token::Pipe
+                        | Token::AndAnd
+                        | Token::OrOr
+                        | Token::Ampersand
+                        | Token::LBrace
+                        | Token::LParen
                 );
             }
         }
@@ -82,10 +102,10 @@ pub fn preparse_expanded(input: &str, aliases: &HashMap<String, String>) -> Stri
 /// Collect alias definitions from script text before execution.
 /// This scans for lines like `alias NAME='VALUE'` and builds a map
 /// that can be used for preparse expansion before the script executes.
+/// Collects ALL aliases (not just grammar macros) so that source/eval
+/// can pick up runtime aliases like LOOP/DO/DONE and others.
 pub fn collect_grammar_aliases_from_script(input: &str) -> HashMap<String, String> {
-    let mut aliases = collect_aliases_from_script(input);
-    aliases.retain(|k, _| matches!(k.as_str(), "LOOP" | "DO" | "DONE"));
-    aliases
+    collect_aliases_from_script(input)
 }
 
 pub fn collect_aliases_from_script(input: &str) -> HashMap<String, String> {
@@ -588,6 +608,7 @@ impl<'a> Parser<'a> {
         let var_tok = self.expect_word()?;
         let var = Self::word_span(&var_tok.node).unwrap_or(var_tok.span);
 
+        self.skip_newlines()?;
         // Optional `in words...` clause.
         let words = if self.peek_keyword("in") {
             self.advance()?; // consume "in"
@@ -771,6 +792,7 @@ impl<'a> Parser<'a> {
         let var_tok = self.expect_word()?;
         let var = Self::word_span(&var_tok.node).unwrap_or(var_tok.span);
 
+        self.skip_newlines()?;
         let words = if self.peek_keyword("in") {
             self.advance()?;
             let mut ws = Vec::new();
@@ -1297,6 +1319,8 @@ impl<'a> Parser<'a> {
                     let target_tok = self.expect_word()?;
                     let target_span = Self::word_span(&target_tok.node).unwrap_or(target_tok.span);
                     let redir_span = redir_tok.span.merge(target_tok.span);
+                    let is_heredoc =
+                        matches!(kind, RedirectKind::HereDoc | RedirectKind::HereDocStrip);
                     redirects.push(Spanned {
                         node: Redirect {
                             kind,
@@ -1307,6 +1331,34 @@ impl<'a> Parser<'a> {
                         },
                         span: redir_span,
                     });
+                    if is_heredoc {
+                        if matches!(self.peek().node, Token::Newline) {
+                            self.advance()?;
+                        }
+                        if let Token::HereDocBody { body, quoted } = &self.peek().node {
+                            let body_val = body.clone();
+                            let quoted_val = *quoted;
+                            let body_tok = self.advance()?;
+                            if let Some(index) = redirects.iter().rposition(|redir| {
+                                matches!(
+                                    redir.node.kind,
+                                    RedirectKind::HereDoc | RedirectKind::HereDocStrip
+                                ) && redir.node.heredoc_body.is_none()
+                            }) {
+                                let prior = redirects[index].clone();
+                                redirects[index] = Spanned {
+                                    node: Redirect {
+                                        kind: prior.node.kind,
+                                        target: body_tok.span,
+                                        fd: prior.node.fd,
+                                        quoted: quoted_val,
+                                        heredoc_body: Some(body_val),
+                                    },
+                                    span: prior.span.merge(body_tok.span),
+                                };
+                            }
+                        }
+                    }
                 }
                 _ => break,
             }

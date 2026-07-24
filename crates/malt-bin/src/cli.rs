@@ -32,23 +32,13 @@ pub enum Command {
         name: Option<String>,
     },
     /// Attach to a session
-    Attach {
-        session_id: Option<u32>,
-    },
+    Attach { session_id: Option<u32> },
     /// Kill a session
-    Kill {
-        session_id: u32,
-    },
+    Kill { session_id: u32 },
     /// Execute a command in a session
-    Exec {
-        session_id: u32,
-        command: String,
-    },
+    Exec { session_id: u32, command: String },
     /// Send raw input to a session
-    Send {
-        session_id: u32,
-        input: String,
-    },
+    Send { session_id: u32, input: String },
 }
 
 #[cfg(test)]

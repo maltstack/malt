@@ -1,4 +1,4 @@
-use malt_protocol::envelope::{encode_envelope, encode_message, decode_envelope, Envelope};
+use malt_protocol::envelope::{decode_envelope, encode_envelope, encode_message, Envelope};
 use vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
 #[test]
@@ -165,7 +165,9 @@ fn golden_full_encoding_with_msg_id() {
         _unknown: Vec::new(),
     };
     let bytes = encode_envelope(&env).unwrap();
-    let expected: &[u8] = &[33, 5, 42, 0, 0, 0, 255, 238, 221, 204, 187, 170, 1, 239, 190, 173, 222];
+    let expected: &[u8] = &[
+        33, 5, 42, 0, 0, 0, 255, 238, 221, 204, 187, 170, 1, 239, 190, 173, 222,
+    ];
     assert_eq!(
         bytes, expected,
         "Envelope wire encoding changed — see test doc comment for update procedure"

@@ -272,10 +272,7 @@ fn handle_client(stream: TcpStream, coordinator: Arc<Mutex<Coordinator>>, client
 ///
 /// Returns the session ID as a `u32`, or `None` if the connection closes before
 /// the expected message arrives or if 64 non-matching frames are received.
-fn wait_for_attach(
-    reader: &mut FrameReader<BufReader<TcpStream>>,
-    peer: &str,
-) -> Option<u32> {
+fn wait_for_attach(reader: &mut FrameReader<BufReader<TcpStream>>, peer: &str) -> Option<u32> {
     let mut attempts = 0usize;
     loop {
         if attempts >= 64 {
@@ -371,21 +368,17 @@ fn dispatch_frame(
         (DOMAIN_INPUT, MSG_KEY_EVENT) => {
             let mut bit_reader = BitReader::new(msg_bytes);
             match KeyEvent::unpack(&mut bit_reader) {
-                Ok(key) => {
-                    match coordinator.lock() {
-                        Ok(coord) => {
-                            if let Err(e) =
-                                coord.send_key_input(SessionId(session_id), key)
-                            {
-                                warn!(peer, error = %e, "VNP: send_key_input failed");
-                            }
-                        }
-                        Err(e) => {
-                            warn!(peer, error = %e, "VNP: coordinator lock poisoned");
-                            return DispatchResult::Disconnect;
+                Ok(key) => match coordinator.lock() {
+                    Ok(coord) => {
+                        if let Err(e) = coord.send_key_input(SessionId(session_id), key) {
+                            warn!(peer, error = %e, "VNP: send_key_input failed");
                         }
                     }
-                }
+                    Err(e) => {
+                        warn!(peer, error = %e, "VNP: coordinator lock poisoned");
+                        return DispatchResult::Disconnect;
+                    }
+                },
                 Err(e) => {
                     warn!(peer, error = %e, "VNP: KeyEvent decode failed");
                 }
@@ -394,25 +387,23 @@ fn dispatch_frame(
         (DOMAIN_INPUT, MSG_RESIZE) => {
             let mut bit_reader = BitReader::new(msg_bytes);
             match Resize::unpack(&mut bit_reader) {
-                Ok(resize) => {
-                    match coordinator.lock() {
-                        Ok(coord) => {
-                            if let Err(e) = coord.send_command(
-                                SessionId(session_id),
-                                SessionCommand::Resize {
-                                    cols: resize.cols,
-                                    rows: resize.rows,
-                                },
-                            ) {
-                                warn!(peer, error = %e, "VNP: send Resize command failed");
-                            }
-                        }
-                        Err(e) => {
-                            warn!(peer, error = %e, "VNP: coordinator lock poisoned");
-                            return DispatchResult::Disconnect;
+                Ok(resize) => match coordinator.lock() {
+                    Ok(coord) => {
+                        if let Err(e) = coord.send_command(
+                            SessionId(session_id),
+                            SessionCommand::Resize {
+                                cols: resize.cols,
+                                rows: resize.rows,
+                            },
+                        ) {
+                            warn!(peer, error = %e, "VNP: send Resize command failed");
                         }
                     }
-                }
+                    Err(e) => {
+                        warn!(peer, error = %e, "VNP: coordinator lock poisoned");
+                        return DispatchResult::Disconnect;
+                    }
+                },
                 Err(e) => {
                     warn!(peer, error = %e, "VNP: Resize decode failed");
                 }
@@ -421,21 +412,19 @@ fn dispatch_frame(
         (DOMAIN_RENDER, MSG_FRAME_ACK) => {
             let mut bit_reader = BitReader::new(msg_bytes);
             match FrameAck::unpack(&mut bit_reader) {
-                Ok(ack) => {
-                    match coordinator.lock() {
-                        Ok(coord) => {
-                            if let Err(e) =
-                                coord.ack_frame(SessionId(session_id), client_id, ack.frame_seq)
-                            {
-                                warn!(peer, error = %e, "VNP: ack_frame failed");
-                            }
-                        }
-                        Err(e) => {
-                            warn!(peer, error = %e, "VNP: coordinator lock poisoned");
-                            return DispatchResult::Disconnect;
+                Ok(ack) => match coordinator.lock() {
+                    Ok(coord) => {
+                        if let Err(e) =
+                            coord.ack_frame(SessionId(session_id), client_id, ack.frame_seq)
+                        {
+                            warn!(peer, error = %e, "VNP: ack_frame failed");
                         }
                     }
-                }
+                    Err(e) => {
+                        warn!(peer, error = %e, "VNP: coordinator lock poisoned");
+                        return DispatchResult::Disconnect;
+                    }
+                },
                 Err(e) => {
                     warn!(peer, error = %e, "VNP: FrameAck decode failed");
                 }
@@ -446,7 +435,10 @@ fn dispatch_frame(
             match DetachSession::unpack(&mut bit_reader) {
                 Ok(detach) => {
                     if detach.session_id.0 == session_id {
-                        info!(peer, client_id, session_id, "VNP: client sent DetachSession");
+                        info!(
+                            peer,
+                            client_id, session_id, "VNP: client sent DetachSession"
+                        );
                         match coordinator.lock() {
                             Ok(mut coord) => {
                                 if let Err(e) =
@@ -507,8 +499,8 @@ fn send_vnp_msg<W: std::io::Write, T: Pack>(
         .map_err(|e| VnpSendError::Pack(e.to_string()))?;
     let msg_bytes = bw.finish();
 
-    let payload = encode_message(&envelope, &msg_bytes)
-        .map_err(|e| VnpSendError::Encode(e.to_string()))?;
+    let payload =
+        encode_message(&envelope, &msg_bytes).map_err(|e| VnpSendError::Encode(e.to_string()))?;
 
     let frame = Frame {
         flags: FrameFlags::new(),

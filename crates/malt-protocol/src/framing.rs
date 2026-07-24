@@ -21,17 +21,45 @@ pub struct Frame {
 pub struct FrameFlags(u8);
 
 impl FrameFlags {
-    pub fn new() -> Self { Self(0) }
-    pub fn compressed(&self) -> bool { self.0 & FLAG_COMPRESSED != 0 }
-    pub fn set_compressed(&mut self, v: bool) { if v { self.0 |= FLAG_COMPRESSED; } else { self.0 &= !FLAG_COMPRESSED; } }
-    pub fn json_encoded(&self) -> bool { self.0 & FLAG_JSON_ENCODED != 0 }
-    pub fn set_json_encoded(&mut self, v: bool) { if v { self.0 |= FLAG_JSON_ENCODED; } else { self.0 &= !FLAG_JSON_ENCODED; } }
-    pub fn continuation(&self) -> bool { self.0 & FLAG_CONTINUATION != 0 }
-    pub fn set_continuation(&mut self, v: bool) { if v { self.0 |= FLAG_CONTINUATION; } else { self.0 &= !FLAG_CONTINUATION; } }
+    pub fn new() -> Self {
+        Self(0)
+    }
+    pub fn compressed(&self) -> bool {
+        self.0 & FLAG_COMPRESSED != 0
+    }
+    pub fn set_compressed(&mut self, v: bool) {
+        if v {
+            self.0 |= FLAG_COMPRESSED;
+        } else {
+            self.0 &= !FLAG_COMPRESSED;
+        }
+    }
+    pub fn json_encoded(&self) -> bool {
+        self.0 & FLAG_JSON_ENCODED != 0
+    }
+    pub fn set_json_encoded(&mut self, v: bool) {
+        if v {
+            self.0 |= FLAG_JSON_ENCODED;
+        } else {
+            self.0 &= !FLAG_JSON_ENCODED;
+        }
+    }
+    pub fn continuation(&self) -> bool {
+        self.0 & FLAG_CONTINUATION != 0
+    }
+    pub fn set_continuation(&mut self, v: bool) {
+        if v {
+            self.0 |= FLAG_CONTINUATION;
+        } else {
+            self.0 &= !FLAG_CONTINUATION;
+        }
+    }
 }
 
 impl Default for FrameFlags {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,8 +80,18 @@ pub struct FrameReader<R> {
 }
 
 impl<R: Read> FrameReader<R> {
-    pub fn new(reader: R) -> Self { Self { inner: reader, max_frame_size: DEFAULT_MAX_FRAME_SIZE } }
-    pub fn with_max_frame_size(reader: R, max: u32) -> Self { Self { inner: reader, max_frame_size: max.min(PROTOCOL_MAX_FRAME_SIZE) } }
+    pub fn new(reader: R) -> Self {
+        Self {
+            inner: reader,
+            max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+        }
+    }
+    pub fn with_max_frame_size(reader: R, max: u32) -> Self {
+        Self {
+            inner: reader,
+            max_frame_size: max.min(PROTOCOL_MAX_FRAME_SIZE),
+        }
+    }
 
     pub fn read_frame(&mut self) -> Result<Frame, FrameError> {
         let mut len_buf = [0u8; 4];
@@ -61,7 +99,10 @@ impl<R: Read> FrameReader<R> {
         let payload_len = u32::from_le_bytes(len_buf);
 
         if payload_len > self.max_frame_size {
-            return Err(FrameError::FrameTooLarge { size: payload_len, max: self.max_frame_size });
+            return Err(FrameError::FrameTooLarge {
+                size: payload_len,
+                max: self.max_frame_size,
+            });
         }
 
         let mut flags_buf = [0u8; 1];
@@ -74,7 +115,10 @@ impl<R: Read> FrameReader<R> {
         let mut payload = vec![0u8; payload_len as usize];
         self.read_exact_or_eof(&mut payload)?;
 
-        Ok(Frame { flags: FrameFlags(flags_buf[0]), payload })
+        Ok(Frame {
+            flags: FrameFlags(flags_buf[0]),
+            payload,
+        })
     }
 
     fn read_exact_or_eof(&mut self, buf: &mut [u8]) -> Result<(), FrameError> {
@@ -91,14 +135,17 @@ pub struct FrameWriter<W> {
 }
 
 impl<W> FrameWriter<W> {
-    pub fn new(writer: W) -> Self { Self { inner: writer } }
+    pub fn new(writer: W) -> Self {
+        Self { inner: writer }
+    }
 
     /// Get a reference to the underlying writer.
-    pub fn inner_ref(&self) -> &W { &self.inner }
+    pub fn inner_ref(&self) -> &W {
+        &self.inner
+    }
 }
 
 impl<W: Write> FrameWriter<W> {
-
     pub fn write_frame(&mut self, frame: &Frame) -> Result<(), FrameError> {
         let len = frame.payload.len() as u32;
         self.inner.write_all(&len.to_le_bytes())?;

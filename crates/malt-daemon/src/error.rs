@@ -33,7 +33,9 @@ pub enum DaemonError {
     #[error("name conflict: cannot find unique name for '{0}' after 100 attempts")]
     NameConflict(String),
 
-    #[error("app pane restore is not supported until Phase G plugin infrastructure is implemented")]
+    #[error(
+        "app pane restore is not supported until Phase G plugin infrastructure is implemented"
+    )]
     AppRestoreNotSupported,
 
     #[error("failed to restore session {0:?}: {1}")]

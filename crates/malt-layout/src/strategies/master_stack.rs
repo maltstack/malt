@@ -60,9 +60,7 @@ impl LayoutStrategy for MasterStackStrategy {
 
     fn rebuild(&self, panes: &[PaneId], _terminal: Rect) -> LayoutNode {
         if panes.is_empty() {
-            return LayoutNode::Leaf {
-                pane_id: PaneId(0),
-            };
+            return LayoutNode::Leaf { pane_id: PaneId(0) };
         }
 
         // If all panes fit within master_count, just arrange them evenly.

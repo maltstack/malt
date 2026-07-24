@@ -173,12 +173,10 @@ fn expand_string_inner(
                         '$' => {
                             chars.next();
                             expand_dollar(&mut chars, &mut result, env, true)?;
-                            tilde_can_expand = false;
                         }
                         '`' => {
                             chars.next();
                             expand_backtick(&mut chars, &mut result, env)?;
-                            tilde_can_expand = false;
                         }
                         _ => {
                             chars.next();
@@ -349,7 +347,6 @@ fn expand_dollar(
     Ok(())
 }
 
-
 /// Process ANSI-C quoted string ($'...').
 /// The opening `$'` has already been consumed by the caller.
 fn expand_ansi_c(
@@ -383,7 +380,7 @@ fn expand_ansi_c(
                     let mut val = d as u8 - b'0';
                     for _ in 0..2 {
                         match chars.peek() {
-                            Some(c @ '0'..='7') => {
+                            Some('0'..='7') => {
                                 val = val * 8 + (chars.next().unwrap() as u8 - b'0');
                             }
                             _ => break,
@@ -440,7 +437,9 @@ fn expand_ansi_c(
             _ => result.push(c),
         }
     }
-    Err(ExpandError::BadSubstitution { expr: "unterminated $\'...\' string".into() })
+    Err(ExpandError::BadSubstitution {
+        expr: "unterminated $\'...\' string".into(),
+    })
 }
 // ── Placeholder functions (implemented in subsequent tasks) ──
 
@@ -732,7 +731,7 @@ fn expand_brace_param(
                     reason: format!("invalid length: {}", l),
                 })?;
                 if length < 0 {
-                    let end_pos = (char_len + length) as usize;
+                    let end_pos = (char_len as i64 + length).max(0) as usize;
                     if end_pos <= start {
                         start
                     } else {
@@ -970,11 +969,17 @@ fn try_strip_op(rest: &str, op: &str) -> Option<String> {
 }
 
 /// Split a substitution pattern/replacement: "pat/rep" -> ("pat", "rep").
+/// Finds the first `/` that is not preceded by `\`.
 fn split_subst(s: &str) -> (String, String) {
-    match s.find('/') {
-        Some(i) => (s[..i].to_string(), s[i + 1..].to_string()),
-        None => (s.to_string(), String::new()),
+    let mut chars = s.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c == '/' {
+            return (s[..i].to_string(), s[i + 1..].to_string());
+        } else if c == '\\' {
+            chars.next();
+        }
     }
+    (s.to_string(), String::new())
 }
 
 /// Apply string operations (%, #, etc.) on a value — used for array element post-ops.
@@ -1258,12 +1263,22 @@ fn shell_replace_first(val: &str, pattern: &str, replacement: &str) -> String {
 }
 
 fn shell_replace_all(val: &str, pattern: &str, replacement: &str) -> String {
+    if pattern.is_empty() {
+        let mut result = String::new();
+        let mut chars = val.chars().peekable();
+        while let Some(c) = chars.next() {
+            result.push(c);
+            if chars.peek().is_some() {
+                result.push_str(replacement);
+            }
+        }
+        return result;
+    }
     let bytes = val.as_bytes();
     let mut result = String::new();
     let mut i = 0;
     while i < bytes.len() {
         let mut matched = false;
-        // Try to find a match starting at i (prefer longest)
         for end in (i + 1..=bytes.len()).rev() {
             if val.is_char_boundary(end) && shell_pattern_match(&val[i..end], pattern) {
                 result.push_str(replacement);
@@ -1543,7 +1558,10 @@ fn collect_until_close_paren(chars: &mut std::iter::Peekable<std::str::Chars>) -
             }
         }
         cmd.push(c);
-        at_word_start = matches!(c, ' ' | '\t' | '\n' | '\r' | ';' | '&' | '|' | '<' | '>' | '(' | ')');
+        at_word_start = matches!(
+            c,
+            ' ' | '\t' | '\n' | '\r' | ';' | '&' | '|' | '<' | '>' | '(' | ')'
+        );
     }
     cmd
 }
@@ -2510,7 +2528,23 @@ impl<'a> ArithParser<'a> {
 
             self.advance();
             let next_bp = if right_assoc { bp } else { bp + 1 };
-            let rhs = self.parse_expr(next_bp)?;
+            let rhs = match op {
+                ArithToken::AmpAmp => {
+                    if lhs == 0 {
+                        0
+                    } else {
+                        self.parse_expr(next_bp)?
+                    }
+                }
+                ArithToken::PipePipe => {
+                    if lhs != 0 {
+                        lhs
+                    } else {
+                        self.parse_expr(next_bp)?
+                    }
+                }
+                _ => self.parse_expr(next_bp)?,
+            };
 
             lhs = match op {
                 ArithToken::Plus => lhs.wrapping_add(rhs),

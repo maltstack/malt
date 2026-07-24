@@ -77,8 +77,7 @@ impl vte::Perform for GridPerformer<'_> {
                 let col = self.grid.cursor_col();
                 let next_tab = ((col / 8) + 1) * 8;
                 let target = next_tab.min(self.grid.cols().saturating_sub(1));
-                self.grid
-                    .move_cursor_to(self.grid.cursor_row(), target);
+                self.grid.move_cursor_to(self.grid.cursor_row(), target);
             }
             0x0A..=0x0C => {
                 // LF, VT, FF — linefeed
@@ -183,13 +182,7 @@ impl vte::Perform for GridPerformer<'_> {
         // Not handling OSC sequences for now — ignore silently.
     }
 
-    fn hook(
-        &mut self,
-        _params: &vte::Params,
-        _intermediates: &[u8],
-        _ignore: bool,
-        _action: char,
-    ) {
+    fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, _action: char) {
         // DCS hook — ignore.
     }
 
@@ -382,5 +375,311 @@ fn apply_sgr(grid: &mut TerminalGrid, params: &[u16]) {
             }
         }
         i += 1;
+    }
+}
+
+const MAX_PARAMS: usize = 32;
+const MAX_SUBPARAM_TOTAL: usize = 64;
+const MAX_INTERMEDIATES: usize = 4;
+
+/// Fixed-capacity CSI/DCS parameter storage for event-mode parsing.
+#[derive(Clone, PartialEq)]
+pub struct CsiParams {
+    values: [u16; MAX_SUBPARAM_TOTAL],
+    lengths: [u8; MAX_PARAMS],
+    param_count: u8,
+    value_count: u8,
+}
+
+impl CsiParams {
+    pub fn new() -> Self {
+        Self {
+            values: [0; MAX_SUBPARAM_TOTAL],
+            lengths: [0; MAX_PARAMS],
+            param_count: 0,
+            value_count: 0,
+        }
+    }
+
+    pub fn from_vte(params: &vte::Params) -> Self {
+        let mut result = Self::new();
+        for subparams in params.iter() {
+            if result.param_count as usize >= MAX_PARAMS {
+                break;
+            }
+            let len = subparams
+                .len()
+                .min(MAX_SUBPARAM_TOTAL - result.value_count as usize);
+            let start = result.value_count as usize;
+            result.values[start..start + len].copy_from_slice(&subparams[..len]);
+            result.lengths[result.param_count as usize] = len as u8;
+            result.param_count += 1;
+            result.value_count += len as u8;
+        }
+        result
+    }
+
+    pub fn get(&self, index: usize) -> Option<&[u16]> {
+        if index >= self.param_count as usize {
+            return None;
+        }
+        let start: usize = self.lengths[..index].iter().map(|&l| l as usize).sum();
+        let len = self.lengths[index] as usize;
+        Some(&self.values[start..start + len])
+    }
+
+    pub fn iter(&self) -> CsiParamsIter<'_> {
+        CsiParamsIter {
+            params: self,
+            index: 0,
+            offset: 0,
+        }
+    }
+}
+
+impl Default for CsiParams {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for CsiParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut list = f.debug_list();
+        for param in self.iter() {
+            list.entry(&param);
+        }
+        list.finish()
+    }
+}
+
+pub struct CsiParamsIter<'a> {
+    params: &'a CsiParams,
+    index: usize,
+    offset: usize,
+}
+
+impl<'a> Iterator for CsiParamsIter<'a> {
+    type Item = &'a [u16];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.params.param_count as usize {
+            return None;
+        }
+        let len = self.params.lengths[self.index] as usize;
+        let slice = &self.params.values[self.offset..self.offset + len];
+        self.index += 1;
+        self.offset += len;
+        Some(slice)
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct Intermediates {
+    bytes: [u8; MAX_INTERMEDIATES],
+    len: u8,
+}
+
+impl Intermediates {
+    pub fn from_slice(src: &[u8]) -> Self {
+        let mut bytes = [0u8; MAX_INTERMEDIATES];
+        let len = src.len().min(MAX_INTERMEDIATES);
+        bytes[..len].copy_from_slice(&src[..len]);
+        Self {
+            bytes,
+            len: len as u8,
+        }
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+}
+
+impl std::fmt::Debug for Intermediates {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.as_slice().fmt(f)
+    }
+}
+
+/// Event-mode VT parser output used by compatibility adapters and tests.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum VtEvent {
+    Print(char),
+    Execute(u8),
+    Csi {
+        params: CsiParams,
+        intermediates: Intermediates,
+        ignore: bool,
+        action: char,
+    },
+    Osc {
+        params: Vec<Vec<u8>>,
+        bell_terminated: bool,
+    },
+    Dcs {
+        params: CsiParams,
+        intermediates: Intermediates,
+        ignore: bool,
+        byte: u8,
+    },
+    Esc {
+        intermediates: Intermediates,
+        ignore: bool,
+        byte: u8,
+    },
+    Unhook,
+}
+
+pub struct VtParser {
+    parser: vte::Parser,
+    collector: EventCollector,
+}
+
+impl VtParser {
+    pub fn new() -> Self {
+        Self {
+            parser: vte::Parser::new(),
+            collector: EventCollector { events: Vec::new() },
+        }
+    }
+
+    pub fn advance(&mut self, bytes: &[u8]) -> &[VtEvent] {
+        self.collector.events.clear();
+        self.parser.advance(&mut self.collector, bytes);
+        &self.collector.events
+    }
+}
+
+impl Default for VtParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct EventCollector {
+    events: Vec<VtEvent>,
+}
+
+impl vte::Perform for EventCollector {
+    fn print(&mut self, c: char) {
+        self.events.push(VtEvent::Print(c));
+    }
+
+    fn execute(&mut self, byte: u8) {
+        self.events.push(VtEvent::Execute(byte));
+    }
+
+    fn csi_dispatch(
+        &mut self,
+        params: &vte::Params,
+        intermediates: &[u8],
+        ignore: bool,
+        action: char,
+    ) {
+        self.events.push(VtEvent::Csi {
+            params: CsiParams::from_vte(params),
+            intermediates: Intermediates::from_slice(intermediates),
+            ignore,
+            action,
+        });
+    }
+
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        self.events.push(VtEvent::Osc {
+            params: params.iter().map(|p| p.to_vec()).collect(),
+            bell_terminated,
+        });
+    }
+
+    fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
+        self.events.push(VtEvent::Esc {
+            intermediates: Intermediates::from_slice(intermediates),
+            ignore,
+            byte,
+        });
+    }
+
+    fn hook(&mut self, params: &vte::Params, intermediates: &[u8], ignore: bool, byte: char) {
+        self.events.push(VtEvent::Dcs {
+            params: CsiParams::from_vte(params),
+            intermediates: Intermediates::from_slice(intermediates),
+            ignore,
+            byte: byte as u8,
+        });
+    }
+
+    fn put(&mut self, byte: u8) {
+        self.events.push(VtEvent::Dcs {
+            params: CsiParams::new(),
+            intermediates: Intermediates::from_slice(&[]),
+            ignore: false,
+            byte,
+        });
+    }
+
+    fn unhook(&mut self) {
+        self.events.push(VtEvent::Unhook);
+    }
+}
+
+#[cfg(test)]
+mod event_parser_tests {
+    use super::*;
+
+    #[test]
+    fn vt_parser_parses_printable() {
+        let mut parser = VtParser::new();
+        let events = parser.advance(b"hello");
+        let chars: Vec<char> = events
+            .iter()
+            .filter_map(|e| match e {
+                VtEvent::Print(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(chars, vec!['h', 'e', 'l', 'l', 'o']);
+    }
+
+    #[test]
+    fn vt_parser_parses_csi_sgr() {
+        let mut parser = VtParser::new();
+        let events = parser.advance(b"\x1b[31m");
+        assert!(matches!(
+            &events[0],
+            VtEvent::Csi {
+                params,
+                action: 'm',
+                ..
+            } if params.get(0) == Some(&[31u16][..])
+        ));
+    }
+
+    #[test]
+    fn vt_parser_parses_osc() {
+        let mut parser = VtParser::new();
+        let events = parser.advance(b"\x1b]133;A\x07");
+        assert!(matches!(
+            &events[0],
+            VtEvent::Osc {
+                params,
+                bell_terminated: true,
+            } if params == &[b"133".to_vec(), b"A".to_vec()]
+        ));
+    }
+
+    #[test]
+    fn vt_parser_split_input_matches_whole() {
+        let input = b"\x1b[31mhello\x1b[0m\x1b]133;A\x07";
+        let mut whole = VtParser::new();
+        let whole_events: Vec<VtEvent> = whole.advance(input).to_vec();
+
+        let mut split = VtParser::new();
+        let mut split_events = Vec::new();
+        for b in input {
+            split_events.extend_from_slice(split.advance(&[*b]));
+        }
+        assert_eq!(whole_events, split_events);
     }
 }

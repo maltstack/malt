@@ -142,8 +142,7 @@ impl TerminalGrid {
         for _ in 0..count {
             if self.scroll_top < self.scroll_bottom {
                 self.rows_data.remove(self.scroll_bottom);
-                self.rows_data
-                    .insert(self.scroll_top, Row::new(self.cols));
+                self.rows_data.insert(self.scroll_top, Row::new(self.cols));
             }
         }
         self.dirty = true;
