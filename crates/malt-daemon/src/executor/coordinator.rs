@@ -596,11 +596,56 @@ impl Coordinator {
             malt_protocol::persist::session::PersistedPaneType::App { .. } => {
                 return Err(DaemonError::AppRestoreNotSupported);
             }
-            malt_protocol::persist::session::PersistedPaneType::Compat { .. } => {
-                return Err(DaemonError::RestoreFailed(
+            malt_protocol::persist::session::PersistedPaneType::Compat { program, args } => {
+                // Re-launch (not re-attach) -- matches the documented restore
+                // policy for every pane type: process memory is not
+                // captured, so a fresh CompatTranslator (blank grid) is
+                // correct, not a shortcut. A SessionExecutor is still needed
+                // even for a Compat-typed pane (it owns the renderer,
+                // editor, and CompatTranslator regardless of pane kind) --
+                // spawn one exactly like the Shell path, then separately
+                // launch the real external process and forward its output
+                // into it via PtyOutput.
+                let (cmd_tx, thread) = SessionExecutor::spawn_with_cwd(
                     id.clone(),
-                    "compat pane restore not yet implemented".to_string(),
-                ));
+                    pane_id.clone(),
+                    session_isolation,
+                    cwd.clone(),
+                    None,
+                    None,
+                )
+                .map_err(|e| DaemonError::RestoreFailed(id.clone(), e.to_string()))?;
+
+                let req = crate::supervisor::process::SpawnRequest {
+                    program: std::path::PathBuf::from(program),
+                    args: args.clone(),
+                    cwd,
+                    pane_id: pane_id.clone(),
+                    isolation: session_isolation,
+                    cols: 80,
+                    rows: 24,
+                };
+                if let Err(e) = self.supervisor.spawn(req) {
+                    // Roll back the SessionExecutor thread we already
+                    // started -- don't leave an Active session with no
+                    // process behind it.
+                    let _ = cmd_tx.send(SessionCommand::Shutdown);
+                    let _ = thread.join();
+                    return Err(DaemonError::RestoreFailed(id.clone(), e.to_string()));
+                }
+
+                // NOTE: the restored process is not assigned to the
+                // session's isolation Job Object -- ProcessSupervisor has
+                // no access to it (that lives inside the SessionExecutor
+                // thread's mash::Env, not the Coordinator). A
+                // Restricted/Capped/Contained session's restored compat
+                // process runs uncontained. Real, tracked gap, not a
+                // silent one -- see docs/BACKLOG.md.
+                if let Some((reader, _writer)) = self.supervisor.take_io(&pane_id) {
+                    spawn_pty_reader(pane_id.clone(), reader, cmd_tx.clone());
+                }
+
+                (cmd_tx, thread)
             }
             _ => {
                 return Err(DaemonError::RestoreFailed(
@@ -702,5 +747,50 @@ impl Coordinator {
 impl Drop for Coordinator {
     fn drop(&mut self) {
         self.shutdown_graceful();
+    }
+}
+
+/// Read a spawned process's PTY output in a loop and forward each chunk as
+/// a `SessionCommand::PtyOutput` to the owning session's command channel.
+/// Exits cleanly on EOF (process closed its output), a real read error, or
+/// the session channel being gone (session shut down before the process
+/// did). Not a restart/supervision loop — that's `ProcessSupervisor::check_exited`'s
+/// job, and nothing currently polls it (see `docs/BACKLOG.md`); this
+/// thread's only responsibility is getting bytes from the process into the
+/// session's renderer pipeline.
+fn spawn_pty_reader(
+    pane_id: PaneId,
+    mut reader: std::fs::File,
+    cmd_tx: mpsc::Sender<SessionCommand>,
+) {
+    use std::io::Read;
+    let result = std::thread::Builder::new()
+        .name(format!("pty-reader-{}", pane_id.0))
+        .spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break, // EOF: process closed its output
+                    Ok(n) => {
+                        let data = buf[..n].to_vec();
+                        if cmd_tx
+                            .send(SessionCommand::PtyOutput {
+                                pane_id: pane_id.clone(),
+                                data,
+                            })
+                            .is_err()
+                        {
+                            break; // session gone
+                        }
+                    }
+                    Err(e) => {
+                        warn!(pane_id = pane_id.0, error = %e, "pty reader: read error, stopping");
+                        break;
+                    }
+                }
+            }
+        });
+    if let Err(e) = result {
+        warn!(error = %e, "failed to spawn pty reader thread");
     }
 }

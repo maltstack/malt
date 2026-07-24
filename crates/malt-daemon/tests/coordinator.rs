@@ -709,6 +709,110 @@ fn app_restore_returns_error() {
 }
 
 #[test]
+fn restore_compat_pane_relaunches_process_and_forwards_real_output() {
+    use malt_protocol::common::{LayoutNode, PaneId, SessionState};
+    use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
+    use malt_protocol::render::RenderBatch;
+    use std::collections::BTreeMap;
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(&dir);
+
+    // Manually persist a session with a Compat pane -- there is no live
+    // creation path for Compat panes today (confirmed by the persistence
+    // audit), so restore is the only way to exercise spawn_compat; this
+    // mirrors app_restore_returns_error's hand-crafted-persisted-session
+    // approach.
+    let sid = malt_protocol::common::SessionId(77);
+    let pane = PersistedPane {
+        cwd: std::env::current_dir().unwrap().to_string_lossy().to_string(),
+        title: None,
+        pane_type: PersistedPaneType::Compat {
+            #[cfg(unix)]
+            program: "/bin/echo".to_string(),
+            #[cfg(windows)]
+            program: "cmd".to_string(),
+            #[cfg(unix)]
+            args: vec!["compat-restore-marker".to_string()],
+            #[cfg(windows)]
+            args: vec![
+                "/c".to_string(),
+                "echo".to_string(),
+                "compat-restore-marker".to_string(),
+            ],
+        },
+        _unknown: vec![],
+    };
+    let mut panes = BTreeMap::new();
+    panes.insert(1u32, pane);
+    let persisted = PersistedSession {
+        schema_version: 1,
+        id: sid.clone(),
+        name: Some("compat-session".to_string()),
+        layout: LayoutNode::Leaf { pane_id: PaneId(1) },
+        focus: PaneId(1),
+        panes,
+        theme: None,
+        group: None,
+        isolation: IsolationTier::Bare,
+        _unknown: vec![],
+    };
+    store.mark_dirty(sid.clone(), persisted);
+    store.flush_all();
+
+    let daemon_state = malt_protocol::persist::daemon::DaemonState {
+        schema_version: 1,
+        sessions: vec![sid.clone()],
+        active_groups: vec![],
+        next_session_id: 78,
+        next_pane_id: 2,
+        _unknown: vec![],
+    };
+    store.mark_dirty_daemon(daemon_state);
+    store.flush_all();
+
+    let store2 = make_store(&dir);
+    let mut coord2 = Coordinator::new(PoolConfig::default(), store2);
+    let sessions = coord2.list_sessions();
+    let s = sessions.iter().find(|s| s.session_id == sid).unwrap();
+    assert_eq!(s.state, SessionState::Dormant);
+
+    // Attaching triggers restore_session, which spawns the real process.
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    coord2
+        .register_vnp_client(sid.clone(), 1, caps(), render_tx)
+        .expect("compat pane restore should succeed, not return RestoreFailed");
+
+    let sessions = coord2.list_sessions();
+    let s = sessions.iter().find(|s| s.session_id == sid).unwrap();
+    assert_eq!(s.state, SessionState::Active);
+
+    // The spawned process's output reaches the session asynchronously (via
+    // the pty-reader thread -> PtyOutput -> CompatTranslator), so poll
+    // rather than asserting immediately.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut last_output;
+    loop {
+        last_output = coord2
+            .get_session_output_text(sid.clone())
+            .unwrap_or_default();
+        if last_output.contains("compat-restore-marker") || Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        last_output.contains("compat-restore-marker"),
+        "restored compat pane's real process output must reach the \
+         session's grid within 5s, got: {:?}",
+        last_output
+    );
+
+    let _ = coord2.unregister_vnp_client(sid, 1);
+}
+
+#[test]
 fn error_variants_are_distinct() {
     use malt_daemon::DaemonError;
     use malt_protocol::common::SessionId;

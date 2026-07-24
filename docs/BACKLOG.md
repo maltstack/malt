@@ -261,23 +261,44 @@ original ten, in order. Each links to its detail below.
   survive by actually invoking them. See
   `docs/findings/2026-07-24-audit-persistence-restore.md` §4
   (recommendation 1).
-- **Compat-pane session restore is a confirmed stub** —
-  `coordinator.rs:547-551` returns `DaemonError::RestoreFailed(id,
-  "compat pane restore not yet implemented")`; `spawn_compat` was never
-  written (zero grep hits). Shell-session restore is real and tested (26
-  tests) and serves as the template. Minimal correct implementation
-  sketched: re-launch via `spawn_with_pty` under the session's isolation
-  tier, construct a fresh `CompatTranslator` (no VT state to restore —
-  "process memory is not captured" is correct policy, not a shortcut),
-  feed its output through the existing `PtyOutput` path, and wire the
-  process handle into `ProcessSupervisor`'s existing bookkeeping. This is
-  re-launch, not re-attach — no new design decision needed, only
-  implementation. See
-  `docs/findings/2026-07-24-audit-persistence-restore.md` §2
-  (recommendation 3). Adjacent landmine, cheap to fix now: `restore_session`
-  picks the first pane in `persisted.panes` by map order instead of
-  consulting `persisted.focus` — harmless under today's single-pane model,
-  a real bug waiting for Phase F multi-pane work (§2 caveat, recommendation 6).
+- **Compat-pane session restore — FIXED 2026-07-25, with one real,
+  explicitly-flagged gap introduced (isolation).** `restore_session`'s
+  Compat branch now: spawns a `SessionExecutor` exactly like Shell restore
+  (still needed even for a Compat-typed pane — it owns the renderer/
+  editor/CompatTranslator regardless of pane kind), separately re-launches
+  the real external process via the previously-dead
+  `ProcessSupervisor::spawn`, and forwards its output into the session via
+  a new `spawn_pty_reader` thread sending `SessionCommand::PtyOutput`.
+  Rolls back the session thread on process-spawn failure rather than
+  leaving an Active session with no process behind it. Re-launch, not
+  re-attach, per the documented restore policy — no VT state to restore,
+  a blank grid is correct. New end-to-end test
+  (`restore_compat_pane_relaunches_process_and_forwards_real_output`,
+  `malt-daemon/tests/coordinator.rs`) hand-crafts a persisted Compat
+  session (there's still no live creation path for one), restores it, and
+  polls until the real spawned process's real output actually reaches the
+  session's grid.
+  **Real gap, introduced knowingly, not silently: the restored process is
+  not assigned to the session's isolation Job Object.**
+  `ProcessSupervisor` has no access to it — the Job Object lives inside
+  the `SessionExecutor` thread's `mash::Env`, created inside a spawned
+  closure that never returns it to the `Coordinator`. Giving
+  `ProcessSupervisor` real access (open the same named Job Object, or
+  restructure `spawn_with_cwd` to return it) is a real design decision, not
+  a parameter change — deliberately not attempted here, matching the same
+  judgment call as the HCS wiring above. Until this is closed, a
+  Restricted/Capped/Contained session's *restored* compat pane process
+  runs uncontained, unlike mash's own external-command spawn path (which
+  is Job-Object-wired). This sharpens the existing "PTY/compat supervisor
+  spawn path has no isolation wiring" P2 item below — it's no longer
+  latent for this one path, it's live the moment any persisted Compat
+  session exists.
+  See `docs/findings/2026-07-24-audit-persistence-restore.md` §2
+  (recommendation 3). Adjacent landmine, still open, cheap to fix
+  whenever next in this code: `restore_session` picks the first pane in
+  `persisted.panes` by map order instead of consulting `persisted.focus`
+  — harmless under today's single-pane model, a real bug waiting for
+  Phase F multi-pane work (§2 caveat, recommendation 6).
 - **Windows Job Object tier differentiation — FIXED 2026-07-24, HCS
   wiring deliberately NOT attempted (see below).** `apply_session_isolation`
   now calls `create_job_object` with real, tier-specific
@@ -429,17 +450,20 @@ original ten, in order. Each links to its detail below.
   "manual-testing-only" documentation once the plain-output `get_output`
   work lands anyway (it would need rewriting regardless). See
   `docs/findings/2026-07-24-audit-client-sdk-surface.md` §1, §5.
-- **PTY/compat supervisor spawn path has no isolation wiring, and is
-  currently unreachable** — `ProcessSupervisor::spawn`
-  (`crates/malt-daemon/src/supervisor/mod.rs:29-70`) never reads
-  `SpawnRequest.isolation` despite the field existing (populated only by
-  test fixtures). Confirmed latent, not live: `Coordinator` holds a
-  `supervisor` field but never calls `.spawn()` on it anywhere, because
-  Compat-pane creation is only reachable via the restore path, which is
-  the confirmed stub above. Becomes live risk the moment compat-pane
-  restore or any PTY-pane feature is implemented — should land no later
-  than that work, not be treated as already exposed today. See
-  `docs/findings/2026-07-24-audit-isolation-safety.md` item 5.
+- **PTY/compat supervisor spawn path has no isolation wiring — UPGRADED
+  TO LIVE 2026-07-25, was latent.** `ProcessSupervisor::spawn`
+  (`crates/malt-daemon/src/supervisor/mod.rs`) never reads
+  `SpawnRequest.isolation`. This was previously latent because
+  `Coordinator` never called `.spawn()` on it at all — compat-pane restore
+  (above) now does, for real, so this is no longer "becomes live risk
+  eventually," it's reachable today via any persisted Compat session.
+  Needs `ProcessSupervisor` to get real access to the session's isolation
+  Job Object (it currently can't — see the compat-pane restore entry
+  above for why) before this can be closed; likely worth doing together
+  with the isolation-policy work elsewhere in this list, since both touch
+  the same "how does a spawned-outside-mash process get containment"
+  question. See `docs/findings/2026-07-24-audit-isolation-safety.md`
+  item 5.
 - **`malt-elevate` has 9 of 10 privileged operations that actively report
   success while doing nothing** (`stub_success()`,
   `crates/malt-elevate/src/dispatch.rs:44-65`) — only `CreateSymlink` is
