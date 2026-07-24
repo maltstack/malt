@@ -157,6 +157,42 @@ fn node_limit_truncates() {
 }
 
 #[test]
+fn output_bytes_limit_truncates() {
+    // Two children, each carrying 800 KiB of text — combined exceeds the
+    // default 1 MiB max_output_bytes cap partway through the second child.
+    let big_text = "x".repeat(800 * 1024);
+    let elem = FrameElement::Stack {
+        children: vec![
+            FrameElement::Text {
+                text: big_text.clone(),
+                style: Box::new(default_style()),
+            },
+            FrameElement::Text {
+                text: big_text,
+                style: Box::new(default_style()),
+            },
+        ],
+    };
+    let result = walk_frame(&elem, 0, 0, 80, 24, &truecolor_caps(), &default_config());
+    assert!(result.truncated, "expected walk to be truncated");
+    // The first (undersized) chunk is emitted; the second, which tips the
+    // walk over the cap, is emitted too (matching the max_nodes pattern of
+    // truncating *after* the offending node), but nothing beyond it.
+    assert_eq!(result.commands.len(), 2);
+}
+
+#[test]
+fn output_bytes_under_limit_not_truncated() {
+    let elem = FrameElement::Text {
+        text: "small".to_string(),
+        style: Box::new(default_style()),
+    };
+    let result = walk_frame(&elem, 0, 0, 80, 24, &truecolor_caps(), &default_config());
+    assert!(!result.truncated);
+    assert_eq!(result.commands.len(), 1);
+}
+
+#[test]
 fn capability_degradation_basic256() {
     let elem = FrameElement::Text {
         text: "colored".to_string(),

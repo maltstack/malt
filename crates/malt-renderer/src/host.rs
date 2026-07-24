@@ -72,6 +72,24 @@ impl RendererHost {
         }
     }
 
+    /// Remove and return the IDs of clients that have unacked frames and
+    /// haven't acked in over `SHED_TIMEOUT_MS` (10s) — see
+    /// `ClientState::should_shed`. Callers must also drop any associated
+    /// transport resources (e.g. the daemon's per-client render channel)
+    /// for the returned IDs; `RendererHost` only owns render-side state.
+    pub fn shed_stale_clients(&mut self, now_ms: u64) -> Vec<u64> {
+        let stale: Vec<u64> = self
+            .clients
+            .iter()
+            .filter(|(_, entry)| entry.state.should_shed_at(now_ms))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &stale {
+            self.clients.remove(id);
+        }
+        stale
+    }
+
     /// Process a frame for all registered clients.
     ///
     /// For each non-lagging client: walks all visible panes, applies dirty-diffing,

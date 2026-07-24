@@ -54,6 +54,7 @@ pub fn walk_frame(
     let mut state = WalkState {
         commands: Vec::new(),
         nodes_visited: 0,
+        output_bytes: 0,
         truncated: false,
         config,
         caps,
@@ -69,6 +70,10 @@ pub fn walk_frame(
 struct WalkState<'a> {
     commands: Vec<RenderCommand>,
     nodes_visited: usize,
+    /// Running total of variable-size payload bytes emitted so far
+    /// (`DrawText.text` + `WriteRaw.data`), checked against
+    /// `config.max_output_bytes`.
+    output_bytes: usize,
     truncated: bool,
     config: &'a WalkConfig,
     caps: &'a ClientCapabilities,
@@ -101,12 +106,16 @@ fn walk_recursive(
     match element {
         FrameElement::Text { text, style } => {
             let resolved = degrade_style(style, state.caps);
+            state.output_bytes += text.len();
             state.commands.push(RenderCommand::DrawText {
                 x,
                 y,
                 text: text.clone(),
                 style: resolved,
             });
+            if state.output_bytes > state.config.max_output_bytes {
+                state.truncated = true;
+            }
         }
 
         FrameElement::Paragraph { lines, style } => {
@@ -116,12 +125,17 @@ fn walk_recursive(
                 if line_y >= y.saturating_add(h) {
                     break;
                 }
+                state.output_bytes += line.len();
                 state.commands.push(RenderCommand::DrawText {
                     x,
                     y: line_y,
                     text: line.clone(),
                     style: resolved.clone(),
                 });
+                if state.output_bytes > state.config.max_output_bytes {
+                    state.truncated = true;
+                    break;
+                }
             }
         }
 
@@ -180,6 +194,7 @@ fn walk_recursive(
 
         FrameElement::VtPassthrough { data } => {
             if state.caps.vt_passthrough {
+                state.output_bytes += data.len();
                 state.commands.push(RenderCommand::WriteRaw {
                     data: data.clone(),
                     x,
@@ -187,6 +202,9 @@ fn walk_recursive(
                     width: w,
                     height: h,
                 });
+                if state.output_bytes > state.config.max_output_bytes {
+                    state.truncated = true;
+                }
             }
         }
 

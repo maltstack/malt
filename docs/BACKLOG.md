@@ -130,11 +130,25 @@ near-term, evidence-based items, not the whole product roadmap.
   of `GridPerformer`'s in-place grid mutation) — kept, with a doc comment
   added explaining why two VT parsing paths coexist and that it's parked,
   not orphaned, pending Phase H.
-- **`malt-renderer`: two designed safety mechanisms aren't actually wired
-  in.** `WalkConfig.max_output_bytes` (1 MiB cap) is defaulted but never
-  read in `walker.rs` despite the design calling it "Enforced".
-  `ClientState::should_shed()` (10s-no-ack disconnect) exists and is
-  unit-tested, but `RendererHost::process_frame` never calls it.
+- **`malt-renderer`: two designed safety mechanisms — WIRED IN 2026-07-24.**
+  `WalkConfig.max_output_bytes` (1 MiB cap): `walker.rs` now accumulates
+  emitted `DrawText`/`WriteRaw` payload bytes and truncates once the cap is
+  exceeded, matching `docs/design/architecture.md`'s "remaining commands are
+  deferred to the next frame tick" (same truncate-and-stop pattern already
+  used for `max_depth`/`max_nodes`). New tests: `output_bytes_limit_truncates`,
+  `output_bytes_under_limit_not_truncated`.
+  `ClientState::should_shed()` (10s-no-ack disconnect): was fully unwired —
+  `last_ack_time_ms` was a dead field, never set by `new()` or `ack()`.
+  Fixed the timestamp tracking, added `RendererHost::shed_stale_clients(now_ms)`
+  which removes and returns stale client IDs, and wired it into
+  `session_thread.rs::dispatch_render()`, which now also drops the shed
+  client's `render_pushers` entry. Dropping that `SyncSender` is sufficient
+  to fully disconnect the client — `vnp_listener.rs`'s main loop already had
+  a `TryRecvError::Disconnected` branch that cleans up the connection; it
+  was just never triggered because nothing dropped the sender. No new
+  transport messages needed. New tests: `shed_stale_clients_removes_unacked_client_after_timeout`,
+  `shed_stale_clients_spares_fully_acked_client`,
+  `shed_stale_clients_spares_client_with_no_frames_sent`.
 - **`exec` responses always show `"exit_code": null`.** Observed on every
   call this session, including successful ones. Might be intentional
   (async result delivered elsewhere) — confirm before treating as a bug.

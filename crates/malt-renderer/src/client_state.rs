@@ -14,25 +14,37 @@ pub enum AckStatus {
     Lagging,
 }
 
+/// Current wall-clock time in milliseconds since the Unix epoch, or 0 if the
+/// system clock is unavailable.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Tracks per-client frame sequencing and ack state for flow control.
 pub struct ClientState {
     id: u64,
     capabilities: ClientCapabilities,
     frame_seq: u64,
     last_acked_seq: u64,
-    #[allow(dead_code)]
     last_ack_time_ms: u64,
 }
 
 impl ClientState {
     /// Create a new client state with the given id and capabilities.
+    ///
+    /// `last_ack_time_ms` starts at the current time (not 0) so a
+    /// freshly-registered client isn't immediately eligible for shedding
+    /// before it has had any chance to send a first ack.
     pub fn new(id: u64, capabilities: ClientCapabilities) -> Self {
         Self {
             id,
             capabilities,
             frame_seq: 0,
             last_acked_seq: 0,
-            last_ack_time_ms: 0,
+            last_ack_time_ms: now_ms(),
         }
     }
 
@@ -62,12 +74,15 @@ impl ClientState {
         self.frame_seq - self.last_acked_seq
     }
 
-    /// Records an ack from the client. Only advances if `seq` is greater than
-    /// the previously recorded ack.
+    /// Records an ack from the client. `last_acked_seq` only advances if
+    /// `seq` is greater than the previously recorded ack, but any ack
+    /// (including a duplicate) is evidence the client is alive, so
+    /// `last_ack_time_ms` always resets.
     pub fn ack(&mut self, seq: u64) {
         if seq > self.last_acked_seq {
             self.last_acked_seq = seq;
         }
+        self.last_ack_time_ms = now_ms();
     }
 
     /// Checks whether the client is keeping up or lagging behind.
@@ -84,5 +99,13 @@ impl ClientState {
     /// since last ack meets or exceeds the shed timeout.
     pub fn should_shed(&self, elapsed_since_last_ack_ms: u64) -> bool {
         self.unacked_count() > 0 && elapsed_since_last_ack_ms >= SHED_TIMEOUT_MS
+    }
+
+    /// Whether the client should be shed right now, given the current
+    /// wall-clock time. Convenience wrapper around `should_shed` for
+    /// non-test callers; tests should keep using `should_shed` directly
+    /// with an injected elapsed time for determinism.
+    pub fn should_shed_at(&self, now_ms: u64) -> bool {
+        self.should_shed(now_ms.saturating_sub(self.last_ack_time_ms))
     }
 }

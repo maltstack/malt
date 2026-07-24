@@ -4,6 +4,14 @@ use malt_protocol::common::{
 };
 use malt_protocol::frame_element::FrameElement;
 use malt_renderer::host::{PaneFrame, RendererHost};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before Unix epoch")
+        .as_millis() as u64
+}
 
 fn default_style() -> ResolvedStyle {
     ResolvedStyle {
@@ -171,6 +179,71 @@ fn initial_state_snapshot() {
     assert!(!state.commands.is_empty());
     assert_eq!(state.panes.len(), 1);
     assert_eq!(state.panes[0].pane_id.0, 1);
+}
+
+#[test]
+fn shed_stale_clients_removes_unacked_client_after_timeout() {
+    let start = now_ms();
+    let mut host = RendererHost::new();
+    host.register_client(1, full_caps());
+
+    let panes = [PaneFrame {
+        pane_id: PaneId(1),
+        element: FrameElement::Text {
+            text: "data".into(),
+            style: Box::new(default_style()),
+        },
+    }];
+    let layout = [make_pane(1, 0, 0, 80, 24)];
+    // Advance the client's frame_seq so it has an unacked frame pending.
+    host.process_frame(&panes, &layout);
+    assert_eq!(host.client_count(), 1);
+
+    // Not enough time has passed — client should survive.
+    let shed = host.shed_stale_clients(start + 1_000);
+    assert!(shed.is_empty());
+    assert_eq!(host.client_count(), 1);
+
+    // 10s+ since registration with the frame still unacked — client is shed.
+    let shed = host.shed_stale_clients(start + 10_001);
+    assert_eq!(shed, vec![1]);
+    assert_eq!(host.client_count(), 0);
+}
+
+#[test]
+fn shed_stale_clients_spares_fully_acked_client() {
+    let start = now_ms();
+    let mut host = RendererHost::new();
+    host.register_client(1, full_caps());
+
+    let panes = [PaneFrame {
+        pane_id: PaneId(1),
+        element: FrameElement::Text {
+            text: "data".into(),
+            style: Box::new(default_style()),
+        },
+    }];
+    let layout = [make_pane(1, 0, 0, 80, 24)];
+    host.process_frame(&panes, &layout);
+    host.ack_frame(1, 1);
+
+    // Even long after registration, a client with zero unacked frames is
+    // never shed — should_shed requires unacked_count() > 0.
+    let shed = host.shed_stale_clients(start + 60_000);
+    assert!(shed.is_empty());
+    assert_eq!(host.client_count(), 1);
+}
+
+#[test]
+fn shed_stale_clients_spares_client_with_no_frames_sent() {
+    let start = now_ms();
+    let mut host = RendererHost::new();
+    host.register_client(1, full_caps());
+
+    // No process_frame call at all — unacked_count() is 0 from the start.
+    let shed = host.shed_stale_clients(start + 60_000);
+    assert!(shed.is_empty());
+    assert_eq!(host.client_count(), 1);
 }
 
 #[test]

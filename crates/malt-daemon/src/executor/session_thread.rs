@@ -408,6 +408,21 @@ impl SessionExecutor {
 
     /// Dispatch a render frame to all registered VNP clients.
     fn dispatch_render(&mut self) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        for stale_id in self.renderer.shed_stale_clients(now_ms) {
+            // Dropping the sender here closes the VNP listener's render_rx,
+            // which its main loop already treats as a disconnect signal
+            // (see vnp_listener.rs's TryRecvError::Disconnected branch).
+            warn!(
+                client_id = stale_id,
+                "shedding VNP client: no FrameAck in 10s"
+            );
+            self.render_pushers.remove(&stale_id);
+        }
+
         if self.render_pushers.is_empty() {
             return;
         }
