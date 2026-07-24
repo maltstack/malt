@@ -65,12 +65,59 @@ impl PaneRuntime {
         }
     }
 
+    /// Create a pane runtime pre-populated with existing command blocks, for
+    /// restoring persisted history.
+    ///
+    /// Blocks are taken in the order given (oldest first). If more than
+    /// `max_blocks` are supplied, the oldest are dropped so the buffer never
+    /// exceeds its capacity — the same eviction order `push_command_block`
+    /// enforces at runtime.
+    pub fn with_blocks(
+        id: PaneId,
+        kind: PaneKind,
+        cwd: String,
+        max_blocks: usize,
+        blocks: Vec<CommandBlock>,
+    ) -> Self {
+        let skip = blocks.len().saturating_sub(max_blocks);
+        let mut command_blocks = VecDeque::with_capacity(max_blocks);
+        command_blocks.extend(blocks.into_iter().skip(skip));
+        Self {
+            id,
+            kind,
+            state: PaneState::Running,
+            cwd,
+            title: None,
+            pid: None,
+            command_blocks,
+            max_blocks,
+        }
+    }
+
     /// Push a command block into the ring buffer, evicting the oldest if at capacity.
     pub fn push_command_block(&mut self, block: CommandBlock) {
         if self.command_blocks.len() >= self.max_blocks {
             self.command_blocks.pop_front();
         }
         self.command_blocks.push_back(block);
+    }
+
+    /// Finalize the newest command block, recording its completion time and
+    /// exit code.
+    ///
+    /// Only an *open* block (one whose `finished_at` is still `None`) is
+    /// finalized, and only the newest entry can be open — pushes always append
+    /// and completed blocks are never reopened. Calling this when the newest
+    /// block is already completed (or the buffer is empty) is a no-op, which
+    /// keeps restored history immutable: blocks persisted mid-execution stay
+    /// permanently un-finalized rather than being reinterpreted after restore.
+    pub fn finalize_current_block(&mut self, finished_at: u64, exit_code: i32) {
+        if let Some(block) = self.command_blocks.back_mut() {
+            if block.finished_at.is_none() {
+                block.finished_at = Some(finished_at);
+                block.exit_code = Some(exit_code);
+            }
+        }
     }
 
     /// Return the most recently pushed command block, if any.
