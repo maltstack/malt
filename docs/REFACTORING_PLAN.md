@@ -1,6 +1,23 @@
 # Lexer/Parser Refactoring Plan: Streaming → Pre-tokenized
 
-## Goal
+## Status: ABANDONED — reverted, do not re-attempt without reading this first
+
+This plan was implemented (producing `lexer_new.rs`) and then reverted in
+commit `1296955` ("mash: revert pre-tokenized lexer, preserve artifacts").
+The pre-tokenized rewrite broke heredoc timing and caused 77 Smoosh
+regressions. `mash` is back on the streaming `Iterator`-based lexer described
+as "Current State" below, and that is the live architecture today — the
+"Target State" sections of this document were never adopted.
+
+The failed attempt (`lexer_new.rs`) and the pre-refactor backup
+(`lexer_streaming.rs`) were kept in the tree for reference but are not wired
+into `lib.rs` — they are dead code, not part of the build.
+
+If heredoc-timing or `parse_for`-style issues resurface, this document
+records one approach that was tried and didn't work as a straightforward
+port; treat it as a cautionary reference, not a checklist to execute.
+
+## Goal (as originally proposed)
 Replace streaming Iterator-based lexer/parser with pre-tokenized Vec<Token> approach (like vexil-shell) to fix timing-sensitive infinite loops and simplify code.
 
 ## Status

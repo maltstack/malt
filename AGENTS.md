@@ -1,145 +1,96 @@
 # Agents Status (2026-04-10)
 
-## Current Focus
-- Modernish compatibility: alias-aware grammar macros (LOOP/DO/DONE) and `--test -eqq` smoke.
-- Smoosh conformance is GREEN (186/186 WSL, 183/183 Windows) — no regressions.
+## Session ritual (added 2026-07-24, see ADR-0001)
 
-## Verified Improvements (2026-04-08 → 2026-04-10)
-- `for var; do ...; done` iterates positional parameters.
-- Double-quoted backslash-newline continuation behavior fixed.
-- `[[` / `]]` handling improved in parser/lexer and case-pattern parsing.
-- Pipeline-fed while/read regression fixed.
-- Redirected `read` now works in compound commands and shell functions.
-- `command not found` respects stderr redirection.
-- Interactive output flushing improved (`stdout`/`stderr` flushed in `main.rs`).
-- Preparse alias isolation: alias expansion is scoped to script/source entry points, not global eval.
-- PSREPLACE (`${|...}`) now expands correctly in the expander.
-- `&&` / `||` chaining fixed: `execute_list_node` no longer short-circuits OrIf on AndIf failure.
+This project has been abandoned-via-rewrite three times (vexil-v2 → malt →
+malt-stack) after multi-day uncommitted sprints. Two habits meant to prevent
+a fourth:
 
-## Smoosh Conformance Status
-**GREEN — 186/186 WSL, 183/183 Windows.** No regressions.
+1. **Rebuild + retest before resuming work after any gap.** Don't trust a
+   stale status doc — `cargo build --workspace && cargo test --workspace`
+   (see docs/adr/ for `vexilc` PATH setup) and update the numbers below if
+   they've drifted.
+2. **Commit at real checkpoints, not multi-day piles.** If a change is big
+   enough to feel risky to commit, that's a signal to commit sooner, not
+   later. If something starts looking like it needs a bigger architectural
+   rethink mid-task, write that down as a proposal (an ADR draft is fine)
+   instead of silently pivoting into it.
 
-The "9 shared failing Smoosh tests" listed in the 2026-04-08 AGENTS.md were never reproduced.
-Verification method:
-```bash
-# WSL - clean build, clean run
-CARGO_TARGET_DIR=/tmp/malt-clean cargo build -p mash
-cp /tmp/malt-clean/debug/mash /tmp/malt-clean-debug-mash
-MASH=/tmp/malt-clean-debug-mash cargo test -p mash --test smoosh_runner smoosh_conformance_tests -- --nocapture
-# Expected: passed: 186, skipped unsupported: 0
+## Test Results (evidence)
+
+### Windows (PowerShell, commit tip)
+```
+cargo test -p mash --test executor   → 228 passed, 0 failed
+cargo test -p mash --test env         →  34 passed, 0 failed
+cargo test -p mash --test expander     →  86 passed, 0 failed
+cargo test -p mash --test smoosh_runner → 183 passed, 0 failed (3 policy skips)
+cargo test -p mash --bin fds           →   2 passed, 0 failed
 ```
 
-The stale failure list was a phantom document state. If you see failures, rebuild first:
-```bash
-rm -rf target/debug/deps/libmash* target/debug/mash.d target/debug/.fingerprint/mash*
-cargo build -p mash
-```
+### Smoosh conformance: 183/183 Windows (3 policy skips for `devfd`, `exitstatus`, `statuswait`).
 
-## Modernish Status
+## Changes Made (2026-04-10)
 
-### Direct Execution: WORKING
-```bash
-timeout 10s /mnt/c/Users/mamuk/projects/orix/malt/target/debug/mash /home/mamuk/work/.modernish_upstream/bin/modernish --test -eqq
-# Exit 0 — completes successfully
-```
+### 1. `#` removed from `is_word_break` (`lexer.rs`)
+- **Before**: `#` was in the word-break character set, causing `echo hello#world` to tokenize as `echo`, `hello` (with `#world` silently dropped as a comment).
+- **After**: `#` only starts a comment at token-start position (handled at lexer.rs:949). Inside a word, `#` is a literal character. POSIX-compliant behavior verified with Smoosh 183/183.
 
-### Capability Probes: PRE-EXISTING FAILURES (dash-specific, not mash)
-The `modernish_capability_probes` test runs against `dash` as reference shell.
-Some probes fail because dash lacks builtins that bash has:
-- `BUG_CDPCANON.t`, `BUG_CMDOPTEXP.t`, `BUG_CMDPV.t` — dash lacks `push`, `str`, `cd -P`
-- Other BUG_* probes are pre-existing dash incompatibilities, unrelated to mash changes
+### 2. `${#@}` and `${#*}` return parameter count (`expander.rs`)
+- **Before**: `${#@}` and `${#*}` fell through to `env.get_str(name).chars().count()`, returning the character length of the joined string (e.g., 5 for "a b c") instead of the count of positional parameters.
+- **After**: Added explicit handling for `name == "@"` and `name == "*"` in the `${#VAR}` expansion code path (expander.rs:498-530), returning `env.get_str("#")` (the count of positional parameters).
 
-These failures existed before the 2026-04-08 checkpoint. They do not block mash progress.
+### 3. Multi-pass alias expansion (`parser.rs`)
+- **Before**: `preparse_expanded` ran a single pass over alias expansion, so `alias LOOP='while'; alias DO='do'; alias DONE='done'` wouldn't fully expand (LOOP wouldn't see that DO is an alias).
+- **After**: Refactored into `preparse_expanded` (public, iterates up to 100 passes until output is stable) and `preparse_expanded_pass` (single-pass logic). Also expanded `ends_with_sep` to include `;|&` characters (not just whitespace) so aliases ending with command-separator tokens reset `in_command_position`.
 
-### Upstream Smoke Test: BLOCKED ON HARNESS
-The `modernish_upstream_optional_smoke` harness runs `bash -lc "yes n | install.sh -s mash"`.
-The `install.sh` script relaunches itself as mash, which hangs (parse_for infinite loop — see below).
-**Once the parse_for guard is applied, the smoke test should pass.**
+### 4. `collect_grammar_aliases_from_script` preserves all aliases (`parser.rs`)
+- **Before**: Only kept LOOP/DO/DONE aliases from the script, filtering out all others. User-defined aliases in scripts were unavailable for preparse expansion.
+- **After**: Changed to call `collect_aliases_from_script` directly, preserving all aliases.
 
-## Critical Bug: parse_for Infinite Loop (PARTIALLY FIXED)
+### 5. Heredoc expansion error message prefix (`executor.rs:5188`)
+- **Before**: `format!("{e}\n")` — no prefix, producing stderr like `x: z`.
+- **After**: `format!("mash: heredoc expansion: {e}\n")` — matches the pattern used by here-string (`mash: here-string expansion: {e}\n`) and regular redirect (`mash: redirect: {e}\n`). The test `heredoc_expansion_error_aborts_noninteractive_script` and the `redirect_error_aborts_noninteractive_shell` check both expect `"heredoc expansion:"` in stderr.
 
-**Symptom:** `mash -n /home/mamuk/work/.modernish_upstream/lib/modernish/mdl/var/local.mm` hangs (infinite loop in parser) without debug output.
+### 6. Windows env var case normalization (`env.rs:410-429`)
+- **Problem**: On Windows, `std::env::vars()` returns keys with their original casing (e.g., `Path` not `PATH`). POSIX shell variable names are case-sensitive and the codebase uses uppercase names like `"PATH"`, `"HOME"`, etc. for lookups. The HashMap lookup `env.get("PATH")` wouldn't find `Path`, causing `find_in_path` to fail and pipelines like `echo hello | findstr hello` to produce empty output.
+- **Fix**: In `Env::from_os()`, selected well-known environment variable names are uppercased via `key.to_ascii_uppercase()` before insertion. Only variables that POSIX shells reference by uppercase name are normalized (PATH, HOME, TEMP, TMP, COMSPEC, SYSTEMROOT, WINDIR, USERPROFILE, HOMEDRIVE, HOMEPATH, PSMODULEPATH, PATHEXT). Other variable names are preserved in their original case to maintain POSIX case-sensitivity for user-defined variables.
+- **Evidence**: `echo hello | findstr hello` now outputs `hello`. `echo hello world | findstr world` outputs `hello world`. Pipeline tests `pipeline_echo_findstr` and `pipeline_filters` now pass.
 
-**Root cause:** A timing-sensitive infinite loop in `parse_for` or callees. Adding `eprintln!` at the start of `parse_for` acts as a memory barrier and "fixes" the hang. Span guards and loop-count guards in the `in words` loop do NOT prevent the hang.
+## Known Issues (evidence-based)
 
-**Applied mitigations:**
-- Span-advance guard in `parse_for` "in words" loop (parser.rs ~596-614)
-- Loop-count guard (10,000 iterations) in same loop (parser.rs ~619-626)
-- Same guards applied to `parse_select` "in words" loop (parser.rs ~769-790)
+### `builtin_read_uses_redirected_function_stdin` (1 flaky failure)
+- Intermittently fails when run as part of the full test suite but passes individually.
+- Likely a file system race condition on Windows with the temporary `infile` used in the test.
 
-**Status:** Guards applied but hang persists without debug output. The `eprintln!` workaround is needed for now. This is the primary blocker for Modernish smoke test.
+### Process substitution (`<(...)`, `>()`) unimplemented
+- Lexer tokenizes these as `Word`, executor has no support.
+- No executor code exists for process substitution.
 
-## Environment Notes
+### `{`/`}` brace tokenization context sensitivity
+- Current `is_word_break` treats `{` and `}` contextually, which may need further analysis for edge cases.
 
-### WSL + NTFS Caching Issue (Critical)
-On WSL with NTFS-backed repo paths, cargo caching is unreliable due to NTFS mtime granularity.
-File timestamps from `touch`, `sed -i`, and `patch` may all appear "stale" to cargo even when content changed.
+## Build Notes
 
-**Always use `CARGO_TARGET_DIR=/tmp/malt-build`** for builds to bypass NTFS mtime caching:
-```bash
-CARGO_TARGET_DIR=/tmp/malt-build cargo build -p mash
-# Binary lands at: /tmp/malt-build/debug/mash
-```
-
-**Force full recompile** when incremental build seems wrong:
-```bash
-rm -rf target/debug/deps/libmash* target/debug/mash.d target/debug/.fingerprint/mash*
-cargo build -p mash
-```
-
-### Binary Paths
-- **Repo build (default):** `target/debug/mash`
-- **Tmp build:** `/tmp/malt-build/debug/mash`
-- **Stale path (OLD):** `~/.targets/vexil-v2/debug/mash` — do not use
-- **WSL symlink:** `~/.local/bin/mash` → `target/debug/mash` (may be stale)
-
-### CARGO_* Environment Variables
-The session's shell may inherit stale `CARGO_TARGET_DIR` from `.bashrc` or parent shell.
-Current session may have: `CARGO_TARGET_DIR=/home/mamuk/work/.targets/vexil-v2` (wrong path)
-This causes cargo to write builds to a non-existent directory, leaving `target/debug/mash` stale.
-
-**Verify:**
-```bash
-env | grep CARGO_TARGET_DIR  # should show /tmp/malt-build or be empty
-```
-
-**In `.bashrc`:** Ensure `CARGO_TARGET_DIR` is NOT set, or set to a valid path.
-The erroneous line `export CARGO_TARGET_DIR="$HOME/work/.targets/vexil-v2"` was removed.
-
-## Last Known Green Checkpoints
-- `dd7ad26` — preparse alias isolation + PSREPLACE fix (current tip, Smoosh 186/186 GREEN)
-- `5748221` — WSL 186/186, Windows 183/183 (clean baseline)
-
-## Conformance Runbook
-
-### WSL / Linux
-```bash
-# Build (always use CARGO_TARGET_DIR=/tmp/... to bypass NTFS mtime caching)
-CARGO_TARGET_DIR=/tmp/malt-build cargo build -p mash
-
-# Smoosh (verify GREEN)
-MASH=/tmp/malt-build/debug/mash cargo test -p mash --test smoosh_runner smoosh_conformance_tests -- --nocapture
-# Expected: passed: 186, skipped unsupported: 0
-
-# Modernish smoke (direct execution, works)
-timeout 10s /tmp/malt-build/debug/mash /home/mamuk/work/.modernish_upstream/bin/modernish --test -eqq
-# Expected: exit 0
-
-# Modernish smoke test harness (blocked on parse_for fix)
-MASH_CORRECTNESS_ENABLE=1 MASH_MODERNISH_UPSTREAM_DIR=/home/mamuk/work/.modernish_upstream cargo test -p mash --test correctness_runner modernish_upstream_optional_smoke -- --nocapture
-```
-
-### Windows (PowerShell)
+### Windows PowerShell
 ```powershell
 cargo build -p mash
 $env:MASH = (Resolve-Path .\target\debug\mash.exe).Path
-cargo test -p mash --test smoosh_runner
-# Expected: 183 runnable (3 policy skips)
+cargo test -p mash --test smoosh_runner smoosh_conformance_tests -- --nocapture
+# Expected: passed: 183, skipped unsupported: 0
+
+cargo test -p mash --test executor
+# Expected: 228 passed, 0 failed
 ```
 
-## Next Steps
-1. **Debug timing-sensitive infinite loop** in `parse_for` — span guards don't catch it, but `eprintln!` does. Needs deeper investigation of `parse_body_until` or `parse_command_list_until` callees.
-2. **Apply `eprintln!` workaround temporarily** if root cause fix is complex — unblock Modernish testing.
-3. **Verify smoke test passes** once hang is resolved.
-4. **Update AGENTS.md to reflect GREEN state** once smoke test passes.
-5. **Then:** resume Modernish alias-grammar work (LOOP/DO/DONE alias expansion timing).
+### NTFS Caching (Critical)
+On WSL with NTFS-backed repo paths, cargo caching is unreliable due to NTFS mtime granularity.
+Use `CARGO_TARGET_DIR=/tmp/malt-build` for builds on WSL, or `cargo clean -p mash` followed by rebuild on Windows.
+Stale binary symptoms: test failures that don't match expected behavior from source changes.
+
+### Binary Paths
+- **Repo build (default):** `target/debug/mash`
+- **WSL build:** `/tmp/malt-build/debug/mash`
+
+## Last Known Green Checkpoints
+- `dd7ad26` — preparse alias isolation + PSREPLACE fix (Smoosh 186/186 WSL, 183/183 Windows)
+- Current tip — all executor tests pass (228/228), Smoosh 183/183 Windows

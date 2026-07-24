@@ -6,7 +6,15 @@ These are tracked here (not as vexil-lang issues) because they were discovered d
 
 ---
 
-## Gap 1: Map keys don't accept newtypes
+**Status update (2026-07-24):** re-checked against vexil-lang's current history
+(379 commits, v1.0.0 released 2026-04-09). Gaps 1, 2, 3, and the unlabeled
+`@`-after-import gap below were all fixed upstream by 2026-03-31 — before this
+document's previous edit (2026-04-08), meaning the tracking here was already
+stale on the day it was last touched. Only **Gap 4 (`vexil.std` types)** is
+still genuinely open; vexil-lang's own docs defer it to their package-manager
+milestone. See inline FIXED annotations below.
+
+## ~~Gap 1: Map keys don't accept newtypes~~ FIXED (vexil-lang `c981a06`, 2026-03-30)
 
 **Problem:** `map<PaneId, PersistedPane>` is invalid because the Vexil spec restricts map key types to primitives, string, bytes, uuid, enum, and flags. Newtypes are excluded even when they wrap a valid key type.
 
@@ -18,7 +26,7 @@ These are tracked here (not as vexil-lang issues) because they were discovered d
 
 ---
 
-## Gap 2: No custom/user-defined annotation support
+## ~~Gap 2: No custom/user-defined annotation support~~ FIXED (vexil-lang `684fffc`/`0f00e1f`, 2026-03-30)
 
 **Problem:** Cannot attach arbitrary key-value metadata to declarations. VNP needs to associate priority class, routing hints, and other protocol metadata with message types.
 
@@ -30,7 +38,7 @@ These are tracked here (not as vexil-lang issues) because they were discovered d
 
 ---
 
-## Gap 3: Potential `None` variant conflict in Rust codegen
+## ~~Gap 3: Potential `None` variant conflict in Rust codegen~~ FIXED (vexil-lang `63c76bc`, 2026-03-31)
 
 **Problem:** Enum variants named `None` (e.g., `ColorDepth::None`) may conflict with `Option::None` in generated Rust code, depending on codegen output and usage context.
 
@@ -67,6 +75,8 @@ These are tracked here (not as vexil-lang issues) because they were discovered d
 **Workaround:** Envelope tests use values within `u8` range. The full 48-bit timestamp will work once this is fixed.
 
 **Requested fix:** Sub-byte types with width >8 should map to the smallest Rust integer that fits: `u8` for 1-8 bits, `u16` for 9-16, `u32` for 17-32, `u64` for 33-64. The `as u8` cast in generated code should be `as u64` (or the appropriate target type).
+
+## ~~Gap 7: `@` after bare import parsed as version constraint~~ FIXED (vexil-lang #43, `d170051`/`458bbd4`, 2026-03-29)
 
 **Problem:** `vexilc check` fails on any file that has `import malt.common` (without a `@ ^X.Y.Z` version constraint) followed by any `@annotation`. The parser reads the `@` from `@doc(...)` or `@domain(...)` as the start of a version constraint on the import statement, then fails with "expected `^` after `@` in version constraint."
 
