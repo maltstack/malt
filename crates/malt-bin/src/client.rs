@@ -68,6 +68,8 @@ impl<'a> CreateSessionRequest<'a> {
 pub struct ExecResultData {
     pub command_id: u32,
     pub output: String,
+    #[serde(default)]
+    pub stderr: String,
     pub exit_code: Option<i32>,
 }
 
@@ -290,5 +292,27 @@ mod tests {
         assert_eq!(result.command_id, 1);
         assert_eq!(result.output, "hello\n");
         assert_eq!(result.exit_code, Some(0));
+        assert_eq!(
+            result.stderr, "",
+            "a response with no stderr field should default to empty, not fail to parse"
+        );
+    }
+
+    #[test]
+    fn parse_exec_response_with_stderr() {
+        let json = r#"{
+            "ok": true,
+            "data": {
+                "command_id": 2,
+                "output": "",
+                "stderr": "error: something failed\n",
+                "exit_code": 1
+            },
+            "error": null
+        }"#;
+        let envelope: ApiEnvelope<ExecResultData> = serde_json::from_str(json).unwrap();
+        let result = envelope.data.unwrap();
+        assert_eq!(result.stderr, "error: something failed\n");
+        assert_eq!(result.exit_code, Some(1));
     }
 }

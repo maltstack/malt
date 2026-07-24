@@ -72,3 +72,27 @@ fn exec_reports_real_exit_code_for_failure() {
          previously-hardcoded None"
     );
 }
+
+#[test]
+fn exec_reports_stderr_separately_from_stdout() {
+    let backend = make_backend();
+    let created = backend.create_session(None, None).unwrap();
+    let result = backend
+        .exec_command(created.id, "echo out-text; echo err-text 1>&2".to_string())
+        .unwrap();
+    assert!(
+        result.output.contains("out-text"),
+        "stdout should contain out-text, got: {:?}",
+        result.output
+    );
+    assert!(
+        result.stderr.contains("err-text"),
+        "stderr must be captured and returned separately from stdout, not \
+         silently dropped; got stderr: {:?}",
+        result.stderr
+    );
+    assert!(
+        !result.output.contains("err-text"),
+        "stderr text must not leak into the stdout field"
+    );
+}

@@ -71,6 +71,7 @@ impl GatewayBackend for MockBackend {
         Ok(ExecResult {
             command_id: 1,
             output: format!("ran: {command}"),
+            stderr: String::new(),
             exit_code: Some(0),
         })
     }

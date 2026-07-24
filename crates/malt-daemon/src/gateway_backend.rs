@@ -110,6 +110,7 @@ impl GatewayBackend for DaemonBackend {
         Ok(ExecResult {
             command_id: 0,
             output: result.output,
+            stderr: result.stderr,
             exit_code: Some(result.exit_code),
         })
     }

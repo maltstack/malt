@@ -50,6 +50,7 @@ pub struct ExecRequest {
 pub struct ExecResult {
     pub command_id: u32,
     pub output: String,
+    pub stderr: String,
     pub exit_code: Option<i32>,
 }
 

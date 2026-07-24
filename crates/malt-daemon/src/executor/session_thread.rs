@@ -51,11 +51,13 @@ fn apply_session_isolation(env: &mut Env, session_id: SessionId, isolation: Isol
     }
 }
 
-/// Result of running a command line through mash: the captured stdout text
-/// (what callers display) plus the command's exit code (what `$?` would be).
+/// Result of running a command line through mash: the captured stdout/stderr
+/// text (what callers display) plus the command's exit code (what `$?`
+/// would be).
 #[derive(Debug, Clone)]
 pub struct CommandOutput {
     pub output: String,
+    pub stderr: String,
     pub exit_code: i32,
 }
 
@@ -467,6 +469,7 @@ impl SessionExecutor {
                 // of exiting 1 on a parse error.
                 return CommandOutput {
                     output: err_msg,
+                    stderr: String::new(),
                     exit_code: 1,
                 };
             }
@@ -475,6 +478,7 @@ impl SessionExecutor {
         if commands.is_empty() {
             return CommandOutput {
                 output: String::new(),
+                stderr: String::new(),
                 exit_code: 0,
             };
         }
@@ -505,6 +509,7 @@ impl SessionExecutor {
 
         CommandOutput {
             output: String::from_utf8_lossy(&result.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&result.stderr).to_string(),
             exit_code: result.exit_code,
         }
     }

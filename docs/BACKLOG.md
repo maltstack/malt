@@ -64,19 +64,16 @@ original ten, in order. Each links to its detail below.
   render-notification gap below, and the attach-timeout behavior; nothing
   downstream can be fixed correctly without this first. See
   `docs/findings/2026-07-24-audit-input-concurrency.md` §3c (recommendation 1).
-- **`exec`/`RunCommand` silently drops stderr — not mis-shaped, actually
-  absent.** `run_mash_command` (`crates/malt-daemon/src/executor/session_thread.rs:458-510`)
-  feeds `result.stderr` to the compat grid for display but never includes
-  it in `CommandOutput`, `ExecResult`, or `ExecResultData` — all three have
-  only a single `output` field. A command that fails and writes only to
-  stderr (e.g. a `cargo test` compile error) returns `output: ""` and just
-  an exit code to any agent driving it via `exec`, with the error text
-  completely unrecoverable through that path. Small, self-contained fix —
-  same mechanical shape as the exit-code fix already landed (thread
-  `result.stderr` through the same three structs). Highest severity,
-  lowest effort item in this whole audit. See
-  `docs/findings/2026-07-24-audit-execution-correctness.md` (final section,
-  recommendation 1).
+- **`exec`/`RunCommand` silently dropped stderr — FIXED 2026-07-24.** Added
+  `stderr: String` to `CommandOutput`, `ExecResult`
+  (`malt-gateway/src/types.rs`), and `ExecResultData` (`malt-bin/src/client.rs`,
+  `#[serde(default)]` for backward compatibility), populated from
+  `result.stderr` in `run_mash_command`. `malt exec` now prints stderr to
+  the CLI's own stderr instead of swallowing it. New tests:
+  `exec_reports_stderr_separately_from_stdout` (real `Coordinator`,
+  `malt-daemon/tests/gateway_backend.rs`) and
+  `parse_exec_response_with_stderr` (`malt-bin/src/client.rs`). Full
+  workspace green.
 - **Requested isolation is fail-open and tier-blind on Windows, and
   entirely unenforced on Linux/macOS, for every tier.** Confirmed and
   broader than the originating concern:
