@@ -92,10 +92,9 @@ message PersistedShellOptions {
 
 @doc("Persisted mash shell environment: exported/non-exported variables,")
 @doc("aliases, function source text (re-parsed on restore), directory")
-@doc("stack, cwd, and signal traps. Mirrors mash::env::EnvSnapshot -- built")
-@doc("for exactly this (session-scoped persistence across daemon restart /")
-@doc("detach-reattach) but not previously wired into the daemon's own")
-@doc("persistence path. See docs/BACKLOG.md.")
+@doc("stack, cwd, and signal traps. Mirrors mash::env::EnvSnapshot. Wired")
+@doc("into the daemon's persistence path in feature 003: build_persisted_session")
+@doc("writes it and spawn_with_cwd applies it on restore.")
 message EnvSnapshot {
     variables @0 : map<string, PersistedVariable>
     options   @1 : PersistedShellOptions

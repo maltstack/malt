@@ -61,14 +61,31 @@ after more than 1024 events have accumulated. **Expected**: a `gap` frame with `
 
 Open a subscription that never reads, alongside one that does:
 
+**Platform note**: this scenario needs a way to suspend a reader mid-stream.
+`kill -STOP` is POSIX-only; the repo's primary target is native Windows, so
+both forms are given.
+
+Linux/WSL/macOS:
+
 ```bash
-# Terminal A: connect, then stop reading (SIGSTOP the process)
+# Terminal A: connect, then stop reading
 curl -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7700/sessions/1/events &
 CURL_PID=$!
 sleep 1 && kill -STOP $CURL_PID
 
 # Terminal B: a healthy subscriber
 curl -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7700/sessions/1/events
+```
+
+Windows (PowerShell) — suspend the process with Sysinternals `pssuspend`, or
+if that is unavailable, get the same effect by attaching a subscriber and
+simply not reading it (the automated test
+`a_stalled_subscriber_never_exceeds_its_buffer_bound` covers this case
+directly and is the reliable check on any platform):
+
+```powershell
+$p = Start-Process curl -PassThru -ArgumentList '-N','-H',"Authorization: Bearer $env:TOKEN",'http://127.0.0.1:7700/sessions/1/events'
+pssuspend $p.Id     # Sysinternals; resume later with: pssuspend -r $p.Id
 ```
 
 Then generate more events than the 256-entry subscriber buffer holds:

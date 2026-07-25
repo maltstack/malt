@@ -22,18 +22,34 @@ organized against.
 Two audit-discovered structural prerequisites, then the project owner's
 original ten, in order. Each links to its detail below.
 
-- **0a. Gateway auth not enforced at all** — see P0.
-- **0b. Single-threaded session executor blocks attach/output/input** — see P0.
-- 1. Correct plain stdout and stderr — see P0 (stderr), P1 (`get_output` shape).
-- 2. Real exit codes and execution IDs — exit codes done (2026-07-24); execution IDs — see P1.
-- 3. Command lifecycle events — DONE 2026-07-25 (feature 004).
-- 4. Persistent execution history — see P1 (two-part: in-memory + schema).
-- 5. Genuine raw input — see P0 (0b is the precondition), P1.
-- 6. Human and agent coexistence — see P0 (render-dispatch gap), P1 (input authority).
-- 7. Fail-closed requested isolation — see P0 (live gaps), P1 (policy design).
-- 8. A correct TUI rendering path — see P0 (`WriteRaw` unhandled).
-- 9. Session restoration — see P1 (compat-pane stub, `EnvSnapshot` unwired).
-- 10. One excellent agent client or Gateway SDK — see P1, P2.
+**Delivered** (kept short; detail lives in the sections below and in
+`docs/findings/`): 0a Gateway auth enforcement · 0b responsive session
+control · 1 correct stdout/stderr · 2 exit codes and execution IDs ·
+3 command lifecycle events · 4 persistent execution history · 8 the TUI
+rendering path.
+
+**Open, in priority order:**
+
+- **5 + 6. Genuine raw input and human/agent coexistence** — being specified
+  together as `specs/005-raw-input-authority/`, now including transport
+  authentication after audit finding A-01 showed the interactive transport
+  performs no identity check at all.
+- **7. Fail-closed requested isolation** — see P1. Audit A-02 rates this
+  Critical: a tier can be reported as applied while the session runs
+  uncontained. Spec 001 is reopened for the same reason.
+- **9. Session restoration** — largely delivered; the remaining gap is
+  restored Compat panes running outside the session's isolation group
+  (audit A-06/A-11).
+- **10. One excellent agent client or Gateway SDK** — unblocked now that the
+  Gateway contract has stabilized; nucleus exists in `malt-bin/src/events.rs`.
+
+**Audit-raised, not previously on this list** (see
+`docs/findings/2026-07-25-architecture-spec-codebase-audit.md` for the full
+set and its recommended closure order): VNP transport authentication and
+pre-handshake resource exhaustion (A-01/A-08, folded into spec 005);
+predictable/leaked Gateway credentials (A-03); the clean-machine CLI
+startup regression (A-04); lifetime-counter rate limiting (A-05); process
+termination that only removes bookkeeping (A-06).
 
 ## P0 — blocks daily-driver usability and safe agent use
 

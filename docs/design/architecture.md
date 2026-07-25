@@ -1200,6 +1200,16 @@ opening multiple connections from the same client does not bypass limits.
 
 ### Extractability
 
+> **Amended 2026-07-25 (ADR-0004).** "Exclusively through bus messages" no
+> longer holds for client-facing delivery. The Bus's `Reliable` tier grows
+> its ring beyond capacity rather than evict, which is unsafe when the drain
+> rate is controlled by an external client rather than the daemon — a
+> subscriber that stops reading would grow daemon memory without bound.
+> Feature 004 therefore delivers lifecycle events over bounded
+> per-subscriber channels with an explicit loss policy. In-daemon delivery
+> is unchanged. See
+> `docs/adr/ADR-0004-bounded-direct-channels-for-client-delivery.md`.
+
 The API Gateway is designed as an extractable subsystem. It communicates with
 the daemon exclusively through bus messages. If load or isolation requirements
 demand it, it can move to a separate process that connects to the daemon via
@@ -1623,11 +1633,26 @@ PersistedSession {
 }
 
 PersistedPane {
-    cwd:       PathBuf
-    title:     Option<String>
-    pane_type: Shell { shell_path } | App { app_id, config } | Compat { program, args }
+    cwd:            PathBuf
+    title:          Option<String>
+    pane_type:      Shell { shell_path, env_snapshot } | App { app_id, config }
+                    | Compat { program, args }
+    command_blocks: Array<PersistedCommandBlock>
+}
+
+PersistedCommandBlock {
+    command_id:  u32
+    cmd:         String
+    started_at:  u64             // epoch ms
+    finished_at: Option<u64>     // absent while running, and permanently
+    exit_code:   Option<i32>     // absent if the daemon stopped mid-command
 }
 ```
+
+`env_snapshot` (shell variables, aliases, functions, options, directory
+stack, traps) and `command_blocks` both ship as of feature 003 — see
+`specs/003-command-execution-history/` and `schemas/persist/session.vexil`,
+which is the authority on the exact shape.
 
 **Schema versioning:** Every persisted file includes a `schema_version` field
 (integer, starting at 1). Deserialization is version-gated:

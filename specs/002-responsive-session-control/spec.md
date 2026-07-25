@@ -4,7 +4,7 @@
 
 **Created**: 2026-07-24
 
-**Status**: Draft
+**Status**: Implemented — Delivered 2026-07-25. See `docs/findings/2026-07-25-responsive-session-control.md`.
 
 **Input**: User description: "Keep an active MALT session responsive while commands execute. A long-running command must not prevent another human or agent from attaching, reading the latest available session state, or having ordinary session-control events processed. Preserve deterministic command ordering and one authoritative shell state, and do not make a healthy session appear unreachable to concurrent operations merely because it is busy. This is the structural prerequisite only; it does not add live input delivery to a running process, intermediate output streaming, input-authority policy, execution identifiers or history, or new client features."
 

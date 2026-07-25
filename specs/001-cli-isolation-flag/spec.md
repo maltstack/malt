@@ -4,7 +4,16 @@
 
 **Created**: 2026-07-24
 
-**Status**: Complete
+**Status**: Partially implemented — REOPENED 2026-07-25
+
+The CLI surface ships and every task is checked, but the spec's fail-closed
+requirement is not met. A requested isolation tier can be reported as applied
+while the session runs uncontained; `Capped` and `Contained` resolve to the
+same placeholder limits; and there is no enforcement path at all on
+non-Windows. Leaving this marked Complete would assert a security guarantee
+the code does not provide, which is worse than an open item. See audit finding
+A-02 in `docs/findings/2026-07-25-architecture-spec-codebase-audit.md` and the
+isolation-policy entry in `docs/BACKLOG.md`.
 
 **Input**: User description: "the `malt new --isolation` CLI flag from the backlog"
 

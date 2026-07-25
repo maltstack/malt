@@ -4,7 +4,7 @@
 
 **Created**: 2026-07-25
 
-**Status**: Draft
+**Status**: Implemented — Delivered 2026-07-25. See `docs/findings/2026-07-25-command-execution-history.md`.
 
 **Input**: User description: "Track the history of commands executed in a session pane — what was run, when, and whether it succeeded — make that history retrievable by users and by automation/API clients, and ensure it survives a daemon restart instead of disappearing when a session goes dormant and is later restored."
 

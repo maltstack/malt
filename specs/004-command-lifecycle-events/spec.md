@@ -4,7 +4,7 @@
 
 **Created**: 2026-07-25
 
-**Status**: Draft
+**Status**: Implemented — Delivered 2026-07-25. See `docs/findings/2026-07-25-command-lifecycle-events.md`.
 
 **Input**: User description: "Deliver command lifecycle events to clients. Every command executed in a session should emit structured start and finish events (command id, command text, timestamps, exit status) that connected clients — AI agents and humans — can subscribe to and receive as they happen, instead of polling for output or scraping the terminal. Today the daemon already tracks these transitions internally but has no way to deliver them to anyone: the internal message bus has zero consumers. Includes catching a subscriber up on events it missed while not connected, and not letting a slow subscriber degrade the session."
 
