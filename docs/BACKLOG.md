@@ -295,6 +295,26 @@ original ten, in order. Each links to its detail below.
   (`malt-daemon/tests/store.rs`); 4 route/auth tests in
   `malt-gateway/tests/routes.rs`; 8 `PaneRuntime` tests in
   `malt-session/tests/pane.rs`; 2 MCP tool tests.
+  **Integrated with feature 002 (responsive session control) on rebase,
+  2026-07-25.** 002 moved MASH execution onto a worker thread that solely
+  owns `Env`, so recording moved to that same boundary: the worker
+  announces `SessionCommand::ExecutionStarted` immediately before running
+  (the control actor pushes the open block) and `ExecutionCompleted`
+  finalizes it, committed alongside the env snapshot so history and shell
+  state become visible together. Two things this caught that neither
+  branch had alone: (a) `command_id` assignment now lives in the worker,
+  which hardcoded its counter to `0` — restore-resume is seeded via a new
+  `start_command_id` parameter on `spawn_command_worker`, or post-restore
+  ids would silently have collided with persisted ones again; (b) the
+  Gateway history read originally blocked up to 2s *holding the
+  coordinator mutex*, which under 002's architecture would stall every
+  other session's control traffic — restructured to 002's `begin_*`
+  pattern (return the receiver, drop the lock, then wait). The payoff:
+  a still-running command is now genuinely visible in history rather than
+  only structurally recorded — `a_running_command_is_visible_in_history_before_it_finishes`
+  asserts a live in-flight entry returns in well under a second while a
+  1-second command runs, and is finalized in place afterwards rather than
+  duplicated.
   **Still open, deliberately not folded in:** history records execution
   *metadata* only, not per-command output/scrollback (a separate concern
   — see the terminal-grid items); and `CommandStarted`/`CommandFinished`

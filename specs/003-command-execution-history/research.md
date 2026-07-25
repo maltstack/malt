@@ -66,6 +66,16 @@ Unknown session → existing `GatewayError::NotFound` → HTTP 404 (FR-009: dist
 
 **Alternatives considered**: Waiting for 002 to land first — rejected: spec/plan/tasks are exactly the artifacts safe to produce in parallel; the merge point is implementation, and tasks.md will call out the rebase check.
 
+**Outcome (2026-07-25, after 002 landed and this branch rebased onto it).** The prediction held, and the integration was cleaner than the pre-002 shape. 002 moved MASH execution to a dedicated worker thread that solely owns `Env`; the control actor keeps UI, persistence, and lifecycle state. That splits the record lifecycle across the same boundary, which turns out to be the right seam:
+
+- The worker announces `SessionCommand::ExecutionStarted { command_id, command, started_at }` immediately before running. The control actor pushes the open block.
+- The matching `ExecutionCompleted` finalizes it, committed alongside the env snapshot and sequence advance so history and shell state become visible together.
+- Neither side reaches into the other: the worker owns MASH, the control actor owns the history buffer.
+
+Two consequences worth recording. First, `command_id` assignment moved into the worker, so the restore-resume is seeded via a new `start_command_id` parameter on `spawn_command_worker` rather than a control-actor field — 002 had hardcoded it to `0`, which would have silently reintroduced id collisions after restore. Second, the "still-running command visible in history" acceptance scenario is now *actually observable*, not just structurally correct: `a_running_command_is_visible_in_history_before_it_finishes` asserts a live in-flight entry is returned in well under a second while a 1-second command runs, and that the same entry is finalized in place afterwards rather than duplicated.
+
+The Gateway read was also restructured to match 002's `begin_*` pattern (return the receiver, drop the coordinator lock, then wait). The original implementation blocked up to 2 seconds *holding* the coordinator mutex, which under 002 would have stalled every other session's control traffic — a real defect introduced by the merge, not present in either branch alone.
+
 ## R7: Access control and auth scope
 
 **Decision**: `GET /sessions/{id}/history` requires `AuthScope::Read`, added to the `required_scope` table in `crates/malt-gateway/src/middleware.rs`. Note the table fails closed (unrecognized route → `Admin`), so even forgetting the entry would deny, not leak — the entry makes Read-scoped clients work.

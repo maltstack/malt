@@ -266,16 +266,22 @@ impl Coordinator {
         }
     }
 
-    /// Get a session's command execution history, oldest first.
+    /// Begin reading a session's command execution history, oldest first.
+    ///
+    /// Returns the receiver rather than the result so the caller can release
+    /// the coordinator lock before waiting — the same split the output reads
+    /// use, and for the same reason: blocking here would stall every other
+    /// session's control traffic, not just this one's.
     ///
     /// A dormant session answers from its persisted snapshot rather than
     /// being woken — history is a pure read, and restoring a session just to
     /// list what it already ran would be a side effect the caller never asked
-    /// for.
-    pub fn get_session_command_history(
+    /// for. That answer is available immediately, so it is delivered down the
+    /// same channel to keep one shape for both cases.
+    pub fn begin_get_session_command_history(
         &self,
         session_id: SessionId,
-    ) -> Result<Vec<CommandBlock>, DaemonError> {
+    ) -> Result<mpsc::Receiver<Vec<CommandBlock>>, DaemonError> {
         let handle = self
             .sessions
             .get(&session_id.0)
@@ -286,20 +292,23 @@ impl Coordinator {
                 cmd_tx
                     .send(SessionCommand::GetCommandHistory { reply: reply_tx })
                     .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
-                reply_rx
-                    .recv_timeout(Duration::from_secs(2))
-                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+                Ok(reply_rx)
             }
-            SessionLifecycle::Dormant { persisted } => Ok(persisted
-                .panes
-                .get(&handle.first_pane.0)
-                .map(|pane| {
-                    pane.command_blocks
-                        .iter()
-                        .map(from_persisted_command_block)
-                        .collect()
-                })
-                .unwrap_or_default()),
+            SessionLifecycle::Dormant { persisted } => {
+                let blocks: Vec<CommandBlock> = persisted
+                    .panes
+                    .get(&handle.first_pane.0)
+                    .map(|pane| {
+                        pane.command_blocks
+                            .iter()
+                            .map(from_persisted_command_block)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let (reply_tx, reply_rx) = mpsc::channel();
+                let _ = reply_tx.send(blocks);
+                Ok(reply_rx)
+            }
         }
     }
 

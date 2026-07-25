@@ -182,16 +182,24 @@ impl GatewayBackend for DaemonBackend {
         &self,
         session_id: u32,
     ) -> Result<Vec<CommandHistoryEntry>, GatewayError> {
-        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
-        // Resolve the pane first: it doubles as the existence check, so an
-        // unknown session is a 404 rather than an empty history that looks
-        // like a real session which has run nothing.
-        let pane_id = coord
-            .session_first_pane(SessionId(session_id))
-            .ok_or(GatewayError::SessionNotFound(session_id))?;
-        let blocks = coord
-            .get_session_command_history(SessionId(session_id))
-            .map_err(|e| GatewayError::Internal(e.to_string()))?;
+        // Take the coordinator lock only long enough to resolve the pane and
+        // hand off the request; waiting under it would stall unrelated
+        // sessions. Resolving the pane first doubles as the existence check,
+        // so an unknown session is a 404 rather than an empty history that
+        // looks like a real session which has run nothing.
+        let (pane_id, reply) = {
+            let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+            let pane_id = coord
+                .session_first_pane(SessionId(session_id))
+                .ok_or(GatewayError::SessionNotFound(session_id))?;
+            let reply = coord
+                .begin_get_session_command_history(SessionId(session_id))
+                .map_err(map_execution_error)?;
+            (pane_id, reply)
+        };
+        let blocks = reply
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| GatewayError::Internal("session history timed out".to_string()))?;
         Ok(blocks
             .into_iter()
             .map(|b| CommandHistoryEntry {

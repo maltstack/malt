@@ -465,6 +465,57 @@ fn busy_session_output_remains_prompt_and_another_session_is_not_delayed() {
 }
 
 #[test]
+fn a_running_command_is_visible_in_history_before_it_finishes() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    // The payoff of running history on the control actor rather than the
+    // MASH worker: a command that is still executing is already recorded,
+    // and asking for history does not wait for it to finish.
+    let backend = Arc::new(make_backend());
+    let session = backend.create_session(None, None).unwrap();
+    let other = backend.create_session(None, None).unwrap();
+
+    let command_backend = Arc::clone(&backend);
+    let session_id = session.id;
+    let command = std::thread::spawn(move || {
+        command_backend.exec_command(session_id, "sleep 1; echo done".to_string())
+    });
+    std::thread::sleep(Duration::from_millis(100));
+
+    let started = Instant::now();
+    let during = backend.get_command_history(session.id).unwrap();
+    let unrelated = backend.get_command_history(other.id).unwrap();
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "history must not block behind the running command, took {elapsed:?}"
+    );
+    assert!(
+        unrelated.is_empty(),
+        "an unrelated session must not be delayed or polluted by the busy one"
+    );
+
+    assert_eq!(during.len(), 1, "the in-flight command must already be recorded");
+    let entry = &during[0];
+    assert_eq!(entry.cmd, "sleep 1; echo done");
+    assert!(
+        entry.finished_at.is_none() && entry.exit_code.is_none(),
+        "a still-running command must report as not confirmed complete, got {entry:?}"
+    );
+
+    assert!(command.join().unwrap().is_ok());
+
+    // Once it finishes, the same entry is finalized in place -- not duplicated.
+    let after = backend.get_command_history(session.id).unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].command_id, entry.command_id);
+    assert_eq!(after[0].exit_code, Some(0));
+    assert!(after[0].finished_at.is_some());
+}
+
+#[test]
 fn capacity_one_keeps_one_active_and_one_pending_in_fifo_order() {
     use std::sync::Arc;
     use std::time::Duration;
