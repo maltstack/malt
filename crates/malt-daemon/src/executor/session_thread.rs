@@ -3,6 +3,9 @@ use crate::connection::authority::AuthorityTracker;
 use crate::executor::command_worker::{
     spawn_command_worker, ExecutionCompletion, ExecutionIngress,
 };
+use crate::executor::events::{
+    DeliveryOutcome, EventLog, GapReason, LifecycleEvent, LifecycleEventKind, SubscriberSink,
+};
 use crate::DaemonError;
 use malt_compat::CompatTranslator;
 use malt_layout::resolve::compute_resolved_panes;
@@ -190,6 +193,13 @@ pub enum SessionCommand {
     /// for programmatic/agent consumption. Same underlying grid as
     /// `GetOutput`, different rendering.
     GetOutputText { reply: mpsc::Sender<String> },
+    /// Subscribe to this session's lifecycle events. `resume_from` replays
+    /// everything after that position, preceded by a gap if the position
+    /// predates the retained window.
+    SubscribeEvents {
+        resume_from: Option<u64>,
+        reply: mpsc::Sender<tokio::sync::mpsc::Receiver<LifecycleEvent>>,
+    },
     /// Get this session's command execution history, oldest first.
     GetCommandHistory {
         reply: mpsc::Sender<Vec<CommandBlock>>,
@@ -268,6 +278,10 @@ impl std::fmt::Debug for SessionCommand {
                 .finish(),
             Self::GetOutput { .. } => f.debug_struct("GetOutput").finish(),
             Self::GetOutputText { .. } => f.debug_struct("GetOutputText").finish(),
+            Self::SubscribeEvents { resume_from, .. } => f
+                .debug_struct("SubscribeEvents")
+                .field("resume_from", resume_from)
+                .finish(),
             Self::GetCommandHistory { .. } => f.debug_struct("GetCommandHistory").finish(),
             Self::RegisterVnpClient { client_id, .. } => f
                 .debug_struct("RegisterVnpClient")
@@ -319,6 +333,13 @@ pub struct SessionExecutor {
     /// what keeps a running command visible in history and what leaves an
     /// honestly-unfinished record if the daemon stops mid-command.
     pane_runtime: PaneRuntime,
+    /// Bounded catch-up window for reconnecting subscribers, and the
+    /// authority on this session's event sequence numbers.
+    event_log: EventLog,
+    /// Live subscribers. Each has an independent position and its own bound;
+    /// none may block the others or this actor.
+    event_sinks: Vec<SubscriberSink>,
+    next_subscriber_id: u64,
 }
 
 impl SessionExecutor {
@@ -486,6 +507,9 @@ impl SessionExecutor {
                     finalization: None,
                     expected_completion_sequence: 1,
                     pane_runtime,
+                    event_log: EventLog::new(),
+                    event_sinks: Vec::new(),
+                    next_subscriber_id: 1,
                 };
                 executor.run(control_rx);
             })
@@ -553,10 +577,15 @@ impl SessionExecutor {
                 }) => {
                     self.pane_runtime.push_command_block(CommandBlock {
                         command_id,
-                        cmd: command,
+                        cmd: command.clone(),
                         started_at,
                         finished_at: None,
                         exit_code: None,
+                    });
+                    self.publish_lifecycle(LifecycleEventKind::CommandStarted {
+                        command_id,
+                        cmd: command,
+                        started_at,
                     });
                 }
                 Ok(SessionCommand::ExecutionCompleted(completion)) => self.begin_finalization(completion),
@@ -588,6 +617,12 @@ impl SessionExecutor {
                 Ok(SessionCommand::GetOutputText { reply }) => {
                     let output = self.get_plain_text_output();
                     let _ = reply.send(output);
+                }
+                Ok(SessionCommand::SubscribeEvents { resume_from, reply }) => {
+                    let rx = self.subscribe_events(resume_from);
+                    // If the requester vanished before we replied, the
+                    // receiver drops and the sink is reaped on next publish.
+                    let _ = reply.send(rx);
                 }
                 Ok(SessionCommand::GetCommandHistory { reply }) => {
                     let history: Vec<CommandBlock> =
@@ -703,6 +738,68 @@ impl SessionExecutor {
             }
             self.advance_finalization();
         }
+    }
+
+    /// Record a lifecycle event and fan it out to every live subscriber.
+    ///
+    /// Never blocks: delivery is `try_send` only, so a subscriber that has
+    /// stopped reading cannot add latency to command execution. A subscriber
+    /// that is full or gone is told what it missed (best-effort) and dropped
+    /// — never accommodated by growing its channel.
+    fn publish_lifecycle(&mut self, kind: LifecycleEventKind) {
+        let event = self.event_log.publish(kind);
+        let latest = event.sequence;
+        let mut dropped: Vec<u64> = Vec::new();
+        for sink in &mut self.event_sinks {
+            match sink.try_deliver(&event) {
+                DeliveryOutcome::Delivered => {}
+                DeliveryOutcome::Lagged => {
+                    sink.try_notify_gap(latest, GapReason::SubscriberLagged);
+                    dropped.push(sink.id);
+                }
+                DeliveryOutcome::Closed => dropped.push(sink.id),
+            }
+        }
+        if !dropped.is_empty() {
+            self.event_sinks.retain(|s| !dropped.contains(&s.id));
+            for id in dropped {
+                info!(session = ?self.session.id(), subscriber = id, "event subscriber removed");
+            }
+        }
+    }
+
+    /// Register a subscriber, replaying from `resume_from` if given.
+    ///
+    /// If the requested position predates what is still retained, a `Gap` is
+    /// queued *before* the replayed events, so the client learns about the
+    /// hole before receiving data that would otherwise look contiguous.
+    fn subscribe_events(&mut self, resume_from: Option<u64>) -> tokio::sync::mpsc::Receiver<LifecycleEvent> {
+        let id = self.next_subscriber_id;
+        self.next_subscriber_id += 1;
+        let (mut sink, rx) = SubscriberSink::new(id);
+
+        if let Some(from) = resume_from {
+            let (replay, lost) = self.event_log.replay_after(from);
+            if lost {
+                let through = self
+                    .event_log
+                    .oldest_sequence()
+                    .map(|o| o.saturating_sub(1))
+                    .unwrap_or(from);
+                sink.try_notify_gap(through, GapReason::RetentionExceeded);
+            }
+            for event in replay {
+                if sink.try_deliver(&event) != DeliveryOutcome::Delivered {
+                    // The replay itself outran the buffer -- say so rather
+                    // than hand over a silently-truncated backlog.
+                    sink.try_notify_gap(self.event_log.latest_sequence(), GapReason::SubscriberLagged);
+                    break;
+                }
+            }
+        }
+
+        self.event_sinks.push(sink);
+        rx
     }
 
     /// Dispatch a render frame to all registered VNP clients.
@@ -855,9 +952,29 @@ impl SessionExecutor {
             });
         }
         self.env_snapshot = finalization.snapshot;
+        let finished_at = now_epoch_ms();
+        // Duration comes from the matching open history block rather than a
+        // second clock read, so the event and the history entry cannot
+        // disagree about when the command ran.
+        let started_at = self
+            .pane_runtime
+            .current_block()
+            .filter(|b| b.command_id == finalization.output.command_id)
+            .map(|b| b.started_at);
         self.pane_runtime
-            .finalize_current_block(now_epoch_ms(), finalization.output.exit_code);
+            .finalize_current_block(finished_at, finalization.output.exit_code);
         self.expected_completion_sequence = finalization.sequence.saturating_add(1);
+        // Published here -- at the commit point, not when the worker returned
+        // -- so a finish event never arrives before the output that produced
+        // it is visible to a subsequent get_output (research R9).
+        self.publish_lifecycle(LifecycleEventKind::CommandFinished {
+            command_id: finalization.output.command_id,
+            exit_code: finalization.output.exit_code,
+            finished_at,
+            duration_us: started_at
+                .map(|s| finished_at.saturating_sub(s).saturating_mul(1_000))
+                .unwrap_or(0),
+        });
         self.dispatch_render();
         let _ = finalization.reply.send(Ok(finalization.output));
         // The acknowledgement is deliberately last: only a completely

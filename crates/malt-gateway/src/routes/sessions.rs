@@ -2,14 +2,27 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
+use futures_core::Stream;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
 
 use crate::backend::GatewayBackend;
 use crate::error::GatewayError;
 use crate::types::{
-    ApiResponse, CommandHistoryEntry, CreateSessionRequest, ExecRequest, SendInputRequest,
+    ApiResponse, CommandHistoryEntry, CreateSessionRequest, ExecRequest, LifecycleEventDto,
+    SendInputRequest,
 };
+
+/// Optional `?resume_from=` query parameter, an alternative to the
+/// `Last-Event-ID` header for clients that cannot set headers easily.
+#[derive(Debug, serde::Deserialize)]
+pub struct EventsQuery {
+    pub resume_from: Option<u64>,
+}
 
 pub async fn list(
     State(backend): State<Arc<dyn GatewayBackend>>,
@@ -75,6 +88,48 @@ pub async fn history(
 ) -> Result<Json<ApiResponse<Vec<CommandHistoryEntry>>>, GatewayError> {
     let entries = backend.get_command_history(id)?;
     Ok(Json(ApiResponse::success(entries)))
+}
+
+/// Stream this session's command lifecycle events as Server-Sent Events.
+///
+/// Resume position comes from `Last-Event-ID` (what a standard SSE client
+/// sends automatically on reconnect) or an explicit `?resume_from=`. A
+/// malformed value means "start from now" rather than an error — a
+/// first-time subscriber must not be forced to process the session's past.
+///
+/// Every failure is returned as an HTTP status *before* the stream opens,
+/// because an SSE client treats an established stream as success.
+pub async fn events(
+    State(backend): State<Arc<dyn GatewayBackend>>,
+    Path(id): Path<u32>,
+    Query(query): Query<EventsQuery>,
+    headers: HeaderMap,
+) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, GatewayError> {
+    let resume_from = query.resume_from.or_else(|| {
+        headers
+            .get("last-event-id")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+    });
+
+    let rx = backend.subscribe_events(id, resume_from)?;
+    let stream = ReceiverStream::new(rx).map(|dto| Ok(to_sse_event(&dto)));
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// Render one event as an SSE frame: `id` is the resume position, `event` is
+/// the type, `data` is the JSON payload.
+fn to_sse_event(dto: &LifecycleEventDto) -> Event {
+    let event = Event::default().id(dto.sequence.to_string()).event(&dto.kind);
+    match serde_json::to_string(dto) {
+        Ok(json) => event.data(json),
+        // Serialization of a plain data struct should not fail; if it
+        // somehow does, say so in-band rather than dropping the frame
+        // silently, which would create an unsignalled hole in the stream.
+        Err(error) => event.data(format!(
+            r#"{{"error":"failed to serialize event: {error}"}}"#
+        )),
+    }
 }
 
 /// Plain-text variant of `output`, for programmatic/agent consumption.

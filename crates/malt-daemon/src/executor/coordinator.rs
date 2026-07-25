@@ -14,6 +14,7 @@ use malt_protocol::input::KeyEvent;
 use malt_protocol::persist::daemon::DaemonState;
 use malt_protocol::persist::session::PersistedSession;
 use malt_protocol::render::{InitialState, RenderBatch};
+use crate::executor::events::LifecycleEvent;
 use malt_session::pane::CommandBlock;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
@@ -261,6 +262,41 @@ impl Coordinator {
                     .send(SessionCommand::GetOutputText { reply: reply_tx })
                     .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
                 Ok(reply_rx)
+            }
+            SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
+    }
+
+    /// Begin a lifecycle-event subscription for a session.
+    ///
+    /// Returns the receiver rather than awaiting anything, so the caller
+    /// releases the coordinator lock before consuming the stream — a
+    /// long-lived subscription must never hold it.
+    ///
+    /// A dormant session is refused: it has no running executor and so
+    /// cannot produce events. That is a caller-actionable state (attach to
+    /// restore), not a server fault, and maps to 409.
+    pub fn begin_subscribe_events(
+        &self,
+        session_id: SessionId,
+        resume_from: Option<u64>,
+    ) -> Result<tokio::sync::mpsc::Receiver<LifecycleEvent>, DaemonError> {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                cmd_tx
+                    .send(SessionCommand::SubscribeEvents {
+                        resume_from,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
+                reply_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
             }
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
         }

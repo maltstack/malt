@@ -71,6 +71,37 @@ pub struct CommandHistoryEntry {
     pub pane_id: u32,
 }
 
+/// One lifecycle event as delivered to a client.
+///
+/// `kind` names the event (`command_started`, `command_finished`, `gap`);
+/// the type-specific fields are flattened alongside it and omitted when not
+/// applicable, so a client reads one flat object per frame.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LifecycleEventDto {
+    #[serde(skip)]
+    pub sequence: u64,
+    #[serde(skip)]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cmd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_us: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missed_from: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missed_through: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Request body for sending raw input.
 #[derive(Debug, Deserialize)]
 pub struct SendInputRequest {

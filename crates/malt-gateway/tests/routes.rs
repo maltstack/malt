@@ -13,7 +13,7 @@ use malt_gateway::error::GatewayError;
 use malt_gateway::rate_limit::RateLimiter;
 use malt_gateway::server::build_router;
 use malt_gateway::types::{
-    CommandHistoryEntry, ExecResult, PaneResponse, SessionResponse,
+    CommandHistoryEntry, ExecResult, LifecycleEventDto, PaneResponse, SessionResponse,
 };
 use malt_gateway::with_auth;
 
@@ -130,6 +130,37 @@ impl GatewayBackend for MockBackend {
                 pane_id: 1,
             },
         ])
+    }
+
+    fn subscribe_events(
+        &self,
+        session_id: u32,
+        resume_from: Option<u64>,
+    ) -> Result<tokio::sync::mpsc::Receiver<LifecycleEventDto>, GatewayError> {
+        if !self.sessions.iter().any(|s| s.id == session_id) {
+            return Err(GatewayError::SessionNotFound(session_id));
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let mut event = LifecycleEventDto {
+            sequence: 1,
+            kind: "command_started".to_string(),
+            command_id: Some(1),
+            cmd: Some("echo hello".to_string()),
+            started_at: Some(1_784_070_000_123),
+            finished_at: None,
+            exit_code: None,
+            duration_us: None,
+            missed_from: None,
+            missed_through: None,
+            reason: None,
+        };
+        // Echo the resume position back through the sequence so a test can
+        // prove the header actually reached the backend.
+        if let Some(from) = resume_from {
+            event.sequence = from + 1;
+        }
+        let _ = tx.try_send(event);
+        Ok(rx)
     }
 
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError> {
@@ -474,6 +505,137 @@ async fn history_requires_read_scope() {
         allowed.status(),
         StatusCode::OK,
         "a Read-scoped token must be sufficient for history"
+    );
+}
+
+#[tokio::test]
+async fn events_route_streams_sse() {
+    let (router, token) = app();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/1/events")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        content_type.starts_with("text/event-stream"),
+        "expected an SSE stream, got content-type {content_type:?}"
+    );
+
+    let body = BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("event: command_started"), "frames: {text}");
+    assert!(text.contains("id: 1"), "frames must carry a resume id: {text}");
+    assert!(text.contains("echo hello"), "frames: {text}");
+}
+
+#[tokio::test]
+async fn events_route_passes_last_event_id_to_the_backend() {
+    // The mock echoes resume_from into the sequence, so seeing id: 43 proves
+    // the header was parsed and forwarded rather than silently ignored --
+    // which would look identical to a working stream from the client side.
+    let (router, token) = app();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/1/events")
+                .header("authorization", format!("Bearer {token}"))
+                .header("last-event-id", "42")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("id: 43"), "resume position not forwarded: {text}");
+}
+
+#[tokio::test]
+async fn events_for_unknown_session_is_not_found_before_the_stream_opens() {
+    let (router, token) = app();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/999/events")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Must be an HTTP error, never a 200 that then emits an error frame --
+    // an SSE client reads an opened stream as success.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        !content_type.starts_with("text/event-stream"),
+        "a failure must not be delivered as a stream"
+    );
+}
+
+#[tokio::test]
+async fn events_requires_read_scope() {
+    let token_store = Arc::new(TokenStore::new());
+    let monitor_token = token_store.generate_token(AuthScope::Monitor);
+    let rate_limiter = Arc::new(RateLimiter::new(1000));
+    let router = with_auth(
+        build_router(Arc::new(MockBackend::new())),
+        token_store,
+        rate_limiter,
+    );
+
+    let no_token = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/1/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(no_token.status(), StatusCode::UNAUTHORIZED);
+
+    let forbidden = router
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/1/events")
+                .header("authorization", format!("Bearer {monitor_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        forbidden.status(),
+        StatusCode::FORBIDDEN,
+        "the event stream carries command text and must sit behind Read"
     );
 }
 

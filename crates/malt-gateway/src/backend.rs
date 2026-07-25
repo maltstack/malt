@@ -1,5 +1,7 @@
 use crate::error::GatewayError;
-use crate::types::{CommandHistoryEntry, ExecResult, PaneResponse, SessionResponse};
+use crate::types::{
+    CommandHistoryEntry, ExecResult, LifecycleEventDto, PaneResponse, SessionResponse,
+};
 
 /// Trait abstracting the daemon operations that the gateway delegates to.
 ///
@@ -34,6 +36,17 @@ pub trait GatewayBackend: Send + Sync + 'static {
         &self,
         session_id: u32,
     ) -> Result<Vec<CommandHistoryEntry>, GatewayError>;
+
+    /// Subscribe to a session's command lifecycle events.
+    ///
+    /// Returns the receiving half of a bounded channel. Errors are returned
+    /// here, before any stream is established, because an SSE client treats
+    /// an opened stream as success.
+    fn subscribe_events(
+        &self,
+        session_id: u32,
+        resume_from: Option<u64>,
+    ) -> Result<tokio::sync::mpsc::Receiver<LifecycleEventDto>, GatewayError>;
 
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError>;
 

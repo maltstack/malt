@@ -40,6 +40,9 @@ fn required_scope(method: &Method, path: &str) -> AuthScope {
         // arguments, and secrets typed at the prompt. Not Monitor, which is
         // for liveness/inventory only.
         (&Method::GET, "/sessions/{id}/history") => AuthScope::Read,
+        // Same sensitivity class as history and output: the stream carries
+        // command text.
+        (&Method::GET, "/sessions/{id}/events") => AuthScope::Read,
         (&Method::GET, "/sessions/{id}/panes") => AuthScope::Read,
         (&Method::POST, "/sessions/{id}/panes/split") => AuthScope::Interact,
         (&Method::DELETE, "/sessions/{id}/panes/{pane_id}") => AuthScope::Interact,

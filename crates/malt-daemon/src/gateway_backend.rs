@@ -1,8 +1,11 @@
 use crate::executor::coordinator::Coordinator;
+use crate::executor::events::{GapReason, LifecycleEvent, LifecycleEventKind};
 use crate::DaemonError;
 use malt_gateway::backend::GatewayBackend;
 use malt_gateway::error::GatewayError;
-use malt_gateway::types::{CommandHistoryEntry, ExecResult, PaneResponse, SessionResponse};
+use malt_gateway::types::{
+    CommandHistoryEntry, ExecResult, LifecycleEventDto, PaneResponse, SessionResponse,
+};
 use malt_protocol::common::{IsolationTier, SessionId};
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +22,75 @@ impl DaemonBackend {
     pub fn coordinator(&self) -> &Arc<Mutex<Coordinator>> {
         &self.coordinator
     }
+}
+
+/// Depth of the daemon→wire forwarding channel. Small on purpose: the real
+/// buffering bound is the session-side subscriber sink, and a second deep
+/// queue here would just relocate the unbounded-growth problem.
+const SUBSCRIBER_FORWARD_BUFFER: usize = 64;
+
+/// Project a daemon lifecycle event onto the flat wire shape.
+fn to_event_dto(event: LifecycleEvent) -> LifecycleEventDto {
+    let mut dto = LifecycleEventDto {
+        sequence: event.sequence,
+        kind: String::new(),
+        command_id: None,
+        cmd: None,
+        started_at: None,
+        finished_at: None,
+        exit_code: None,
+        duration_us: None,
+        missed_from: None,
+        missed_through: None,
+        reason: None,
+    };
+    match event.kind {
+        LifecycleEventKind::CommandStarted {
+            command_id,
+            cmd,
+            started_at,
+        } => {
+            dto.kind = "command_started".to_string();
+            dto.command_id = Some(command_id);
+            dto.cmd = Some(cmd);
+            dto.started_at = Some(started_at);
+        }
+        LifecycleEventKind::CommandFinished {
+            command_id,
+            exit_code,
+            finished_at,
+            duration_us,
+        } => {
+            dto.kind = "command_finished".to_string();
+            dto.command_id = Some(command_id);
+            dto.exit_code = Some(exit_code);
+            dto.finished_at = Some(finished_at);
+            dto.duration_us = Some(duration_us);
+        }
+        LifecycleEventKind::Gap {
+            missed_from,
+            missed_through,
+            reason,
+        } => {
+            dto.kind = "gap".to_string();
+            dto.missed_from = Some(missed_from);
+            dto.missed_through = Some(missed_through);
+            dto.reason = Some(
+                match reason {
+                    GapReason::RetentionExceeded => "retention_exceeded",
+                    GapReason::SubscriberLagged => "subscriber_lagged",
+                }
+                .to_string(),
+            );
+        }
+        // LifecycleEventKind is #[non_exhaustive]; a future variant this
+        // build does not know about is skipped rather than crashing the
+        // stream, and says so.
+        _ => {
+            dto.kind = "unknown".to_string();
+        }
+    }
+    dto
 }
 
 fn map_execution_error(error: DaemonError) -> GatewayError {
@@ -215,6 +287,41 @@ impl GatewayBackend for DaemonBackend {
                 pane_id: pane_id.0,
             })
             .collect())
+    }
+
+    fn subscribe_events(
+        &self,
+        session_id: u32,
+        resume_from: Option<u64>,
+    ) -> Result<tokio::sync::mpsc::Receiver<LifecycleEventDto>, GatewayError> {
+        // Establish the subscription under the lock, then release it: a
+        // long-lived stream must never hold the coordinator mutex.
+        let rx = {
+            let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+            // Existence check first, so an unknown session is a 404 before
+            // any stream is opened rather than an empty stream that a client
+            // would read as success.
+            if coord.session_first_pane(SessionId(session_id)).is_none() {
+                return Err(GatewayError::SessionNotFound(session_id));
+            }
+            coord
+                .begin_subscribe_events(SessionId(session_id), resume_from)
+                .map_err(map_execution_error)?
+        };
+
+        // Translate daemon events into the wire DTO on a small forwarding
+        // task. The channel stays bounded end to end, so a stalled HTTP
+        // client still cannot grow memory without limit.
+        let (out_tx, out_rx) = tokio::sync::mpsc::channel(SUBSCRIBER_FORWARD_BUFFER);
+        let mut rx = rx;
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if out_tx.send(to_event_dto(event)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(out_rx)
     }
 
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError> {

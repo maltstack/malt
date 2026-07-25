@@ -20,8 +20,17 @@ use std::collections::VecDeque;
 /// durability.
 pub const MAX_RETAINED_EVENTS: usize = 1024;
 
-/// Per-subscriber queue depth. A subscriber that exceeds it is lagged, told
-/// so, and dropped — never accommodated by growing the channel.
+/// Per-subscriber queue depth for ordinary events. A subscriber that exceeds
+/// it is lagged, told so, and dropped — never accommodated by growing the
+/// channel.
+///
+/// The underlying channel is allocated one slot larger, and that extra slot
+/// is **reserved for the terminal gap notification**. Without the
+/// reservation a lagged subscriber could not be told it lagged — the gap's
+/// own `try_send` would fail on the very buffer that just overflowed, and
+/// the client would be dropped silently while believing it had a complete
+/// stream. That is precisely the failure this feature exists to prevent, so
+/// the reservation is load-bearing, not a nicety.
 pub const SUBSCRIBER_BUFFER: usize = 256;
 
 /// Why a subscriber lost events.
@@ -176,12 +185,28 @@ pub struct SubscriberSink {
 }
 
 impl SubscriberSink {
-    pub fn new(id: u64, tx: tokio::sync::mpsc::Sender<LifecycleEvent>) -> Self {
-        Self {
-            id,
-            tx,
-            last_sent: 0,
-        }
+    /// Create a sink and its receiver, sized so one slot is always free for
+    /// the terminal gap notification.
+    pub fn new(id: u64) -> (Self, tokio::sync::mpsc::Receiver<LifecycleEvent>) {
+        Self::with_buffer(id, SUBSCRIBER_BUFFER)
+    }
+
+    /// As [`SubscriberSink::new`] with an explicit ordinary-event depth.
+    /// Exists so tests can overflow a sink without queueing 256 events.
+    pub fn with_buffer(
+        id: u64,
+        buffer: usize,
+    ) -> (Self, tokio::sync::mpsc::Receiver<LifecycleEvent>) {
+        let buffer = buffer.max(1);
+        let (tx, rx) = tokio::sync::mpsc::channel(buffer + 1);
+        (
+            Self {
+                id,
+                tx,
+                last_sent: 0,
+            },
+            rx,
+        )
     }
 
     /// Highest sequence successfully delivered. Basis of a gap's range if
@@ -194,6 +219,14 @@ impl SubscriberSink {
     /// `blocking_send`. The control actor calls this, so anything that could
     /// wait here would let a client stall command execution.
     pub fn try_deliver(&mut self, event: &LifecycleEvent) -> DeliveryOutcome {
+        if self.tx.is_closed() {
+            return DeliveryOutcome::Closed;
+        }
+        // Stop one slot short: that slot belongs to the gap notification, so
+        // a lagged subscriber can always be told why its stream ended.
+        if self.tx.capacity() <= 1 {
+            return DeliveryOutcome::Lagged;
+        }
         match self.tx.try_send(event.clone()) {
             Ok(()) => {
                 self.last_sent = event.sequence;
@@ -204,10 +237,11 @@ impl SubscriberSink {
         }
     }
 
-    /// Best-effort delivery of a terminal gap describing what this subscriber
-    /// missed. Best-effort by design: if even this cannot be queued, dropping
-    /// the sink still closes the stream, which the client sees as an end —
-    /// preferable to blocking the control actor to deliver bad news.
+    /// Deliver a terminal gap describing what this subscriber missed.
+    ///
+    /// This is the reserved slot's purpose, so for a subscriber that lagged
+    /// it fits by construction. It can still fail if the receiver is already
+    /// gone — fine, that client is not listening anyway.
     pub fn try_notify_gap(&mut self, through: u64, reason: GapReason) {
         let missed_from = self.last_sent.saturating_add(1);
         if through < missed_from {
@@ -305,8 +339,7 @@ mod tests {
 
     #[test]
     fn sink_delivers_until_full_then_reports_lagged_without_growing() {
-        let (tx, rx) = tokio::sync::mpsc::channel(2);
-        let mut sink = SubscriberSink::new(1, tx);
+        let (mut sink, rx) = SubscriberSink::with_buffer(1, 2);
         let mut log = EventLog::new();
 
         assert_eq!(
@@ -329,13 +362,16 @@ mod tests {
             2,
             "last_sent must advance only on success — it is the basis of the gap range"
         );
-        assert_eq!(rx.len(), 2, "the channel must not have grown past its bound");
+        assert_eq!(
+            rx.len(),
+            2,
+            "the channel must not have grown past its ordinary-event bound"
+        );
     }
 
     #[test]
     fn sink_reports_closed_when_the_receiver_is_dropped() {
-        let (tx, rx) = tokio::sync::mpsc::channel(4);
-        let mut sink = SubscriberSink::new(1, tx);
+        let (mut sink, rx) = SubscriberSink::with_buffer(1, 4);
         drop(rx);
         let mut log = EventLog::new();
         assert_eq!(
@@ -346,8 +382,7 @@ mod tests {
 
     #[test]
     fn gap_notification_names_the_range_the_subscriber_missed() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        let mut sink = SubscriberSink::new(1, tx);
+        let (mut sink, mut rx) = SubscriberSink::with_buffer(1, 4);
         let mut log = EventLog::new();
         sink.try_deliver(&log.publish(started(1)));
         let _ = rx.try_recv();
@@ -370,9 +405,43 @@ mod tests {
     }
 
     #[test]
+    fn a_completely_full_sink_can_still_be_told_it_lagged() {
+        // Regression: the gap used to share the ordinary buffer, so a
+        // subscriber that overflowed could not be told it had -- it was
+        // dropped silently while believing its stream was complete, which is
+        // the exact failure this feature exists to prevent.
+        let (mut sink, mut rx) = SubscriberSink::with_buffer(1, 2);
+        let mut log = EventLog::new();
+        assert_eq!(
+            sink.try_deliver(&log.publish(started(1))),
+            DeliveryOutcome::Delivered
+        );
+        assert_eq!(
+            sink.try_deliver(&log.publish(started(2))),
+            DeliveryOutcome::Delivered
+        );
+        assert_eq!(
+            sink.try_deliver(&log.publish(started(3))),
+            DeliveryOutcome::Lagged
+        );
+
+        sink.try_notify_gap(log.latest_sequence(), GapReason::SubscriberLagged);
+
+        let mut kinds = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            kinds.push(event.kind);
+        }
+        assert!(
+            kinds
+                .iter()
+                .any(|k| matches!(k, LifecycleEventKind::Gap { .. })),
+            "a full sink must still receive its terminal gap, got {kinds:?}"
+        );
+    }
+
+    #[test]
     fn gap_notification_is_skipped_when_nothing_was_actually_missed() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        let mut sink = SubscriberSink::new(1, tx);
+        let (mut sink, mut rx) = SubscriberSink::with_buffer(1, 4);
         let mut log = EventLog::new();
         sink.try_deliver(&log.publish(started(1)));
         let _ = rx.try_recv();
