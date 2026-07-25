@@ -1026,11 +1026,40 @@ Two separate causes, fixable independently:
    (`Env::open_fd_read_unless_endless`) makes them see empty stdin instead,
    which is correct-but-inert. A real fix needs a streaming tool signature.
 
-2. **External processes get EOF despite fd 0 being wired.** The spawn sites
-   (`crates/mash/src/executor.rs:1129`, `:5410`) already prefer a registered
-   fd 0 over `Io::Inherit`, so the plumbing is there, yet the child reads
-   EOF. Suspected Windows handle inheritance — the duplicated handle is
-   likely not marked inheritable. **Unconfirmed**; check this first.
+2. **External processes get EOF despite all four spawn sites being wired.**
+   Narrowed 2026-07-25 at the lowest layer (`crates/mash/tests/external_stdin.rs`,
+   ignored by default, no daemon involved). Run it with:
+
+   ```
+   cargo test -p mash --test external_stdin -- --ignored --nocapture
+   ```
+
+   Bisection, all three in the same process with the same `Env`:
+
+   | case | result |
+   |---|---|
+   | `echo piped-in \| /usr/bin/head -n1` (pipeline pipe -> external) | **works** |
+   | `read -r X` (registered fd 0 -> builtin) | **works** |
+   | `/usr/bin/head -n1` (registered fd 0 -> external) | **empty** |
+
+   So `Io::File` carrying a pipe read end does reach a child correctly, and
+   `open_fd_read(0)` does return a usable handle -- each is proven by one of
+   the working cases. Only the combination fails.
+
+   All four `config.stdin` sites (`executor.rs:1287`, `:1660`, `:5686`,
+   `:5905`) already contain the fd-0 fallback, so this is *not* missing
+   wiring. Instrumenting two of them showed neither is reached for a simple
+   external command, so the live path is `:1660` or `:5905` — confirm which
+   before changing anything.
+
+   **Handle inheritance was my hypothesis and it is NOT confirmed** — both
+   Windows paths look right (`Io::File(f) => f.into()`, and
+   `dup_handle(.., inheritable = true)`). The next place to look, and the only
+   remaining difference between the working and failing cases, is
+   `FdRegistry::open` in `crates/malt-platform/src/vfs/fd.rs:255` — what
+   `open_read` actually hands back for a *registered pipe* as opposed to a
+   file, since its non-Unix branch falls through to a generic `open()` plus a
+   `metadata()` probe. That function has not been read yet.
 
 Note for whoever picks this up: the endless-fd guard must stay on the three
 *slurp* sites only. External spawn sites must NOT get it — an external
