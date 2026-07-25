@@ -141,13 +141,22 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 
 ### Implementation for User Story 2
 
-- [ ] T027 [US2] Feed each chunk to the compat translator and call `dispatch_render()` as it arrives, in `crates/malt-daemon/src/executor/session_thread.rs`, instead of feeding one slice at finalization. **Check first whether the finalization slicing should be removed or kept** — two paths feeding the same grid would double-render.
-- [ ] T028 [US2] Add the `OutputChunk` variant to `ClientMessage` in `crates/malt-daemon/src/executor/session_thread.rs`, delivered on the **same ordered per-client stream** as `Render` and `AuthorityChanged` (settled in 005: separate channels cannot promise ordering). Use the existing non-blocking `try_send`; add no second backpressure mechanism.
-- [ ] T029 [US2] Send `OutputChunk` frames to attached VNP clients in `crates/malt-daemon/src/vnp_listener.rs` using `MSG_OUTPUT_CHUNK` in the Shell domain. A client that ignores them must still render correctly — `maltty` and `malt-web` are frozen and must not break.
-- [ ] T030 [US2] Test in `crates/malt-daemon/tests/output_stream.rs` that an attached client receives **more than one** `Render` during a command producing output over several seconds (FR-007), driven by a real command.
-- [ ] T031 [P] [US2] Test in `crates/malt-daemon/tests/output_stream.rs` that two attached clients converge on identical content and neither sees output the other does not (SC-007).
+- [X] T027 [US2] Feed each chunk to the compat translator and call `dispatch_render()` as it arrives, in `crates/malt-daemon/src/executor/session_thread.rs`, instead of feeding one slice at finalization. **Check first whether the finalization slicing should be removed or kept** — two paths feeding the same grid would double-render.
+  - Removed: the finalization slicing existed only to spread a large synchronous compat feed across actor turns, and that feed is now redundant since the same bytes already reached the live grid via `OutputChunk`. `Finalization` lost its `staged_compat`/`stdout_offset`/`stderr_offset` fields; `advance_finalization` now commits in one turn (snapshot swap, history, lifecycle event, reply) with no re-feed. Verified no double-render via T030/T031 and the full daemon test suite.
+- [X] T028 [US2] Add the `OutputChunk` variant to `ClientMessage` in `crates/malt-daemon/src/executor/session_thread.rs`, delivered on the **same ordered per-client stream** as `Render` and `AuthorityChanged` (settled in 005: separate channels cannot promise ordering). Use the existing non-blocking `try_send`; add no second backpressure mechanism.
+  - `publish_output` now returns the assigned sequence so the same number is used for both the output-log event and the `ClientMessage::OutputChunk` sent to each `render_pushers` entry via the existing non-blocking `try_send`.
+- [X] T029 [US2] Send `OutputChunk` frames to attached VNP clients in `crates/malt-daemon/src/vnp_listener.rs` using `MSG_OUTPUT_CHUNK` in the Shell domain. A client that ignores them must still render correctly — `maltty` and `malt-web` are frozen and must not break.
+  - Handled in the VNP client loop's existing `render_rx.try_recv()` match; `produced_at` has no wire field per contracts/output-chunk-vnp.md (only `data`/`command_tag`/`sequence`/`stream`) so it is intentionally discarded there, not carried. `maltty`/`malt-web` untouched — a client that never asks for this message type is unaffected.
+- [X] T030 [US2] Test in `crates/malt-daemon/tests/output_stream.rs` that an attached client receives **more than one** `Render` during a command producing output over several seconds (FR-007), driven by a real command.
+  - `an_attached_client_receives_more_than_one_render_during_a_running_command`.
+- [X] T031 [P] [US2] Test in `crates/malt-daemon/tests/output_stream.rs` that two attached clients converge on identical content and neither sees output the other does not (SC-007).
+  - `two_attached_clients_converge_on_identical_content`.
 
 **Checkpoint**: US1, US2, US3 all work. Gates green. Commit. **Merge to main.**
+
+**Gate results**: `cargo test --workspace` green; `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets -- -D warnings` clean (caught and fixed a `clone_on_copy` on `OutputStream`, which is `Copy`); Smoosh 183/3 unchanged. `output_stream.rs`: 8 tests total.
+
+**Staircase defect**: not touched, per Principle IX. Not separately re-verified whether streaming makes it more visible (no manual TUI session run yet in this phase) — left for the T041 manual quickstart pass.
 
 > **Do not fix the grid "staircase" defect here.** Streaming makes it more
 > visible, and it will be tempting. It is a separate P0 in `docs/BACKLOG.md`

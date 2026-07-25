@@ -1,4 +1,4 @@
-//! Integration tests for streaming command output (spec 006, US1).
+//! Integration tests for streaming command output (spec 006, US1/US3/US2).
 //!
 //! Every test here starts a real command through a real `SessionExecutor`
 //! and its real worker thread -- `SessionCommand::RunCommand`, the same path
@@ -9,10 +9,48 @@
 //! `AuthorityTracker`, the tool stdin slurp).
 
 use malt_daemon::executor::output_log::OutputEventKind;
-use malt_daemon::executor::session_thread::{SessionCommand, SessionExecutor};
-use malt_protocol::common::{IsolationTier, PaneId, SessionId};
+use malt_daemon::executor::session_thread::{ClientMessage, SessionCommand, SessionExecutor};
+use malt_protocol::common::{
+    ClientCapabilities, ColorDepth, ImageProtocol, InputAuthority, IsolationTier, PaneId,
+    SessionId, UnicodeLevel,
+};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+fn default_capabilities() -> ClientCapabilities {
+    ClientCapabilities {
+        color_depth: ColorDepth::TrueColor,
+        unicode: UnicodeLevel::Full,
+        image_protocol: ImageProtocol::None,
+        overlay: false,
+        vt_passthrough: true,
+        max_fps: 60,
+        _unknown: Vec::new(),
+    }
+}
+
+/// Register a VNP client and wait for its initial state, returning the
+/// receiver its `Render`/`OutputChunk` messages arrive on.
+fn register_vnp_client(
+    cmd_tx: &mpsc::SyncSender<SessionCommand>,
+    client_id: u64,
+) -> std::sync::mpsc::Receiver<ClientMessage> {
+    let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(64);
+    let (initial_tx, initial_rx) = mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RegisterVnpClient {
+            client_id,
+            authority: InputAuthority::Observe,
+            capabilities: default_capabilities(),
+            render_tx,
+            initial_reply: initial_tx,
+        })
+        .unwrap();
+    initial_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("RegisterVnpClient should reply with initial state");
+    render_rx
+}
 
 fn subscribe(
     cmd_tx: &mpsc::SyncSender<SessionCommand>,
@@ -408,6 +446,90 @@ fn invalid_utf8_and_a_split_multibyte_character_survive_the_round_trip_including
     assert_eq!(
         decoded, original,
         "base64 round-trip must reproduce the exact bytes, not a lossy text approximation"
+    );
+
+    cmd_tx.send(SessionCommand::Shutdown).unwrap();
+    handle.join().expect("session thread panicked");
+}
+
+/// T030 (US2): an attached client receives more than one `Render` during a
+/// command that produces output over several seconds (FR-007), driven by a
+/// real command -- not by calling `dispatch_render` directly.
+#[test]
+fn an_attached_client_receives_more_than_one_render_during_a_running_command() {
+    let (cmd_tx, handle) =
+        SessionExecutor::spawn(SessionId(7), PaneId(1), IsolationTier::Bare).unwrap();
+    let render_rx = register_vnp_client(&cmd_tx, 1);
+
+    let (run_reply, run_result) = mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RunCommand {
+            command: "echo one; sleep 0.2; echo two; sleep 0.2; echo three".to_string(),
+            reply: run_reply,
+        })
+        .unwrap();
+
+    let mut render_count = 0;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && render_count < 2 {
+        if let Ok(ClientMessage::Render(_)) = render_rx.recv_timeout(Duration::from_millis(500)) {
+            render_count += 1;
+        }
+    }
+    assert!(
+        render_count >= 2,
+        "an attached client must see the view update more than once during the command, saw {render_count}"
+    );
+
+    run_result
+        .recv_timeout(Duration::from_secs(10))
+        .expect("command should complete");
+
+    cmd_tx.send(SessionCommand::Shutdown).unwrap();
+    handle.join().expect("session thread panicked");
+}
+
+/// T031 (US2): two attached clients converge on identical content; neither
+/// sees output the other does not (SC-007).
+#[test]
+fn two_attached_clients_converge_on_identical_content() {
+    let (cmd_tx, handle) =
+        SessionExecutor::spawn(SessionId(8), PaneId(1), IsolationTier::Bare).unwrap();
+    let render_rx_a = register_vnp_client(&cmd_tx, 1);
+    let render_rx_b = register_vnp_client(&cmd_tx, 2);
+
+    let (run_reply, run_result) = mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RunCommand {
+            command: "echo one; echo two; echo three".to_string(),
+            reply: run_reply,
+        })
+        .unwrap();
+    run_result
+        .recv_timeout(Duration::from_secs(10))
+        .expect("command should complete");
+
+    // Drain each client's queue for a moment after completion; every Render
+    // reflects the whole grid, so the *last* one each client saw is what
+    // matters for convergence.
+    let last_frame = |rx: &std::sync::mpsc::Receiver<ClientMessage>| -> Option<malt_protocol::render::RenderBatch> {
+        let mut last = None;
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(ClientMessage::Render(batch)) => last = Some(batch),
+                Ok(_) => {}
+                Err(_) => continue,
+            }
+        }
+        last
+    };
+
+    let last_a = last_frame(&render_rx_a).expect("client A must have received at least one render");
+    let last_b = last_frame(&render_rx_b).expect("client B must have received at least one render");
+    assert_eq!(
+        last_a.commands, last_b.commands,
+        "two attached clients must converge on identical content"
     );
 
     cmd_tx.send(SessionCommand::Shutdown).unwrap();

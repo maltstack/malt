@@ -148,8 +148,6 @@ pub struct SessionSpawn {
     pub worker_thread: JoinHandle<()>,
 }
 
-const FINALIZATION_SLICE_BYTES: usize = 128 * 1024;
-
 /// Bound on the session's control channel (`SessionCommand`, all variants).
 ///
 /// Sized generously above ordinary control traffic so it is never the
@@ -214,15 +212,23 @@ fn floor_char_boundary(s: &str, index: usize) -> usize {
     boundary
 }
 
+/// A completed command awaiting commit.
+///
+/// No longer stages a compat-grid feed across multiple actor turns: a
+/// top-level command's unredirected output already reached the live grid
+/// incrementally as `SessionCommand::OutputChunk` arrived during execution
+/// (research R7, US2). Re-feeding `output.output`/`output.stderr` here would
+/// render the same content a second time. What remains to commit is cheap
+/// (snapshot swap, history, lifecycle event, reply) and always finishes in
+/// the same actor turn `begin_finalization` starts it -- there was never a
+/// reason to spread that part across turns; only the old synchronous grid
+/// feed was.
 struct Finalization {
     sequence: u64,
     output: CommandOutput,
     snapshot: EnvSnapshot,
     reply: mpsc::Sender<Result<CommandOutput, DaemonError>>,
     finalized: mpsc::Sender<()>,
-    staged_compat: Option<CompatTranslator>,
-    stdout_offset: usize,
-    stderr_offset: usize,
 }
 
 /// Something the session pushes to one attached client.
@@ -239,6 +245,22 @@ pub enum ClientMessage {
     /// the two involved: a client that believes it can type when it cannot
     /// types into a void (FR-019).
     AuthorityChanged { holder: Option<u64> },
+    /// A piece of a running command's output, as it was produced.
+    ///
+    /// A rendering client does not need this -- the same bytes already
+    /// reached it via `Render`, fed through the compat grid. It exists for a
+    /// client that wants the byte stream itself; one that ignores it still
+    /// renders correctly (contracts/output-chunk-vnp.md). Carried on this
+    /// same ordered stream, not a second channel, for the same reason
+    /// `AuthorityChanged` is: a chunk arriving after the frame that already
+    /// renders it would be incoherent.
+    OutputChunk {
+        sequence: u64,
+        command_id: u32,
+        stream: malt_protocol::shell::OutputStream,
+        data: Vec<u8>,
+        produced_at: u64,
+    },
 }
 
 /// Who sent a piece of input.
@@ -854,12 +876,34 @@ impl SessionExecutor {
                     data,
                     produced_at,
                 }) => {
-                    self.publish_output(output_log::OutputEventKind::Chunk {
+                    // Fed to the live grid as it arrives -- this is what
+                    // makes an attached client's view update during a
+                    // command instead of only at its end (US2, research
+                    // R7). `advance_finalization` no longer re-feeds this
+                    // same content at completion; see its doc.
+                    if let Some(compat) = &mut self.compat {
+                        compat.feed(&data);
+                    }
+                    let sequence = self.publish_output(output_log::OutputEventKind::Chunk {
                         command_id,
                         stream,
-                        data,
+                        data: data.clone(),
                         produced_at,
                     });
+                    self.dispatch_render();
+                    for tx in self.render_pushers.values() {
+                        // Non-blocking, consistent with `Render`: a client
+                        // too slow to keep up is already handled by the
+                        // renderer's lag/shed logic, and this adds no
+                        // second mechanism (contracts/output-chunk-vnp.md).
+                        let _ = tx.try_send(ClientMessage::OutputChunk {
+                            sequence,
+                            command_id,
+                            stream,
+                            data: data.clone(),
+                            produced_at,
+                        });
+                    }
                 }
                 Ok(SessionCommand::PtyOutput { data, .. }) => {
                     if let Some(compat) = &mut self.compat {
@@ -1156,7 +1200,11 @@ impl SessionExecutor {
     /// Record an output chunk (or, in principle, a gap -- callers never
     /// pass one) and fan it out to every live output subscriber. Mirrors
     /// `publish_lifecycle` exactly; see that method's doc.
-    fn publish_output(&mut self, kind: output_log::OutputEventKind) {
+    /// Returns the assigned sequence, so a caller that also needs to notify
+    /// attached VNP clients (`ClientMessage::OutputChunk`) uses the same
+    /// number the output stream resumes from, rather than a second,
+    /// possibly-disagreeing counter.
+    fn publish_output(&mut self, kind: output_log::OutputEventKind) -> u64 {
         let event = self.output_log.publish(kind);
         let latest = event.sequence;
         let mut dropped: Vec<u64> = Vec::new();
@@ -1176,6 +1224,7 @@ impl SessionExecutor {
                 info!(session = ?self.session.id(), subscriber = id, "output subscriber removed");
             }
         }
+        latest
     }
 
     /// Register an output subscriber, replaying from `resume_from` if given.
@@ -1333,16 +1382,12 @@ impl SessionExecutor {
                     let _ = completion.finalized.send(());
                     return;
                 }
-                let staged_compat = self.compat.as_ref().map(CompatTranslator::staging_clone);
                 self.finalization = Some(Finalization {
                     sequence: worker_output.sequence,
                     output: worker_output.result,
                     snapshot: worker_output.env_snapshot,
                     reply: completion.reply,
                     finalized: completion.finalized,
-                    staged_compat,
-                    stdout_offset: 0,
-                    stderr_offset: 0,
                 });
             }
             Err(error) => {
@@ -1353,41 +1398,19 @@ impl SessionExecutor {
         }
     }
 
-    /// Advance a completed result by at most 128 KiB. While this work is in
-    /// progress, the live compat grid and snapshot remain unchanged, so every
-    /// control request observes one previous finalized boundary rather than a
-    /// partial command. `run` services one mailbox event between turns.
+    /// Commit a completed result: swap in the shell snapshot, finalize the
+    /// history block, publish the lifecycle event, and reply.
+    ///
+    /// Used to also re-feed `output.output`/`output.stderr` into the compat
+    /// grid here, spread across turns to keep the actor responsive during a
+    /// large synchronous feed. That feed is no longer needed: the same
+    /// bytes already reached the live grid incrementally as
+    /// `SessionCommand::OutputChunk` arrived during execution (US2). Doing
+    /// it again here would render the command's output twice.
     fn advance_finalization(&mut self) {
-        let mut complete = false;
-        if let Some(finalization) = &mut self.finalization {
-            let mut remaining = FINALIZATION_SLICE_BYTES;
-            if let Some(compat) = &mut finalization.staged_compat {
-                let stdout = finalization.output.output.as_bytes();
-                let stdout_end = (finalization.stdout_offset + remaining).min(stdout.len());
-                if stdout_end > finalization.stdout_offset {
-                    compat.feed(&stdout[finalization.stdout_offset..stdout_end]);
-                    remaining -= stdout_end - finalization.stdout_offset;
-                    finalization.stdout_offset = stdout_end;
-                }
-                let stderr = finalization.output.stderr.as_bytes();
-                let stderr_end = (finalization.stderr_offset + remaining).min(stderr.len());
-                if stderr_end > finalization.stderr_offset {
-                    compat.feed(&stderr[finalization.stderr_offset..stderr_end]);
-                    finalization.stderr_offset = stderr_end;
-                }
-            }
-            complete = finalization.stdout_offset == finalization.output.output.len()
-                && finalization.stderr_offset == finalization.output.stderr.len();
-        }
-        if !complete {
-            return;
-        }
         let Some(finalization) = self.finalization.take() else {
             return;
         };
-        if finalization.staged_compat.is_some() {
-            self.compat = finalization.staged_compat;
-        }
         if !finalization.output.output.is_empty() {
             self.bus.publish(BusMessage {
                 domain: 1,

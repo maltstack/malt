@@ -8,9 +8,9 @@ use crate::executor::coordinator::Coordinator;
 use crate::executor::session_thread::SessionCommand;
 use malt_gateway::auth::TokenStore;
 use malt_protocol::codec::{
-    make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, MSG_ATTACH_SESSION,
+    make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, DOMAIN_SHELL, MSG_ATTACH_SESSION,
     MSG_DETACH_SESSION, MSG_FRAME_ACK, MSG_INITIAL_STATE, MSG_INPUT_AUTHORITY_CHANGED,
-    MSG_INPUT_CLAIM, MSG_KEY_EVENT, MSG_RENDER_BATCH, MSG_RESIZE,
+    MSG_INPUT_CLAIM, MSG_KEY_EVENT, MSG_OUTPUT_CHUNK, MSG_RENDER_BATCH, MSG_RESIZE,
 };
 use malt_protocol::common::SessionId;
 use malt_protocol::envelope::{decode_envelope, encode_message};
@@ -317,6 +317,37 @@ fn handle_client(
                     ) {
                         warn!(peer = %peer, error = %e,
                               "VNP: failed to send InputAuthorityChanged; disconnecting");
+                        cleanup(&coordinator, session_id.clone(), client_id, &peer);
+                        return;
+                    }
+                }
+                Ok(crate::executor::session_thread::ClientMessage::OutputChunk {
+                    sequence,
+                    command_id,
+                    stream,
+                    data,
+                    produced_at,
+                }) => {
+                    // `produced_at` has no VNP wire field (contracts/
+                    // output-chunk-vnp.md) -- the HTTP/SSE surface carries
+                    // it explicitly, but a VNP client already gets ordering
+                    // and freshness from `sequence` and frame delivery.
+                    let _ = produced_at;
+                    let chunk = malt_protocol::shell::OutputChunk {
+                        data,
+                        command_tag: Some(command_id.to_string()),
+                        sequence,
+                        stream,
+                        _unknown: Vec::new(),
+                    };
+                    if let Err(e) = send_vnp_msg(
+                        &mut frame_writer,
+                        DOMAIN_SHELL,
+                        MSG_OUTPUT_CHUNK,
+                        session_id_raw,
+                        &chunk,
+                    ) {
+                        warn!(peer = %peer, error = %e, "VNP: failed to send OutputChunk; disconnecting");
                         cleanup(&coordinator, session_id.clone(), client_id, &peer);
                         return;
                     }
