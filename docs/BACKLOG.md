@@ -1074,3 +1074,30 @@ Fix requires distinguishing unset from empty (`env.get` returning
 the `trim_matches` at :3651 and the split at :3653 when IFS is set-but-empty.
 Both call sites at :3691 and :3700 in `split_on_ifs` need the same treatment.
 Guard with a Smoosh run — field splitting is heavily covered there.
+
+### `malt-daemon` gateway_backend concurrency tests are genuinely flaky (P1)
+
+Found 2026-07-25. `crates/malt-daemon/tests/gateway_backend.rs` fails
+intermittently under its default parallel run — measured 2 clean out of 5
+consecutive runs, with 1–3 failures in the others. Names seen failing:
+
+- `capacity_one_keeps_one_active_and_one_pending_in_fifo_order`
+- `concurrent_exec_and_send_share_the_same_session_fifo`
+
+**Not the known shared-process-state flake class** documented in AGENTS.md
+(CWD/env-var races in `mash`), and not the same as
+`destroy_closes_intake_promptly_but_finalizes_active_work_once`, which also
+flakes but passes 3/3 in isolation.
+
+**Bisected to before the raw-input work**, so it arrived with feature 002's
+executor split, not with 005. Method: `git worktree add` at `157def8` with a
+separate `CARGO_TARGET_DIR`, then the same five-run loop — the baseline
+reproduced the identical 2-clean-of-5 pattern. Worth repeating that way
+rather than reasoning about it, since both features touch the same FIFO.
+
+This matters more than a typical flake: these tests cover the pool capacity
+and FIFO-ordering guarantees that 002 introduced to stop a long command from
+blocking a session. A test that reports those guarantees intermittently is
+not evidence they hold. Treat as a correctness question about
+`ExecutionIngress`/pool handoff, not as a test-timing nuisance to paper over
+with sleeps or retries.
