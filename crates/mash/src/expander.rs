@@ -314,9 +314,9 @@ fn expand_dollar(
             } else {
                 // $(cmd) — command substitution
                 let cmd = collect_until_close_paren(chars);
-                match crate::executor::capture_command(&cmd, env) {
-                    Ok(output) => result.push_str(&output),
-                    Err(e) => return Err(e),
+                {
+                    let output = crate::executor::capture_command(&cmd, env)?;
+                    result.push_str(&output)
                 }
             }
         }
@@ -485,7 +485,7 @@ fn expand_brace_param(
         }
         let indirect_name = env.get_str(name).to_string();
         if !indirect_name.is_empty() {
-            result.push_str(&env.get_str(&indirect_name).to_string());
+            result.push_str(env.get_str(&indirect_name));
         }
         return Ok(());
     }
@@ -493,7 +493,7 @@ fn expand_brace_param(
     // ${#VAR} — string length or array length
     if let Some(name) = expr.strip_prefix('#') {
         if name.is_empty() {
-            result.push_str(&env.get_str("#").to_string());
+            result.push_str(env.get_str("#"));
             return Ok(());
         }
         if name.ends_with("[@]") || name.ends_with("[*]") {
@@ -533,12 +533,12 @@ fn expand_brace_param(
         if name == "-" {
             result.push_str(&env.options().flags_string());
         } else if name == "$" {
-            result.push_str(&env.get_str("$").to_string());
+            result.push_str(env.get_str("$"));
         } else {
             if env.options().nounset && !env.is_set(&name) && !"?!$#@*-0".contains(name.as_str()) {
                 return Err(ExpandError::UndefinedVar { name });
             }
-            result.push_str(&env.get_str(&name).to_string());
+            result.push_str(env.get_str(&name));
         }
         return Ok(());
     }
@@ -731,7 +731,7 @@ fn expand_brace_param(
                     reason: format!("invalid length: {}", l),
                 })?;
                 if length < 0 {
-                    let end_pos = (char_len as i64 + length).max(0) as usize;
+                    let end_pos = (char_len + length).max(0) as usize;
                     if end_pos <= start {
                         start
                     } else {
@@ -817,25 +817,22 @@ fn expand_brace_param(
     // ${VAR^[pattern]} — uppercase first
     if let Some(pat) = rest.strip_prefix('^') {
         let mut val_chars = val.chars();
-        match val_chars.next() {
-            Some(c) => {
-                let matches = if pat.is_empty() {
-                    true
-                } else {
-                    let expanded_pat = expand_string_inner(pat, env, false, false)?;
-                    shell_pattern_match(&c.to_string(), &expanded_pat)
-                };
-                let upper = if matches {
-                    c.to_uppercase().next().unwrap_or(c)
-                } else {
-                    c
-                };
-                result.push(upper);
-                for ch in val_chars {
-                    result.push(ch);
-                }
+        if let Some(c) = val_chars.next() {
+            let matches = if pat.is_empty() {
+                true
+            } else {
+                let expanded_pat = expand_string_inner(pat, env, false, false)?;
+                shell_pattern_match(&c.to_string(), &expanded_pat)
+            };
+            let upper = if matches {
+                c.to_uppercase().next().unwrap_or(c)
+            } else {
+                c
+            };
+            result.push(upper);
+            for ch in val_chars {
+                result.push(ch);
             }
-            None => {}
         }
         return Ok(());
     }
@@ -862,25 +859,22 @@ fn expand_brace_param(
     // ${VAR,[pattern]} — lowercase first
     if let Some(pat) = rest.strip_prefix(',') {
         let mut val_chars = val.chars();
-        match val_chars.next() {
-            Some(c) => {
-                let matches = if pat.is_empty() {
-                    true
-                } else {
-                    let expanded_pat = expand_string_inner(pat, env, false, false)?;
-                    shell_pattern_match(&c.to_string(), &expanded_pat)
-                };
-                let lower = if matches {
-                    c.to_lowercase().next().unwrap_or(c)
-                } else {
-                    c
-                };
-                result.push(lower);
-                for ch in val_chars {
-                    result.push(ch);
-                }
+        if let Some(c) = val_chars.next() {
+            let matches = if pat.is_empty() {
+                true
+            } else {
+                let expanded_pat = expand_string_inner(pat, env, false, false)?;
+                shell_pattern_match(&c.to_string(), &expanded_pat)
+            };
+            let lower = if matches {
+                c.to_lowercase().next().unwrap_or(c)
+            } else {
+                c
+            };
+            result.push(lower);
+            for ch in val_chars {
+                result.push(ch);
             }
-            None => {}
         }
         return Ok(());
     }
@@ -1428,9 +1422,9 @@ fn expand_backtick(
             cmd.push(c);
         }
     }
-    match crate::executor::capture_command(&cmd, env) {
-        Ok(output) => result.push_str(&output),
-        Err(e) => return Err(e),
+    {
+        let output = crate::executor::capture_command(&cmd, env)?;
+        result.push_str(&output)
     }
     Ok(())
 }

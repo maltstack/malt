@@ -144,7 +144,6 @@ where
     F: FnMut(&StreamEvent) -> ControlFlow,
 {
     let mut last_seen = resume_from;
-    #[allow(unused_assignments)]
     let mut backoff = BASE_BACKOFF_MS;
 
     loop {
@@ -161,7 +160,6 @@ where
             anyhow::bail!("event stream returned no body");
         };
 
-        backoff = BASE_BACKOFF_MS;
         let mut parser = FrameParser::new();
         let mut reader = BufReader::new(body);
         let mut line = String::new();
@@ -172,6 +170,11 @@ where
                 Ok(0) => break, // server closed the stream
                 Ok(_) => {
                     if let Some(event) = parser.push_line(&line) {
+                        // Evidence the connection actually works. Resetting on
+                        // connect instead would mean a server that accepts and
+                        // immediately drops the stream gets retried at the base
+                        // delay forever, with the doubling never accumulating.
+                        backoff = BASE_BACKOFF_MS;
                         last_seen = Some(event.sequence);
                         if on_event(&event) == ControlFlow::Stop {
                             return Ok(());

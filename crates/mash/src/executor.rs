@@ -4,6 +4,21 @@
 //! env assignments. Pipelines, redirects, control flow, and builtins are
 //! added in subsequent tasks.
 
+// Scoped lint policy for this file.
+//
+// `if_same_then_else`: several branches here perform the same action for
+// semantically distinct reasons -- two different POSIX loop-control
+// conditions, or the builtin/keyword/function cases of `type`. Collapsing
+// them would be shorter and less honest about which rule applied, and would
+// make a future divergence (real `type` distinguishes its categories) harder
+// to add back.
+//
+// `too_many_arguments`: the executor entry points thread genuinely distinct
+// pieces of shell state; bundling them purely to satisfy a count would add
+// indirection without clarifying any call site.
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::too_many_arguments)]
+
 use std::io::Read as IoRead;
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
@@ -642,8 +657,8 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
         Command::Coproc { name, cmd: inner } => {
             let _ = name;
             // Coproc requires bidirectional pipe management. Stub.
-            let result = execute(inner, source, env);
-            result
+
+            execute(inner, source, env)
         }
 
         Command::Time {
@@ -1828,7 +1843,7 @@ fn try_execute_builtin(
                 None
             }
         }
-        "shopt" => Some(builtin_shopt(&argv, env)),
+        "shopt" => Some(builtin_shopt(argv, env)),
         "times" => {
             // Print accumulated CPU times for shell and children.
             match malt_platform::resource::get_rusage() {
@@ -2211,7 +2226,7 @@ fn try_execute_builtin(
         }
         "unset" => {
             let mut unset_func = false;
-            let mut names = &argv[..];
+            let mut names = argv;
             if let Some(first) = argv.first() {
                 if first == "-f" {
                     unset_func = true;
@@ -2567,23 +2582,20 @@ fn test_eval_primary(args: &[String], pos: &mut usize, end: usize) -> Result<boo
     }
 
     // Look ahead for binary operators
-    if *pos + 2 <= end {
-        if *pos + 1 < end {
-            let maybe_op = args[*pos + 1].as_str();
-            match maybe_op {
-                "=" | "!=" | "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" | "-ef" | "-nt"
-                | "-ot" => {
-                    let left = &args[*pos];
-                    *pos += 2; // skip left and operator
-                    if *pos >= end {
-                        return Err(format!("expected operand after `{maybe_op}'"));
-                    }
-                    let right = &args[*pos];
-                    *pos += 1;
-                    return test_binary(left, maybe_op, right);
+    if *pos + 2 <= end && *pos + 1 < end {
+        let maybe_op = args[*pos + 1].as_str();
+        match maybe_op {
+            "=" | "!=" | "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" | "-ef" | "-nt" | "-ot" => {
+                let left = &args[*pos];
+                *pos += 2; // skip left and operator
+                if *pos >= end {
+                    return Err(format!("expected operand after `{maybe_op}'"));
                 }
-                _ => {}
+                let right = &args[*pos];
+                *pos += 1;
+                return test_binary(left, maybe_op, right);
             }
+            _ => {}
         }
     }
 
@@ -3550,10 +3562,7 @@ fn builtin_command(
                 if let Some(mut err) = child.take_stderr() {
                     let _ = err.read_to_end(&mut stderr_bytes);
                 }
-                let exit_code = match wait_for_child_exit_code(&mut child, env) {
-                    Ok(code) => code,
-                    Err(_) => 1,
-                };
+                let exit_code = wait_for_child_exit_code(&mut child, env).unwrap_or(1);
                 ExecResult {
                     exit_code,
                     stdout: stdout_bytes,
@@ -4184,13 +4193,11 @@ fn builtin_umask(argv: &[String]) -> ExecResult {
 
     // Validate the octal number but don't actually set (stub).
     if let Some(val_str) = argv.last() {
-        if val_str != "-S" {
-            if u32::from_str_radix(val_str, 8).is_err() {
-                return ExecResult::failure(
-                    1,
-                    format!("mash: umask: {val_str}: invalid octal number\n"),
-                );
-            }
+        if val_str != "-S" && u32::from_str_radix(val_str, 8).is_err() {
+            return ExecResult::failure(
+                1,
+                format!("mash: umask: {val_str}: invalid octal number\n"),
+            );
         }
     }
 
@@ -5511,7 +5518,6 @@ fn open_append_redirect_file(target: &str, env: &Env) -> std::io::Result<std::fs
     }
 
     std::fs::OpenOptions::new()
-        .write(true)
         .create(true)
         .append(true)
         .open(path)

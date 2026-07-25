@@ -83,12 +83,6 @@ fn to_event_dto(event: LifecycleEvent) -> LifecycleEventDto {
                 .to_string(),
             );
         }
-        // LifecycleEventKind is #[non_exhaustive]; a future variant this
-        // build does not know about is skipped rather than crashing the
-        // stream, and says so.
-        _ => {
-            dto.kind = "unknown".to_string();
-        }
     }
     dto
 }

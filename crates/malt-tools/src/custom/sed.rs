@@ -216,7 +216,7 @@ fn apply_script(line: &str, script: &str) -> Result<String, String> {
     } else if script == "d" {
         // Delete line
         Ok(String::new())
-    } else if script == "p" || script == "p" {
+    } else if script == "p" {
         // Print line
         Ok(line.to_string())
     } else {
@@ -265,7 +265,7 @@ fn convert_sed_pattern_to_regex(pattern: &str) -> String {
         } else if c == '[' {
             // Start of character class - copy until ]
             result.push('[');
-            while let Some(ch) = chars.next() {
+            for ch in chars.by_ref() {
                 result.push(ch);
                 if ch == ']' {
                     break;

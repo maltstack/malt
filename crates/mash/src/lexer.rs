@@ -1121,42 +1121,38 @@ impl<'a> Iterator for Lexer<'a> {
                     }
 
                     // `[` at word start: check for `[[`
-                    if ch == '[' {
-                        if self.peek_char() == Some('[') {
-                            let standalone = match self.input[pos + 2..].chars().next() {
-                                None => true,
-                                Some(next) => is_word_break(next),
-                            };
-                            if standalone {
-                                self.next_char();
-                                let span = self.make_span(pos, pos + 2);
-                                return Some(Ok(Spanned {
-                                    node: Token::LBracketBracket,
-                                    span,
-                                }));
-                            }
+                    if ch == '[' && self.peek_char() == Some('[') {
+                        let standalone = match self.input[pos + 2..].chars().next() {
+                            None => true,
+                            Some(next) => is_word_break(next),
+                        };
+                        if standalone {
+                            self.next_char();
+                            let span = self.make_span(pos, pos + 2);
+                            return Some(Ok(Spanned {
+                                node: Token::LBracketBracket,
+                                span,
+                            }));
                         }
-                        // Otherwise `[` starts a word -- fall through to word reading.
                     }
+                    // Otherwise `[` starts a word -- fall through to word reading.
 
                     // `]` at word start: check for `]]`
-                    if ch == ']' {
-                        if self.peek_char() == Some(']') {
-                            let standalone = match self.input[pos + 2..].chars().next() {
-                                None => true,
-                                Some(next) => is_word_break(next),
-                            };
-                            if standalone {
-                                self.next_char();
-                                let span = self.make_span(pos, pos + 2);
-                                return Some(Ok(Spanned {
-                                    node: Token::RBracketBracket,
-                                    span,
-                                }));
-                            }
+                    if ch == ']' && self.peek_char() == Some(']') {
+                        let standalone = match self.input[pos + 2..].chars().next() {
+                            None => true,
+                            Some(next) => is_word_break(next),
+                        };
+                        if standalone {
+                            self.next_char();
+                            let span = self.make_span(pos, pos + 2);
+                            return Some(Ok(Spanned {
+                                node: Token::RBracketBracket,
+                                span,
+                            }));
                         }
-                        // Bare `]` is a word.
                     }
+                    // Bare `]` is a word.
 
                     // Read the rest of the word.
                     let word_span = match self.read_word(pos, ch) {

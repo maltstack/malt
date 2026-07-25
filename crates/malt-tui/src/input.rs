@@ -2,7 +2,7 @@
 
 use crossterm::event as ct;
 use malt_protocol::common::KeyModifiers as VnpModifiers;
-use malt_protocol::input::{KeyEvent, KeyValue, NamedKey, Resize};
+use malt_protocol::input::{KeyEvent, KeyValue, NamedKey};
 
 /// Convert a crossterm key event to a VNP KeyEvent.
 /// Returns `None` for key codes that have no VNP mapping.
@@ -14,15 +14,6 @@ pub fn convert_key_event(event: &ct::KeyEvent) -> Option<KeyEvent> {
         modifiers,
         _unknown: Vec::new(),
     })
-}
-
-/// Convert a terminal resize into a VNP Resize message.
-pub fn convert_resize(cols: u16, rows: u16) -> Resize {
-    Resize {
-        cols,
-        rows,
-        _unknown: Vec::new(),
-    }
 }
 
 fn convert_key_code(code: ct::KeyCode) -> Option<KeyValue> {

@@ -156,7 +156,7 @@ fn open_dev_zero(mode: DevOpenMode) -> io::Result<File> {
                         }
                     }
                 })
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
 
             Ok(reader)
         }
@@ -211,7 +211,7 @@ fn open_dev_urandom_windows() -> io::Result<File> {
                 }
             }
         })
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
 
     Ok(reader)
 }

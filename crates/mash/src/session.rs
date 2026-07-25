@@ -38,7 +38,7 @@ pub enum SessionResponse {
 // Builtins queue commands here during execution; the session executor
 // drains the queue after each command and processes them.
 thread_local! {
-    static PENDING_COMMANDS: RefCell<Vec<SessionCommand>> = RefCell::new(Vec::new());
+    static PENDING_COMMANDS: RefCell<Vec<SessionCommand>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Queue a session command from a builtin.

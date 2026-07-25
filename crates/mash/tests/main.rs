@@ -1,3 +1,6 @@
+// Some helpers here are used only by platform- or feature-gated tests, so
+// they read as dead on any single configuration.
+#![allow(dead_code)]
 use std::process::Command;
 use std::process::Stdio;
 use std::time::{Duration, Instant};

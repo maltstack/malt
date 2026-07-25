@@ -58,7 +58,7 @@ fn main() {
                 }
                 None => {
                     if !arg.starts_with('-') || arg == "-" {
-                        let positional = if i + 1 <= args.len() {
+                        let positional = if i < args.len() {
                             args[i + 1..].to_vec()
                         } else {
                             Vec::new()

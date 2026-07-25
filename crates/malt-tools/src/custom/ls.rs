@@ -96,14 +96,12 @@ pub fn ls(args: &[String], _stdin: &[u8]) -> BuiltinResult {
             };
 
             let mut names: Vec<String> = Vec::new();
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if !show_all && name.starts_with('.') {
-                        continue;
-                    }
-                    names.push(name);
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !show_all && name.starts_with('.') {
+                    continue;
                 }
+                names.push(name);
             }
             names.sort_unstable();
 

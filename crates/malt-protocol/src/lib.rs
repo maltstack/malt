@@ -23,7 +23,25 @@ pub mod codec;
 //   OUT_DIR/mod.rs  ->  pub mod malt;
 //   OUT_DIR/malt/mod.rs  ->  pub mod common; pub mod shell; ...
 //   OUT_DIR/malt/common.rs  ->  actual type definitions
-include!(concat!(env!("OUT_DIR"), "/mod.rs"));
+//
+// Lints are scoped off the generated tree rather than satisfied inside it.
+// These files are rewritten by vexilc on every build, so any fix here would
+// be erased, and what the linter objects to is codegen style -- a redundant
+// borrow, a same-type cast, an unused glob import -- not defects. The point
+// of a deny-warnings gate is to hold *hand-written* code to a standard;
+// silencing it crate-wide would defeat that, so the exemption covers the
+// generated module and nothing else. The codegen warts themselves are
+// recorded for upstream report in `docs/BACKLOG.md`.
+//
+// `#[allow]` cannot attach to an `include!` invocation, so the include lives
+// inside a wrapper module that carries the attribute. `malt` is re-exported
+// at the crate root immediately below, which is what keeps the generated
+// code's own `crate::malt::*` cross-module paths resolving.
+#[allow(warnings)]
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/mod.rs"));
+}
+pub use generated::malt;
 
 // Re-export domain modules at crate root for ergonomic access:
 //   malt_protocol::common::PaneId instead of malt_protocol::malt::common::PaneId

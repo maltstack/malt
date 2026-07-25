@@ -40,6 +40,10 @@ pub struct FdRegistry {
 
 /// Backing resource for a virtual file descriptor.
 #[derive(Debug)]
+// NamedPipe/PipeEnd model descriptor kinds the VFS is expected to grow
+// into. Retained deliberately so the enum describes the domain rather
+// than only what is wired today.
+#[allow(dead_code)]
 enum FdBacking {
     /// Unix: actual file descriptor (duplicated for safety)
     #[cfg(unix)]
@@ -234,10 +238,10 @@ impl FdRegistry {
             Some(FdBacking::PipeEnd { .. }) => {
                 // This shouldn't happen in normal usage - pipe ends
                 // should have been converted to concrete backings
-                Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("FD {} is an unresolved pipe end", fd_num),
-                ))
+                Err(io::Error::other(format!(
+                    "FD {} is an unresolved pipe end",
+                    fd_num
+                )))
             }
 
             None => Err(io::Error::new(
@@ -364,7 +368,7 @@ impl FdRegistry {
     #[cfg(windows)]
     fn create_pipe_backing(&mut self, _file: std::fs::File, fd: u32) -> Option<FdBacking> {
         // Create a named pipe for this FD
-        let pipe_path = format!("\\\\.\\pipe\\malt-fd-{}-{}", self.pid, fd);
+        let _pipe_path = format!("\\\\.\\pipe\\malt-fd-{}-{}", self.pid, fd);
 
         // For now, use temp file backing as it's more reliable
         // Named pipes require async I/O on Windows which is complex
@@ -417,7 +421,7 @@ impl FdRegistry {
         Some(FdBacking::TempFile { path: temp_path })
     }
 
-    fn is_pipe(file: &std::fs::File) -> bool {
+    fn is_pipe(_file: &std::fs::File) -> bool {
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;

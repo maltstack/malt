@@ -5,7 +5,25 @@ pub mod paths;
 pub use decode::VxDecoder;
 
 // Generated config types from vexilc (or stubs when vexilc is unavailable).
-include!(concat!(env!("OUT_DIR"), "/mod.rs"));
+//
+// Lints are scoped off the generated tree rather than satisfied inside it.
+// These files are rewritten by vexilc on every build, so any fix here would
+// be erased, and what the linter objects to is codegen style -- a redundant
+// borrow, a same-type cast, an unused glob import -- not defects. The point
+// of a deny-warnings gate is to hold *hand-written* code to a standard;
+// silencing it crate-wide would defeat that, so the exemption covers the
+// generated module and nothing else. The codegen warts themselves are
+// recorded for upstream report in `docs/BACKLOG.md`.
+//
+// `#[allow]` cannot attach to an `include!` invocation, so the include lives
+// inside a wrapper module that carries the attribute. `malt` is re-exported
+// at the crate root immediately below, which is what keeps the generated
+// code's own `crate::malt::*` cross-module paths resolving.
+#[allow(warnings)]
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/mod.rs"));
+}
+pub use generated::malt;
 
 pub use malt::config::daemon::DaemonConfig;
 pub use malt::config::user::UserConfig;

@@ -46,11 +46,11 @@ pub fn preparse_expanded(input: &str, aliases: &HashMap<String, String>) -> Stri
 }
 
 fn preparse_expanded_pass(input: &str, aliases: &HashMap<String, String>) -> String {
-    let mut lexer = Lexer::new(input);
+    let lexer = Lexer::new(input);
     let mut result = String::with_capacity(input.len());
     let mut last_end = 0usize;
     let mut in_command_position = true;
-    while let Some(tok) = lexer.next() {
+    for tok in lexer {
         let tok = match tok {
             Ok(t) => t,
             Err(_) => break,
@@ -1175,10 +1175,10 @@ impl<'a> Parser<'a> {
                     });
                     // For heredoc redirects, the body follows after a newline.
                     // Skip the newline so the loop continues to pick up HereDocBody.
-                    if matches!(kind, RedirectKind::HereDoc | RedirectKind::HereDocStrip) {
-                        if matches!(self.peek().node, Token::Newline) {
-                            self.advance()?;
-                        }
+                    if matches!(kind, RedirectKind::HereDoc | RedirectKind::HereDocStrip)
+                        && matches!(self.peek().node, Token::Newline)
+                    {
+                        self.advance()?;
                     }
                 }
                 Token::HereDocBody { body, quoted } => {

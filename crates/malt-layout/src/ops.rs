@@ -34,7 +34,7 @@ fn split_node(
     match node {
         LayoutNode::Leaf { pane_id } if pane_id == target => LayoutNode::Split {
             split_id: new_split.clone(),
-            direction: dir.clone(),
+            direction: *dir,
             sizes: vec![SplitSize::Ratio { value: 0.5 }, size.clone()],
             children: vec![
                 LayoutNode::Leaf {
@@ -68,7 +68,7 @@ fn split_node(
             );
             LayoutNode::Split {
                 split_id: split_id.clone(),
-                direction: direction.clone(),
+                direction: *direction,
                 sizes: new_sizes,
                 children: new_children,
             }
@@ -86,7 +86,7 @@ fn split_node(
                 .collect();
             LayoutNode::Split {
                 split_id: split_id.clone(),
-                direction: direction.clone(),
+                direction: *direction,
                 sizes: sizes.clone(),
                 children: new_children,
             }
@@ -156,7 +156,7 @@ fn close_in_node(node: &LayoutNode, target: &PaneId) -> LayoutNode {
                 } else {
                     LayoutNode::Split {
                         split_id: split_id.clone(),
-                        direction: direction.clone(),
+                        direction: *direction,
                         sizes: new_sizes,
                         children: new_children,
                     }
@@ -175,7 +175,7 @@ fn close_in_node(node: &LayoutNode, target: &PaneId) -> LayoutNode {
                     .collect();
                 LayoutNode::Split {
                     split_id: split_id.clone(),
-                    direction: direction.clone(),
+                    direction: *direction,
                     sizes: sizes.clone(),
                     children: new_children,
                 }
@@ -260,7 +260,7 @@ fn swap_in_node(node: &LayoutNode, a: &PaneId, b: &PaneId) -> LayoutNode {
             children,
         } => LayoutNode::Split {
             split_id: split_id.clone(),
-            direction: direction.clone(),
+            direction: *direction,
             sizes: sizes.clone(),
             children: children.iter().map(|c| swap_in_node(c, a, b)).collect(),
         },
@@ -334,7 +334,7 @@ fn resize_in_node(
                 new_sizes[idx] = new_size.clone();
                 Some(LayoutNode::Split {
                     split_id: split_id.clone(),
-                    direction: direction.clone(),
+                    direction: *direction,
                     sizes: new_sizes,
                     children: children.clone(),
                 })
@@ -354,7 +354,7 @@ fn resize_in_node(
                 if found {
                     Some(LayoutNode::Split {
                         split_id: split_id.clone(),
-                        direction: direction.clone(),
+                        direction: *direction,
                         sizes: sizes.clone(),
                         children: new_children,
                     })

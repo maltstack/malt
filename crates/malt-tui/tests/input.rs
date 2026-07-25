@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use malt_protocol::common::KeyModifiers as VnpModifiers;
 use malt_protocol::input::{KeyValue, NamedKey};
-use malt_tui::input::{convert_key_event, convert_resize};
+use malt_tui::input::convert_key_event;
 
 fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
     KeyEvent::new(code, modifiers)
@@ -39,11 +39,4 @@ fn modifier_keys_mapped() {
     assert!(vnp.modifiers.contains(VnpModifiers::CTRL));
     assert!(!vnp.modifiers.contains(VnpModifiers::SHIFT));
     assert!(!vnp.modifiers.contains(VnpModifiers::ALT));
-}
-
-#[test]
-fn resize_mapped() {
-    let resize = convert_resize(120, 40);
-    assert_eq!(resize.cols, 120);
-    assert_eq!(resize.rows, 40);
 }

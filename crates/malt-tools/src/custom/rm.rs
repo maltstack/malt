@@ -45,11 +45,11 @@ pub fn rm(args: &[String], _stdin: &[u8]) -> BuiltinResult {
                         }
                     }
                 }
-                if arg.starts_with('-') && arg.len() > 1 {
-                    paths.push(arg);
-                } else {
-                    paths.push(arg);
-                }
+                // NOTE: an unrecognized `-flag` is currently treated as a
+                // path. Real `rm` rejects it as an invalid option. Preserved
+                // as-is here because changing it is a behavior change needing
+                // its own tests -- see `docs/BACKLOG.md`.
+                paths.push(arg);
             }
         }
     }

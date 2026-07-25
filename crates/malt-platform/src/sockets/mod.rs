@@ -48,8 +48,8 @@ impl Transport {
 
     /// Parse from MALT_SOCKET env var.
     pub fn from_env_string(s: &str) -> Result<Self, TransportError> {
-        if s.starts_with("tcp://") {
-            let addr: SocketAddr = s[6..]
+        if let Some(rest) = s.strip_prefix("tcp://") {
+            let addr: SocketAddr = rest
                 .parse()
                 .map_err(|e| TransportError::InvalidAddress(format!("{e}")))?;
             return Ok(Transport::Tcp(addr));

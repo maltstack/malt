@@ -296,9 +296,9 @@ fn apply_sgr(grid: &mut TerminalGrid, params: &[u16]) {
                                 grid.set_current_style(s);
                             }
                         }
-                        2 => {
+                        2
                             // True color: R;G;B
-                            if params.len() > i + 3 {
+                            if params.len() > i + 3 => {
                                 let r = params[i + 1] as u8;
                                 let g = params[i + 2] as u8;
                                 let b = params[i + 3] as u8;
@@ -307,7 +307,6 @@ fn apply_sgr(grid: &mut TerminalGrid, params: &[u16]) {
                                 s.fg = (r, g, b);
                                 grid.set_current_style(s);
                             }
-                        }
                         _ => {}
                     }
                 }
@@ -337,16 +336,14 @@ fn apply_sgr(grid: &mut TerminalGrid, params: &[u16]) {
                                 grid.set_current_style(s);
                             }
                         }
-                        2 => {
-                            if params.len() > i + 3 {
-                                let r = params[i + 1] as u8;
-                                let g = params[i + 2] as u8;
-                                let b = params[i + 3] as u8;
-                                i += 3;
-                                let mut s = grid.current_style().clone();
-                                s.bg = (r, g, b);
-                                grid.set_current_style(s);
-                            }
+                        2 if params.len() > i + 3 => {
+                            let r = params[i + 1] as u8;
+                            let g = params[i + 2] as u8;
+                            let b = params[i + 3] as u8;
+                            i += 3;
+                            let mut s = grid.current_style().clone();
+                            s.bg = (r, g, b);
+                            grid.set_current_style(s);
                         }
                         _ => {}
                     }

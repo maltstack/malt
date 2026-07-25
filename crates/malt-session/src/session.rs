@@ -76,7 +76,7 @@ impl SessionRuntime {
 
     /// Return the current lifecycle state.
     pub fn state(&self) -> SessionState {
-        self.state.clone()
+        self.state
     }
 
     /// Return the session identifier.
@@ -207,7 +207,7 @@ impl SessionRuntime {
     pub fn checkpoint(&mut self) -> Result<(), SessionError> {
         if self.state != SessionState::Active {
             return Err(SessionError::InvalidTransition {
-                from: self.state.clone(),
+                from: self.state,
                 to: SessionState::Checkpoint,
             });
         }
@@ -225,7 +225,7 @@ impl SessionRuntime {
                 Ok(())
             }
             _ => Err(SessionError::InvalidTransition {
-                from: self.state.clone(),
+                from: self.state,
                 to: SessionState::Active,
             }),
         }
@@ -279,7 +279,7 @@ impl SessionRuntime {
 
     /// Return the current input authority mode.
     pub fn input_authority(&self) -> InputAuthority {
-        self.input_authority.clone()
+        self.input_authority
     }
 
     /// Claim input authority for a client.
@@ -307,7 +307,7 @@ impl SessionRuntime {
             name: self.name.clone(),
             pane_count: self.panes.len() as u16,
             isolation: self.isolation,
-            state: self.state.clone(),
+            state: self.state,
             _unknown: Vec::new(),
         }
     }

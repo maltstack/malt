@@ -50,9 +50,8 @@ pub fn expand_prompt_format(ps1: &str, cwd: &str, _exit_code: i32) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| {
             let secs = d.as_secs();
-            let tm = chrono::DateTime::from_timestamp(secs as i64, 0)
-                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
-            tm
+
+            chrono::DateTime::from_timestamp(secs as i64, 0).unwrap_or(chrono::DateTime::UNIX_EPOCH)
         })
         .unwrap_or_else(|_| chrono::DateTime::UNIX_EPOCH);
 
@@ -127,7 +126,7 @@ pub fn expand_prompt_format(ps1: &str, cwd: &str, _exit_code: i32) -> String {
                                     result.push('~');
                                     if let Some(s) = stripped.to_str() {
                                         if !s.is_empty() {
-                                            result.push_str(&std::path::MAIN_SEPARATOR.to_string());
+                                            result.push_str(std::path::MAIN_SEPARATOR_STR);
                                             result.push_str(s);
                                         }
                                     }
@@ -434,11 +433,7 @@ pub fn compose_table(
         _unknown: Vec::new(),
     };
 
-    let row_count = if col_count > 0 {
-        cells.len() as u16 / col_count
-    } else {
-        0
-    };
+    let row_count = (cells.len() as u16).checked_div(col_count).unwrap_or(0);
 
     FrameElement::Table {
         headers,

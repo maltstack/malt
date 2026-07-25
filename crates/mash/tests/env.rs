@@ -7,7 +7,7 @@ fn empty_env_has_defaults() {
     let env = Env::empty();
     assert_eq!(env.exit_code(), 0);
     assert!(!env.is_interactive());
-    assert_eq!(env.options().errexit, false);
+    assert!(!env.options().errexit);
 }
 
 #[test]

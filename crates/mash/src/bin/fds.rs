@@ -132,6 +132,29 @@ fn env_declares_fd(fd: i32, env_name: &str, separator: char) -> bool {
         .any(|declared_fd| declared_fd == fd)
 }
 
+#[cfg(windows)]
+unsafe fn install_noop_invalid_parameter_handler() {
+    unsafe extern "C" fn noop(
+        _expression: *const u16,
+        _function: *const u16,
+        _file: *const u16,
+        _line: u32,
+        _reserved: usize,
+    ) {
+    }
+
+    unsafe extern "C" {
+        fn _set_invalid_parameter_handler(
+            handler: unsafe extern "C" fn(*const u16, *const u16, *const u16, u32, usize),
+        ) -> unsafe extern "C" fn(*const u16, *const u16, *const u16, u32, usize);
+    }
+
+    // SAFETY: installs a handler with the CRT's required signature.
+    unsafe {
+        let _ = _set_invalid_parameter_handler(noop);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,28 +229,5 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert!(!state.is_declared(3));
         assert!(!state.is_declared(5));
-    }
-}
-
-#[cfg(windows)]
-unsafe fn install_noop_invalid_parameter_handler() {
-    unsafe extern "C" fn noop(
-        _expression: *const u16,
-        _function: *const u16,
-        _file: *const u16,
-        _line: u32,
-        _reserved: usize,
-    ) {
-    }
-
-    unsafe extern "C" {
-        fn _set_invalid_parameter_handler(
-            handler: unsafe extern "C" fn(*const u16, *const u16, *const u16, u32, usize),
-        ) -> unsafe extern "C" fn(*const u16, *const u16, *const u16, u32, usize);
-    }
-
-    // SAFETY: installs a handler with the CRT's required signature.
-    unsafe {
-        let _ = _set_invalid_parameter_handler(noop);
     }
 }

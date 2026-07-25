@@ -141,7 +141,7 @@ fn handle_request(
 
         "notifications/initialized" => {
             // Notification — no response required, but return null id for consistency
-            return Value::Null;
+            Value::Null
         }
 
         "tools/list" => json!({

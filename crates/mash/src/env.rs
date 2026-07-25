@@ -241,18 +241,13 @@ impl BackgroundTask {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LoopControl {
+    #[default]
     None,
     Break(usize),
     Continue(usize),
     Return(i32),
-}
-
-impl Default for LoopControl {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone)]

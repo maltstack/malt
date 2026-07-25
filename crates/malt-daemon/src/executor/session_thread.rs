@@ -152,6 +152,13 @@ struct Finalization {
 }
 
 /// Commands sent from the coordinator to a session executor.
+///
+/// Variant sizes differ substantially: `ExecutionCompleted` carries a full
+/// shell snapshot while others carry a couple of integers. Boxing the large
+/// ones would shrink the enum at the cost of an allocation on the hot
+/// execution-completion path, for a message type that is moved once through a
+/// channel and immediately destructured. Not worth it here.
+#[allow(clippy::large_enum_variant)]
 pub enum SessionCommand {
     /// Deliver a message to the session's bus.
     Deliver(BusMessage),
@@ -411,6 +418,9 @@ impl SessionExecutor {
         Ok((spawned.control_tx, spawned.control_thread))
     }
 
+    /// As with `spawn_with_env`, each parameter is distinct construction
+    /// state rather than an accidental accumulation.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_cwd_and_capacity(
         session_id: SessionId,
         first_pane: PaneId,
@@ -453,6 +463,10 @@ impl SessionExecutor {
         )
     }
 
+    /// Every parameter here is distinct session-construction state; bundling
+    /// them into a struct purely to satisfy an argument count would add a type
+    /// that exists for the linter rather than the reader.
+    #[allow(clippy::too_many_arguments)]
     fn spawn_with_env(
         session_id: SessionId,
         first_pane: PaneId,
@@ -1100,13 +1114,13 @@ impl SessionExecutor {
         }
 
         // Trim trailing empty rows
-        while rows_json.last().map_or(false, |r| {
-            r.as_array().map_or(true, |a| {
+        while rows_json.last().is_some_and(|r| {
+            r.as_array().is_none_or(|a| {
                 a.len() == 1
                     && a[0]
                         .get("t")
                         .and_then(|t| t.as_str())
-                        .map_or(false, |s| s.trim().is_empty())
+                        .is_some_and(|s| s.trim().is_empty())
             })
         }) {
             rows_json.pop();

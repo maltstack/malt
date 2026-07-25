@@ -53,7 +53,7 @@ impl LayoutStrategy for GridStrategy {
 
         let n = panes.len();
         let cols = ceil_sqrt(n);
-        let rows = (n + cols - 1) / cols; // ceil(n / cols)
+        let rows = n.div_ceil(cols); // ceil(n / cols)
 
         let row_ratio = 1.0 / rows as f32;
 

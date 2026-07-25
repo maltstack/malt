@@ -96,6 +96,10 @@ fn resolve_node(
     }
 }
 
+// Layout resolution genuinely needs every one of these; bundling them into a
+// struct purely to satisfy the argument count would add indirection without
+// making any call site clearer.
+#[allow(clippy::too_many_arguments)]
 fn resolve_split(
     direction: &Direction,
     sizes: &[SplitSize],

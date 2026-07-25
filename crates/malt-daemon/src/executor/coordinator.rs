@@ -350,7 +350,7 @@ impl Coordinator {
 
     /// Destroy a session. Sends shutdown and joins the thread.
     pub fn destroy_session(&mut self, id: SessionId) {
-        if let Some(mut handle) = self.sessions.remove(&id.0) {
+        if let Some(handle) = self.sessions.remove(&id.0) {
             match handle.lifecycle {
                 SessionLifecycle::Active {
                     cmd_tx,

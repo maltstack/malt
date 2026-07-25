@@ -87,16 +87,12 @@ impl GroupManager {
 
     /// Return the `OnEmpty` policy for a group.
     pub fn on_session_empty(&self, group_id: GroupId) -> Option<OnEmpty> {
-        self.groups
-            .get(&group_id.0)
-            .map(|g| g.policy.on_empty.clone())
+        self.groups.get(&group_id.0).map(|g| g.policy.on_empty)
     }
 
     /// Return the `OnOom` policy for a group.
     pub fn on_oom(&self, group_id: GroupId) -> Option<OnOom> {
-        self.groups
-            .get(&group_id.0)
-            .map(|g| g.policy.on_oom.clone())
+        self.groups.get(&group_id.0).map(|g| g.policy.on_oom)
     }
 
     /// Check whether a new session can be created in the given group.

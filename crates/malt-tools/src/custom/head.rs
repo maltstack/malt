@@ -45,7 +45,7 @@ pub fn head(args: &[String], stdin: &[u8]) -> BuiltinResult {
             }
         } else if arg.starts_with("-n") {
             // -NUM syntax (e.g., -5 means 5 lines)
-            if let Ok(n) = arg[2..].parse::<isize>() {
+            if let Ok(n) = arg.strip_prefix("-n").unwrap_or(arg).parse::<isize>() {
                 if n < 0 {
                     num_lines = usize::MAX;
                 } else {
@@ -54,7 +54,11 @@ pub fn head(args: &[String], stdin: &[u8]) -> BuiltinResult {
             } else {
                 return BuiltinResult::failure(
                     1,
-                    format!("head: invalid number of lines: '{}'", &arg[2..]).into_bytes(),
+                    format!(
+                        "head: invalid number of lines: '{}'",
+                        arg.strip_prefix("-n").unwrap_or(arg)
+                    )
+                    .into_bytes(),
                 );
             }
         } else if arg.starts_with('-')
@@ -133,17 +137,14 @@ pub fn head(args: &[String], stdin: &[u8]) -> BuiltinResult {
 
 fn head_reader(input: &[u8], num_lines: usize, output: &mut Vec<u8>) {
     let reader = std::io::BufReader::new(input);
-    let mut count = 0;
-
-    for line in reader.lines() {
-        if let Ok(line) = line {
-            if count >= num_lines {
-                break;
-            }
-            output.extend_from_slice(line.as_bytes());
-            output.push(b'\n');
-            count += 1;
+    // map_while rather than flatten: on a reader that keeps returning Err,
+    // flatten spins forever instead of stopping.
+    for (count, line) in reader.lines().map_while(Result::ok).enumerate() {
+        if count >= num_lines {
+            break;
         }
+        output.extend_from_slice(line.as_bytes());
+        output.push(b'\n');
     }
 }
 

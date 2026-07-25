@@ -5,9 +5,8 @@
 //! On Windows, uses ConPTY with PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE.
 
 use super::{open_pty, Pty, PtyError, WinSize};
-use crate::process::{Child, SpawnConfig, SpawnError};
+use crate::process::{Child, SpawnError};
 use std::fs::File;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Result of spawning a process with a PTY.
@@ -103,7 +102,7 @@ fn spawn_windows(
     // terminal emulation on the input/output pipe side, and the
     // child reads/writes through its normal stdio which we pipe.
     let config = SpawnConfig::new(program)
-        .args(args.iter().map(|s| std::ffi::OsString::from(s)))
+        .args(args.iter().map(std::ffi::OsString::from))
         .cwd(cwd)
         .stdin(Io::Pipe)
         .stdout(Io::Pipe)

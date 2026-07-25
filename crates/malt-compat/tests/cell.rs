@@ -10,8 +10,10 @@ fn default_cell_is_space() {
 
 #[test]
 fn cell_with_char_and_style() {
-    let mut cell = Cell::default();
-    cell.ch = 'A';
+    let mut cell = Cell {
+        ch: 'A',
+        ..Cell::default()
+    };
     cell.style.bold = true;
     assert_eq!(cell.ch, 'A');
     assert!(cell.style.bold);

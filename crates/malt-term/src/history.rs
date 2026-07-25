@@ -133,7 +133,7 @@ impl History {
 
                 if next == '!' {
                     // !! — last command
-                    let last = self.entries.back().ok_or_else(|| HistoryError::Empty)?;
+                    let last = self.entries.back().ok_or(HistoryError::Empty)?;
                     result.push_str(&last.line);
                     i += 2;
                 } else if next == '-' || next.is_ascii_digit() {
