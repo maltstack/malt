@@ -286,6 +286,34 @@ pub struct VnpConnection {
     pending_commands: Option<Vec<RenderCommand>>,
 }
 
+/// Path of the shared API token, resolved the same way `malt-bin` and
+/// `malt-mcp` resolve it.
+///
+/// Duplicated rather than imported: `malt-tui` is a client and should not
+/// take a dependency on the Gateway crate to read a file path. This mirrors
+/// the deliberate duplication in `malt-mcp` (ADR-0002). If a third copy
+/// appears, move it into `malt-config::paths` instead of adding a fourth.
+fn default_api_token_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home)
+        .join(".config")
+        .join("malt")
+        .join("api-token")
+}
+
+/// Read the shared API token, if the daemon has written one.
+///
+/// `None` here means the handshake will be refused, which is correct: there
+/// is no local fallback that would bypass real enforcement.
+fn read_default_api_token() -> Option<String> {
+    std::fs::read_to_string(default_api_token_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 impl VnpConnection {
     /// Connect to the VNP listener, perform handshake, and attach to a session.
     ///
@@ -319,6 +347,7 @@ impl VnpConnection {
                 max_fps: 60,
                 _unknown: Vec::new(),
             },
+            credential: read_default_api_token(),
             _unknown: Vec::new(),
         };
 

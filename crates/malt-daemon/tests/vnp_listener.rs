@@ -29,6 +29,7 @@ use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
 use malt_daemon::store::{DebouncedStore, SessionStore};
 use malt_daemon::vnp_listener::accept_vnp_connections;
+use malt_gateway::auth::{AuthScope, TokenStore};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -43,18 +44,47 @@ fn make_coordinator_with_session() -> (Arc<Mutex<Coordinator>>, u32) {
     (Arc::new(Mutex::new(coord)), session_id)
 }
 
-fn start_test_listener(coordinator: Arc<Mutex<Coordinator>>) -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    let counter = Arc::new(AtomicU64::new(1));
-    std::thread::spawn(move || {
-        accept_vnp_connections(listener, coordinator, counter);
-    });
+/// Start a listener and seed this thread's credential so `make_hello`
+/// produces an acceptable Hello.
+fn start_test_listener_seeded(coordinator: Arc<Mutex<Coordinator>>) -> String {
+    let (addr, token) = start_test_listener_with_auth(coordinator);
+    set_test_credential(&token);
     addr
 }
 
-/// Build a Hello message with test capabilities.
+/// Start a listener and return its address plus a credential it will accept.
+fn start_test_listener_with_auth(coordinator: Arc<Mutex<Coordinator>>) -> (String, String) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let counter = Arc::new(AtomicU64::new(1));
+    let tokens = Arc::new(TokenStore::new());
+    let token = tokens.generate_token(AuthScope::Admin);
+    std::thread::spawn(move || {
+        accept_vnp_connections(listener, coordinator, counter, tokens);
+    });
+    (addr, token)
+}
+
+/// Build a Hello message with test capabilities and a credential.
 fn make_hello() -> Hello {
+    make_hello_with(Some(test_credential()))
+}
+
+/// The credential the shared test listener accepts. Tests that start their
+/// own listener use the token it returns instead.
+fn test_credential() -> String {
+    TEST_TOKEN.with(|t| t.borrow().clone())
+}
+
+thread_local! {
+    static TEST_TOKEN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+fn set_test_credential(token: &str) {
+    TEST_TOKEN.with(|t| *t.borrow_mut() = token.to_string());
+}
+
+fn make_hello_with(credential: Option<String>) -> Hello {
     Hello {
         version: 1,
         client_type: "test".to_string(),
@@ -67,6 +97,7 @@ fn make_hello() -> Hello {
             max_fps: 60,
             _unknown: Vec::new(),
         },
+        credential,
         _unknown: Vec::new(),
     }
 }
@@ -185,7 +216,7 @@ fn vnp_handshake_succeeds() {
     let dir = tempfile::tempdir().unwrap();
     let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
     let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
-    let addr = start_test_listener(coordinator);
+    let addr = start_test_listener_seeded(coordinator);
 
     let stream = TcpStream::connect(&addr).unwrap();
     stream
@@ -208,7 +239,7 @@ fn vnp_handshake_succeeds() {
 #[test]
 fn vnp_attach_receives_initial_state() {
     let (coordinator, session_id) = make_coordinator_with_session();
-    let addr = start_test_listener(coordinator);
+    let addr = start_test_listener_seeded(coordinator);
 
     let stream = TcpStream::connect(&addr).unwrap();
     stream
@@ -238,7 +269,7 @@ fn vnp_attach_receives_initial_state() {
 #[test]
 fn vnp_key_input_followed_by_enter_produces_render_batch() {
     let (coordinator, session_id) = make_coordinator_with_session();
-    let addr = start_test_listener(coordinator);
+    let addr = start_test_listener_seeded(coordinator);
 
     let stream = TcpStream::connect(&addr).unwrap();
     // Short per-read timeout so the loop can check the deadline frequently.
@@ -329,7 +360,7 @@ fn vnp_key_input_followed_by_enter_produces_render_batch() {
 #[test]
 fn vnp_frame_ack_accepted() {
     let (coordinator, session_id) = make_coordinator_with_session();
-    let addr = start_test_listener(coordinator);
+    let addr = start_test_listener_seeded(coordinator);
 
     std::thread::sleep(std::time::Duration::from_millis(50));
 
@@ -394,7 +425,7 @@ fn vnp_attach_during_execution_returns_initial_state_promptly() {
         .submit_execution(SessionId(session_id), "sleep 1; echo done".to_string())
         .unwrap();
     std::thread::sleep(Duration::from_millis(50));
-    let addr = start_test_listener(coordinator);
+    let addr = start_test_listener_seeded(coordinator);
     let stream = TcpStream::connect(&addr).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -439,7 +470,7 @@ fn one_hundred_vnp_attaches_remain_bounded_while_execution_is_busy() {
         .submit_execution(SessionId(session_id), "sleep 3; echo done".to_string())
         .unwrap();
     std::thread::sleep(Duration::from_millis(50));
-    let addr = start_test_listener(coordinator);
+    let addr = start_test_listener_seeded(coordinator);
 
     for _ in 0..100 {
         let stream = TcpStream::connect(&addr).unwrap();
@@ -460,4 +491,129 @@ fn one_hundred_vnp_attaches_remain_bounded_while_execution_is_busy() {
         .recv_timeout(Duration::from_secs(5))
         .unwrap()
         .is_ok());
+}
+
+// --- US1: authentication at the socket (audit A-01/A-08) -----------------
+
+#[test]
+fn an_unauthenticated_client_is_refused_and_learns_no_session_names() {
+    use std::io::Read;
+
+    // A session with a distinctive name, so a leak is unmistakable.
+    let dir = tempfile::tempdir().unwrap();
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let mut coord = Coordinator::new(PoolConfig::default(), store);
+    coord
+        .create_session(
+            Some("leak-canary-session".to_string()),
+            IsolationTier::Bare,
+            None,
+        )
+        .unwrap();
+    let coordinator = Arc::new(Mutex::new(coord));
+
+    let (addr, _token) = start_test_listener_with_auth(coordinator);
+    let mut stream = TcpStream::connect(&addr).unwrap();
+
+    // Send a Hello with no credential.
+    let hello = make_hello_with(None);
+    let mut w = BitWriter::new();
+    hello.pack(&mut w).unwrap();
+    let envelope = make_envelope(0, MSG_HELLO, 0);
+    let combined = encode_message(&envelope, &w.finish()).unwrap();
+    FrameWriter::new(&mut stream)
+        .write_frame(&Frame {
+            flags: FrameFlags::new(),
+            payload: combined,
+        })
+        .unwrap();
+
+    // Read whatever the daemon says before it closes.
+    let mut received = Vec::new();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let _ = stream.read_to_end(&mut received);
+
+    // The assertion that matters is byte-level: refusing *after* sending the
+    // inventory would satisfy "the connection was refused" while still
+    // leaking. Only inspecting the wire catches that.
+    let as_text = String::from_utf8_lossy(&received);
+    assert!(
+        !as_text.contains("leak-canary-session"),
+        "an unauthenticated client received a session name: {as_text:?}"
+    );
+}
+
+#[test]
+fn an_authenticated_client_still_completes_the_handshake() {
+    let (coordinator, _sid) = make_coordinator_with_session();
+    let (addr, token) = start_test_listener_with_auth(coordinator);
+    set_test_credential(&token);
+
+    let stream = TcpStream::connect(&addr).unwrap();
+    let write_stream = stream.try_clone().unwrap();
+    let mut reader = FrameReader::new(BufReader::new(stream));
+    let mut writer = FrameWriter::new(write_stream);
+
+    let ack = do_handshake(&mut writer, &mut reader);
+    assert_eq!(ack.negotiated_version, 1);
+}
+
+#[test]
+fn a_connection_that_never_identifies_is_closed() {
+    use std::io::Read;
+
+    let (coordinator, _sid) = make_coordinator_with_session();
+    let (addr, _token) = start_test_listener_with_auth(coordinator);
+
+    // Connect and send nothing at all.
+    let mut stream = TcpStream::connect(&addr).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let mut buf = [0u8; 64];
+    // Returns Ok(0) on clean close, or an error; either means the daemon let
+    // go. What must not happen is blocking until the test's own timeout.
+    let _ = stream.read(&mut buf);
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(25),
+        "a silent connection was held for {elapsed:?}; the daemon must bound \
+         identification rather than keeping the thread and socket forever"
+    );
+}
+
+#[test]
+fn stalled_connections_do_not_block_a_legitimate_client() {
+    let (coordinator, _sid) = make_coordinator_with_session();
+    let (addr, token) = start_test_listener_with_auth(coordinator);
+    set_test_credential(&token);
+
+    // Hold a batch of connections open without identifying on any of them.
+    let mut stalled = Vec::new();
+    for _ in 0..16 {
+        if let Ok(s) = TcpStream::connect(&addr) {
+            stalled.push(s);
+        }
+    }
+
+    // A real client must still get through promptly.
+    let started = std::time::Instant::now();
+    let stream = TcpStream::connect(&addr).unwrap();
+    let write_stream = stream.try_clone().unwrap();
+    let mut reader = FrameReader::new(BufReader::new(stream));
+    let mut writer = FrameWriter::new(write_stream);
+    let ack = do_handshake(&mut writer, &mut reader);
+    let elapsed = started.elapsed();
+
+    assert_eq!(ack.negotiated_version, 1);
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "a legitimate handshake took {elapsed:?} while stalled connections were open"
+    );
+    drop(stalled);
 }

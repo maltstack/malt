@@ -6,11 +6,17 @@ import malt.common
 # Priority: Reliable
 @doc("Client → daemon: initiate connection. First message on any transport.")
 @domain(Handshake) @type(0x01) @revision(1)
+@doc("credential authenticates the client. Absent or wrong means the")
+@doc("connection is refused with AuthRejected before any HelloAck, and")
+@doc("before the session inventory is disclosed. Optional on the wire only")
+@doc("so an older client produces a clean refusal instead of a decode")
+@doc("failure; a missing credential is never accepted.")
 message Hello {
     @doc("Software protocol version supported by this client.")
     version      @0 : u32
     client_type  @1 : string
     capabilities @2 : ClientCapabilities
+    credential   @3 : optional<string>
 }
 
 # Priority: Reliable
@@ -21,6 +27,16 @@ message HelloAck {
     sessions           @1 : array<SessionInfo>
     @doc("Wall-clock offset for converting envelope timestamps to absolute time.")
     start_time_offset  @2 : i64
+}
+
+# Priority: Reliable
+@doc("Daemon → client: the credential was missing or invalid; the")
+@doc("connection is terminated. Carries no session information -- an")
+@doc("unauthenticated caller must not learn what sessions exist, or")
+@doc("whether any do.")
+@domain(Handshake) @type(0x04) @revision(1)
+message AuthRejected {
+    reason @0 : string
 }
 
 # Priority: Reliable

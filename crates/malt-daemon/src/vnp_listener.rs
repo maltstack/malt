@@ -6,6 +6,7 @@
 use crate::connection::handshake::perform_server_handshake;
 use crate::executor::coordinator::Coordinator;
 use crate::executor::session_thread::SessionCommand;
+use malt_gateway::auth::TokenStore;
 use malt_protocol::codec::{
     make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, MSG_ATTACH_SESSION,
     MSG_DETACH_SESSION, MSG_FRAME_ACK, MSG_INITIAL_STATE, MSG_KEY_EVENT, MSG_RENDER_BATCH,
@@ -19,11 +20,24 @@ use malt_protocol::render::{FrameAck, RenderBatch};
 use malt_protocol::session::{AttachSession, DetachSession};
 use std::io::BufReader;
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tracing::{info, warn};
 use vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
+
+/// How long a connection may stay open without completing identification.
+///
+/// Applied *before* the first blocking read, not after. The deadline used to
+/// be set only once the handshake had already returned, which made
+/// connect-and-stall free: a client could hold a thread and a socket
+/// indefinitely without sending a byte (audit A-08).
+const HANDSHAKE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Maximum connections that may be mid-identification at once. Beyond this,
+/// new connections are closed immediately so unidentified callers cannot
+/// crowd out legitimate ones.
+const MAX_PENDING_HANDSHAKES: usize = 64;
 
 /// Start the VNP listener on the given address (e.g. `"127.0.0.1:7701"`).
 ///
@@ -34,6 +48,7 @@ pub fn start_vnp_listener(
     addr: &str,
     coordinator: Arc<Mutex<Coordinator>>,
     client_counter: Arc<AtomicU64>,
+    token_store: Arc<TokenStore>,
 ) {
     let listener = match TcpListener::bind(addr) {
         Ok(l) => l,
@@ -43,7 +58,7 @@ pub fn start_vnp_listener(
         }
     };
     info!(addr, "VNP listener started");
-    accept_vnp_connections(listener, coordinator, client_counter);
+    accept_vnp_connections(listener, coordinator, client_counter, token_store);
 }
 
 /// Accept loop — separated from `start_vnp_listener` so tests can provide a
@@ -52,23 +67,39 @@ pub fn accept_vnp_connections(
     listener: TcpListener,
     coordinator: Arc<Mutex<Coordinator>>,
     client_counter: Arc<AtomicU64>,
+    token_store: Arc<TokenStore>,
 ) {
+    let pending = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let client_id = client_counter.fetch_add(1, Ordering::Relaxed);
-                let coord = coordinator.clone();
                 let peer = stream
                     .peer_addr()
                     .map(|a| a.to_string())
                     .unwrap_or_else(|_| "unknown".to_string());
+
+                // Refuse before spending a thread on a caller we have not
+                // identified, so stalled connections cannot crowd out real
+                // ones (audit A-08).
+                if pending.load(Ordering::Acquire) >= MAX_PENDING_HANDSHAKES {
+                    warn!(peer = %peer, "VNP: too many unidentified connections; refusing");
+                    drop(stream);
+                    continue;
+                }
+
+                let client_id = client_counter.fetch_add(1, Ordering::Relaxed);
+                let coord = coordinator.clone();
+                let store = token_store.clone();
+                let pending_slot = pending.clone();
+                pending_slot.fetch_add(1, Ordering::AcqRel);
                 info!(peer = %peer, client_id, "VNP client connected");
                 if let Err(e) = thread::Builder::new()
                     .name(format!("vnp-client-{client_id}"))
                     .spawn(move || {
-                        handle_client(stream, coord, client_id);
+                        handle_client(stream, coord, client_id, store, &pending_slot);
                     })
                 {
+                    pending.fetch_sub(1, Ordering::AcqRel);
                     warn!(peer = %peer, error = %e, "failed to spawn VNP client handler thread");
                 }
             }
@@ -81,9 +112,11 @@ pub fn accept_vnp_connections(
 
 /// Handle a single VNP client connection.
 ///
-/// 1. Clone stream for the write side; wrap read side in a `BufReader`.
-/// 2. Perform VNP handshake — obtain `HandshakeResult` with capabilities.
-/// 3. Set 30 s read timeout for the attach phase.
+/// 1. Bound identification with a read deadline, then clone the stream for
+///    the write side and wrap the read side in a `BufReader`.
+/// 2. Perform the VNP handshake — authenticate, then obtain
+///    `HandshakeResult` with capabilities and the resolved scope.
+/// 3. Widen the read timeout for the attach phase.
 /// 4. Wait for an `AttachSession` message (domain=4, type=0x02).
 /// 5. Register with the coordinator to get a `render_rx` and `InitialState`.
 /// 6. Send `InitialState` frame to the client (domain=6, type=0x03).
@@ -91,38 +124,66 @@ pub fn accept_vnp_connections(
 /// 8. Loop: drain `render_rx`, encode `RenderBatch` frames; read TCP frames,
 ///    dispatch `KeyEvent` / `Resize` / `FrameAck`.
 /// 9. On disconnect: `unregister_vnp_client`.
-fn handle_client(stream: TcpStream, coordinator: Arc<Mutex<Coordinator>>, client_id: u64) {
+fn handle_client(
+    stream: TcpStream,
+    coordinator: Arc<Mutex<Coordinator>>,
+    client_id: u64,
+    token_store: Arc<TokenStore>,
+    pending: &AtomicUsize,
+) {
     let peer = stream
         .peer_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
+
+    // Bound identification cost BEFORE the first blocking read, and set it on
+    // the descriptor that will actually be read from.
+    //
+    // Both details matter. The deadline used to be applied only after the
+    // handshake returned, so a client that connected and sent nothing held a
+    // thread and a socket forever (audit A-08). And it must be set on `stream`
+    // rather than on the write-side clone: `try_clone` duplicates the
+    // descriptor, and a receive timeout is a per-descriptor option on Windows,
+    // so setting it on the clone leaves reads on the original unbounded.
+    if let Err(e) = read_stream_deadline(&stream, Some(HANDSHAKE_DEADLINE)) {
+        warn!(peer = %peer, error = %e, "VNP: failed to set handshake deadline; refusing");
+        pending.fetch_sub(1, Ordering::AcqRel);
+        return;
+    }
 
     // Clone stream for the write side.
     let write_stream = match stream.try_clone() {
         Ok(s) => s,
         Err(e) => {
             warn!(peer = %peer, error = %e, "VNP: failed to clone stream");
+            pending.fetch_sub(1, Ordering::AcqRel);
             return;
         }
     };
 
     let mut read_stream = BufReader::new(stream);
 
-    // Collect the current session list for HelloAck.
-    let sessions = coordinator
-        .lock()
-        .map(|c| c.list_sessions())
-        .unwrap_or_default();
-
-    // VNP handshake.
-    let handshake = match perform_server_handshake(&mut read_stream, &mut &write_stream, &sessions)
-    {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(peer = %peer, error = %e, "VNP handshake failed");
-            return;
-        }
-    };
+    // The session inventory is deliberately NOT computed here. It is reachable
+    // only through this closure, which the handshake calls after the
+    // credential validates -- so an unauthenticated caller cannot learn what
+    // sessions exist, or whether any do.
+    let coord_for_sessions = coordinator.clone();
+    let handshake =
+        match perform_server_handshake(&mut read_stream, &mut &write_stream, &token_store, || {
+            coord_for_sessions
+                .lock()
+                .map(|c| c.list_sessions())
+                .unwrap_or_default()
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(peer = %peer, error = %e, "VNP handshake failed");
+                pending.fetch_sub(1, Ordering::AcqRel);
+                return;
+            }
+        };
+    // Identified: this connection no longer counts against the pending cap.
+    pending.fetch_sub(1, Ordering::AcqRel);
 
     info!(
         peer = %peer,
@@ -132,7 +193,7 @@ fn handle_client(stream: TcpStream, coordinator: Arc<Mutex<Coordinator>>, client
         "VNP handshake completed"
     );
 
-    // Set 30 s read timeout for the attach phase.
+    // Widen the window for the attach phase now that the peer is identified.
     if let Err(e) = read_stream
         .get_ref()
         .set_read_timeout(Some(std::time::Duration::from_secs(30)))
@@ -539,4 +600,16 @@ fn cleanup(
             warn!(peer, error = %e, "VNP: coordinator lock poisoned during cleanup");
         }
     }
+}
+
+/// Apply a read deadline to the connection.
+///
+/// Split out so the deadline can be set before any blocking read rather than
+/// after the handshake, which is the difference between bounding an
+/// unidentified caller and not bounding it at all.
+fn read_stream_deadline(
+    stream: &TcpStream,
+    timeout: Option<std::time::Duration>,
+) -> std::io::Result<()> {
+    stream.set_read_timeout(timeout)
 }

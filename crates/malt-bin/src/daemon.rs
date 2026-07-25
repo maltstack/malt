@@ -27,26 +27,36 @@ pub fn run_daemon(port: u16) -> Result<()> {
             store,
         )?));
 
-        // Start VNP socket listener on port+1 (e.g. 7701 when HTTP is 7700)
-        let vnp_coord = coordinator.clone();
-        let vnp_port = port + 1;
-        let client_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
-        std::thread::spawn(move || {
-            let vnp_addr = format!("127.0.0.1:{vnp_port}");
-            malt_daemon::vnp_listener::start_vnp_listener(&vnp_addr, vnp_coord, client_counter);
-        });
-
+        // Establish the credential before anything that authenticates with it.
+        // Startup fails here rather than continuing with a token no client can
+        // read — the VNP listener below would then refuse every connection for
+        // a reason nobody could diagnose.
         let token_store = Arc::new(TokenStore::new());
-        // Print where the token lives, never the token itself. It used to go
-        // to stdout on every start, which put the credential into scrollback,
-        // CI logs, and shell history.
         let _default_token = token_store
             .load_or_generate_default()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        // Print where the token lives, never the token itself. It used to go
+        // to stdout on every start, which put the credential into scrollback,
+        // CI logs, and shell history.
         println!(
             "API token written to {}",
             malt_gateway::auth::dirs_token_path().display()
         );
+
+        // Start VNP socket listener on port+1 (e.g. 7701 when HTTP is 7700)
+        let vnp_coord = coordinator.clone();
+        let vnp_port = port + 1;
+        let client_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let vnp_tokens = token_store.clone();
+        std::thread::spawn(move || {
+            let vnp_addr = format!("127.0.0.1:{vnp_port}");
+            malt_daemon::vnp_listener::start_vnp_listener(
+                &vnp_addr,
+                vnp_coord,
+                client_counter,
+                vnp_tokens,
+            );
+        });
         let rate_limiter = Arc::new(RateLimiter::new(RATE_LIMIT_PER_WINDOW));
 
         let backend = Arc::new(DaemonBackend::new(coordinator.clone()));
