@@ -369,6 +369,65 @@ fn command_history_survives_dormant_restore_and_ids_stay_monotonic() {
 }
 
 #[test]
+fn a_stalled_event_subscriber_does_not_slow_execution_or_starve_others() {
+    use malt_protocol::common::SessionId;
+
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap();
+
+    // Baseline: how long twenty commands take with nobody watching.
+    let baseline_start = std::time::Instant::now();
+    for i in 0..20 {
+        backend
+            .exec_command(session.id, format!("echo base-{i}"))
+            .unwrap();
+    }
+    let baseline = baseline_start.elapsed();
+
+    // Now attach a subscriber that never reads, plus one that does.
+    let coord = backend.coordinator().clone();
+    let stalled = {
+        let c = coord.lock().unwrap();
+        c.begin_subscribe_events(SessionId(session.id), None).unwrap()
+    };
+    let mut healthy = {
+        let c = coord.lock().unwrap();
+        c.begin_subscribe_events(SessionId(session.id), None).unwrap()
+    };
+
+    // Overrun the stalled subscriber's buffer several times over.
+    let watched_start = std::time::Instant::now();
+    for i in 0..20 {
+        backend
+            .exec_command(session.id, format!("echo watched-{i}"))
+            .unwrap();
+    }
+    let watched = watched_start.elapsed();
+
+    // The healthy subscriber must still be receiving. Drain what it has.
+    let mut healthy_events = 0usize;
+    while healthy.try_recv().is_ok() {
+        healthy_events += 1;
+    }
+    assert!(
+        healthy_events > 0,
+        "a healthy subscriber must keep receiving while another is stalled"
+    );
+
+    // Execution must not have slowed materially. Generous multiplier: this
+    // asserts "not blocked on the subscriber", not a precise budget, and CI
+    // timing is noisy.
+    let allowed = baseline * 5 + std::time::Duration::from_millis(500);
+    assert!(
+        watched <= allowed,
+        "execution with a stalled subscriber took {watched:?} versus a {baseline:?} \
+         baseline -- a client that stops reading must never slow the session"
+    );
+
+    drop(stalled);
+}
+
+#[test]
 fn a_dormant_session_reports_a_conflict_not_an_internal_error() {
     use malt_gateway::error::GatewayError;
     use malt_protocol::common::SessionId;

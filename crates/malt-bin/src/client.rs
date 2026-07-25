@@ -102,6 +102,16 @@ pub struct CommandHistoryEntry {
     pub pane_id: u32,
 }
 
+/// An opened event stream, or the reason the server refused one.
+///
+/// A refusal is reported here rather than as a transport error because it is
+/// terminal — retrying cannot make an unknown session exist or a token gain
+/// scope, so the reconnect loop must not treat it as a blip.
+pub struct EventStream {
+    pub body: Option<reqwest::blocking::Response>,
+    pub refusal: Option<String>,
+}
+
 pub struct MaltClient {
     addr: String,
     http: Client,
@@ -223,6 +233,44 @@ impl MaltClient {
         let envelope: ApiEnvelope<Vec<CommandHistoryEntry>> =
             resp.json().context("invalid history response")?;
         envelope.into_data("get command history")
+    }
+
+    /// Open the lifecycle event stream, resuming after `from` when given.
+    ///
+    /// Returns the raw response for incremental reading — deliberately not
+    /// `.json()`, which would block until the stream ended (i.e. forever).
+    pub fn open_event_stream(&self, id: u32, from: Option<u64>) -> Result<EventStream> {
+        let mut req = self
+            .authed(self.http.get(self.url(&format!("/sessions/{id}/events"))))
+            .header("accept", "text/event-stream");
+        if let Some(seq) = from {
+            req = req.header("last-event-id", seq.to_string());
+        }
+        // A long read timeout: an idle stream is normal, not a failure, and
+        // the server sends SSE keep-alive comments to hold it open.
+        let resp = req
+            .timeout(std::time::Duration::from_secs(86_400))
+            .send()
+            .context("failed to reach daemon")?;
+
+        if resp.status().is_success() {
+            return Ok(EventStream {
+                body: Some(resp),
+                refusal: None,
+            });
+        }
+
+        let status = resp.status();
+        let message = resp
+            .json::<ApiEnvelope<serde_json::Value>>()
+            .ok()
+            .and_then(|e| e.error)
+            .map(ApiError::into_message)
+            .unwrap_or_else(|| format!("event stream refused with HTTP {status}"));
+        Ok(EventStream {
+            body: None,
+            refusal: Some(message),
+        })
     }
 
     pub fn send_input(&self, id: u32, input: &str) -> Result<()> {

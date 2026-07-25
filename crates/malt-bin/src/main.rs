@@ -1,6 +1,7 @@
 mod cli;
 mod client;
 mod daemon;
+mod events;
 mod output;
 
 use anyhow::Result;
@@ -30,6 +31,10 @@ fn main() -> Result<()> {
         Some(Command::Send { session_id, input }) => handle_send(&client, session_id, &input),
         Some(Command::Output { session_id }) => handle_output(&client, session_id),
         Some(Command::History { session_id }) => handle_history(&client, session_id),
+        Some(Command::Watch {
+            session_id,
+            resume_from,
+        }) => handle_watch(&client, session_id, resume_from),
     }
 }
 
@@ -287,6 +292,59 @@ fn format_duration(started_at: u64, finished_at: Option<u64>) -> String {
             }
         }
         None => "incomplete".to_string(),
+    }
+}
+
+fn handle_watch(client: &MaltClient, session_id: u32, resume_from: Option<u64>) -> Result<()> {
+    println!("watching session {session_id} (ctrl-c to stop)");
+    events::watch_events(client, session_id, resume_from, |event| {
+        match event.kind.as_str() {
+            "command_started" => println!(
+                "{:>5}  started   {:>5}  {}",
+                event.sequence,
+                event
+                    .payload
+                    .command_id
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                event.payload.cmd.as_deref().unwrap_or(""),
+            ),
+            "command_finished" => println!(
+                "{:>5}  finished  {:>5}  exit {}  {}",
+                event.sequence,
+                event
+                    .payload
+                    .command_id
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                event
+                    .payload
+                    .exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                format_us(event.payload.duration_us),
+            ),
+            // A gap means this client's view is incomplete. Say so loudly
+            // rather than letting it scroll past as one more line.
+            "gap" => println!(
+                "\n  !! GAP: missed events {}..={} ({}) -- this view is incomplete\n",
+                event.payload.missed_from.unwrap_or(0),
+                event.payload.missed_through.unwrap_or(0),
+                event.payload.reason.as_deref().unwrap_or("unknown reason"),
+            ),
+            other => println!("{:>5}  {other}", event.sequence),
+        }
+        events::ControlFlow::Continue
+    })
+}
+
+/// Render a microsecond duration compactly, or a dash when absent.
+fn format_us(duration_us: Option<u64>) -> String {
+    match duration_us {
+        Some(us) if us < 1_000 => format!("{us}us"),
+        Some(us) if us < 1_000_000 => format!("{}ms", us / 1_000),
+        Some(us) => format!("{:.1}s", us as f64 / 1_000_000.0),
+        None => "-".to_string(),
     }
 }
 

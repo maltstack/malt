@@ -221,13 +221,7 @@ fn a_fresh_subscription_does_not_replay_the_sessions_past() {
 }
 
 #[test]
-fn resuming_past_the_retained_window_reports_a_gap_before_the_replay() {
-    // The session-side log retains 1024 events; rather than generate that
-    // many real commands, resume from a position that is impossibly old
-    // relative to what the session has actually produced... which cannot
-    // trigger eviction. So instead assert the honest case that IS reachable
-    // here: resuming from a position the log never reached replays
-    // everything without inventing a gap.
+fn resuming_within_the_retained_window_does_not_invent_a_gap() {
     let (backend, coord) = make_backend();
     let session = backend.create_session(None, None).unwrap();
     backend
@@ -244,6 +238,99 @@ fn resuming_past_the_retained_window_reports_a_gap_before_the_replay() {
         "nothing was evicted, so claiming a gap would be a lie: {events:?}"
     );
     assert_eq!(events.len(), 2, "the whole history replays: {events:?}");
+}
+
+#[test]
+fn resuming_past_the_retained_window_reports_a_gap_before_the_replay() {
+    // Forces a real eviction rather than asserting around one: the log keeps
+    // 1024 events and each command produces two, so ~600 commands overruns it
+    // comfortably. No subscriber is attached while they run, so this exercises
+    // retention loss specifically, not subscriber lag.
+    let (backend, coord) = make_backend();
+    let session = backend.create_session(None, None).unwrap();
+
+    for i in 0..600 {
+        backend
+            .exec_command(session.id, format!("echo {i}"))
+            .unwrap();
+    }
+
+    // Position 1 is long gone.
+    let mut rx = subscribe(&coord, session.id, Some(1));
+    let events = collect(&mut rx, 1);
+
+    let first = events.first().expect("resuming must deliver something");
+    match &first.kind {
+        LifecycleEventKind::Gap {
+            missed_from,
+            missed_through,
+            reason,
+        } => {
+            assert_eq!(*reason, GapReason::RetentionExceeded);
+            assert_eq!(
+                *missed_from, 2,
+                "the gap must start just past the client's last-seen position"
+            );
+            assert!(
+                *missed_through > *missed_from,
+                "the gap must name a real evicted range: {first:?}"
+            );
+        }
+        other => panic!(
+            "a client resuming past retention must be told FIRST, before any \
+             replayed data that would otherwise look contiguous; got {other:?}"
+        ),
+    }
+
+    // A second gap here is legitimate and worth stating plainly: the retained
+    // window (1024) is larger than one subscriber's buffer (256), and this
+    // test never drains while the replay runs, so the replay itself overflows
+    // and the sink is honestly told it lagged. In the real SSE path the
+    // Gateway's forwarding task drains continuously, so the replay flows
+    // through. What must never happen is a *retention* gap being reported
+    // twice, or a gap arriving after data it was supposed to precede.
+    let gap_reasons: Vec<GapReason> = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            LifecycleEventKind::Gap { reason, .. } => Some(*reason),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        gap_reasons
+            .iter()
+            .filter(|r| **r == GapReason::RetentionExceeded)
+            .count(),
+        1,
+        "retention loss must be reported exactly once: {gap_reasons:?}"
+    );
+}
+
+#[test]
+fn a_stalled_subscriber_never_exceeds_its_buffer_bound() {
+    // The property that makes the shared Bus unusable for this (research R2)
+    // and the reason a stalled client cannot exhaust daemon memory. Proven,
+    // not assumed.
+    let (backend, coord) = make_backend();
+    let session = backend.create_session(None, None).unwrap();
+    let mut stalled = subscribe(&coord, session.id, None);
+
+    // 400 commands => 800 events, far beyond the 256-event bound.
+    for i in 0..400 {
+        backend
+            .exec_command(session.id, format!("echo {i}"))
+            .unwrap();
+    }
+
+    let mut queued = 0usize;
+    while stalled.try_recv().is_ok() {
+        queued += 1;
+    }
+    assert!(
+        queued <= 257,
+        "a stalled subscriber queued {queued} events; the bound is 256 plus \
+         one reserved slot for the terminal gap"
+    );
 }
 
 #[test]

@@ -46,6 +46,13 @@ pub enum Command {
     Output { session_id: u32 },
     /// List a session's command execution history, oldest first
     History { session_id: u32 },
+    /// Stream a session's command lifecycle events as they happen
+    Watch {
+        session_id: u32,
+        /// Resume after this event sequence instead of starting from now
+        #[arg(long)]
+        resume_from: Option<u64>,
+    },
 }
 
 /// Canonical command-line spellings for the session isolation tiers.

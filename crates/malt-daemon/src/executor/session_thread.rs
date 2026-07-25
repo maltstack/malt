@@ -779,6 +779,9 @@ impl SessionExecutor {
         let (mut sink, rx) = SubscriberSink::new(id);
 
         if let Some(from) = resume_from {
+            // The client already holds everything through `from`; without
+            // this the gap below would claim it missed those events too.
+            sink.set_position(from);
             let (replay, lost) = self.event_log.replay_after(from);
             if lost {
                 let through = self

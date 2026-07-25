@@ -209,10 +209,20 @@ impl SubscriberSink {
         )
     }
 
-    /// Highest sequence successfully delivered. Basis of a gap's range if
-    /// this sink lags.
+    /// Highest sequence this subscriber is known to hold. Basis of a gap's
+    /// range.
     pub fn last_sent(&self) -> u64 {
         self.last_sent
+    }
+
+    /// Seed the position for a subscriber that is resuming.
+    ///
+    /// A resuming client already holds everything up to `sequence`, so a gap
+    /// computed from a fresh sink's zero would claim it missed events it
+    /// actually saw — reporting loss that never happened is as wrong as
+    /// hiding loss that did.
+    pub fn set_position(&mut self, sequence: u64) {
+        self.last_sent = self.last_sent.max(sequence);
     }
 
     /// Non-blocking delivery. `try_send` only — never `send().await`, never
@@ -437,6 +447,26 @@ mod tests {
                 .any(|k| matches!(k, LifecycleEventKind::Gap { .. })),
             "a full sink must still receive its terminal gap, got {kinds:?}"
         );
+    }
+
+    #[test]
+    fn a_resuming_sinks_gap_starts_after_what_it_already_holds() {
+        // Regression: a resuming subscriber's sink starts with last_sent == 0,
+        // so a gap computed from it claimed the client had missed events it
+        // had already seen.
+        let (mut sink, mut rx) = SubscriberSink::with_buffer(1, 4);
+        sink.set_position(10);
+
+        sink.try_notify_gap(20, GapReason::RetentionExceeded);
+
+        let event = rx.try_recv().expect("gap should be queued");
+        match event.kind {
+            LifecycleEventKind::Gap { missed_from, .. } => assert_eq!(
+                missed_from, 11,
+                "the gap must begin after the position the client already holds"
+            ),
+            other => panic!("expected a Gap, got {other:?}"),
+        }
     }
 
     #[test]
