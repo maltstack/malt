@@ -267,6 +267,41 @@ impl Coordinator {
         }
     }
 
+    /// Deliver raw bytes to whatever is reading this session's input.
+    ///
+    /// Distinct from `submit_execution`: these bytes answer a prompt, they do
+    /// not start a command. They never acquire a command id, never enter the
+    /// history ring, and are never published as a lifecycle event.
+    pub fn write_session_input(
+        &self,
+        session_id: SessionId,
+        data: Vec<u8>,
+    ) -> Result<(), DaemonError> {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                cmd_tx
+                    .send(SessionCommand::RawInput {
+                        data,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
+                match reply_rx.recv_timeout(Duration::from_secs(2)) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(crate::executor::input::InputError::BufferFull)) => {
+                        Err(DaemonError::InputBufferFull(session_id))
+                    }
+                    Ok(Err(_)) | Err(_) => Err(DaemonError::SessionUnreachable(handle.id.clone())),
+                }
+            }
+            SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
+    }
+
     /// Begin a lifecycle-event subscription for a session.
     ///
     /// Returns the receiver rather than awaiting anything, so the caller

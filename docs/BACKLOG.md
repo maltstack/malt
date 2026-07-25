@@ -1007,3 +1007,31 @@ then credentials/rate limiting, then process termination and raw input.
   bugs/gaps in the process: hardcoded `command_id`/`exit_code` in the
   Gateway, and `CommandBlock` never actually constructed anywhere outside
   tests.
+
+### In-process tools and external processes cannot read session stdin (from 005/US2)
+
+Found 2026-07-25 while implementing raw input. Only the `read` builtin
+receives bytes a client sends; `cat`, `grep`, `wc`, and external programs
+all see EOF. Verified live: `cat`, `/usr/bin/cat`, `/usr/bin/head -n1` each
+return empty when input is sent. Not a regression — fd 0 was unregistered
+before — but it leaves a motivating case of 005 unmet: an external
+program's password prompt still cannot be answered.
+
+Two separate causes, fixable independently:
+
+1. **In-process tools cannot stream by construction.** `ToolFn` is
+   `fn(&[String], &[u8])` across all 17 tools — a fully-read buffer, so a
+   tool can never consume a stream that has not ended. Registering the
+   session pipe made this visible by hanging every tool; the current fix
+   (`Env::open_fd_read_unless_endless`) makes them see empty stdin instead,
+   which is correct-but-inert. A real fix needs a streaming tool signature.
+
+2. **External processes get EOF despite fd 0 being wired.** The spawn sites
+   (`crates/mash/src/executor.rs:1129`, `:5410`) already prefer a registered
+   fd 0 over `Io::Inherit`, so the plumbing is there, yet the child reads
+   EOF. Suspected Windows handle inheritance — the duplicated handle is
+   likely not marked inheritable. **Unconfirmed**; check this first.
+
+Note for whoever picks this up: the endless-fd guard must stay on the three
+*slurp* sites only. External spawn sites must NOT get it — an external
+process reading an endless stdin is exactly the desired behaviour.

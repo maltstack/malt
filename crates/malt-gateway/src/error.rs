@@ -39,6 +39,11 @@ pub enum GatewayError {
     #[error("session dormant: {0}")]
     SessionDormant(String),
 
+    /// The session is holding as much unread type-ahead as it will. The
+    /// caller should retry once the command consumes some.
+    #[error("input buffer full: {0}")]
+    InputBufferFull(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -72,6 +77,9 @@ impl IntoResponse for GatewayError {
             }
             GatewayError::SessionShuttingDown(_) => (StatusCode::CONFLICT, "session_shutting_down"),
             GatewayError::SessionDormant(_) => (StatusCode::CONFLICT, "session_dormant"),
+            GatewayError::InputBufferFull(_) => {
+                (StatusCode::TOO_MANY_REQUESTS, "input_buffer_full")
+            }
             GatewayError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
 

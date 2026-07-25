@@ -301,6 +301,15 @@ pub struct Env {
     #[cfg(windows)]
     job_object: Option<Arc<malt_platform::isolation::job_objects::JobObject>>,
     fd_registry: malt_platform::vfs::SharedFdRegistry,
+    /// Descriptors that are endless streams rather than finite sources.
+    ///
+    /// Everything that could previously occupy fd 0 -- an `exec < file`
+    /// redirect, a pipeline stage -- reaches EOF, and code that reads it
+    /// to the end is correct for those. A terminal session's stdin does
+    /// not reach EOF: the daemon holds the write end open for the
+    /// session's lifetime. Recording which descriptors are endless turns
+    /// that from an unstated assumption into something callers can check.
+    endless_fds: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u32>>>,
     fd_aliases: Arc<Mutex<HashMap<u32, u32>>>,
     fd_snapshots: Arc<Mutex<HashMap<u32, PathBuf>>>,
     bg_pid_reporter: Option<Sender<u32>>,
@@ -344,6 +353,9 @@ impl Clone for Env {
             #[cfg(windows)]
             job_object: self.job_object.clone(),
             fd_registry,
+            endless_fds: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
             fd_aliases: Arc::new(Mutex::new(self.fd_aliases_lock().clone())),
             fd_snapshots: Arc::new(Mutex::new(self.fd_snapshots_lock().clone())),
             bg_pid_reporter: self.bg_pid_reporter.clone(),
@@ -382,6 +394,9 @@ impl Env {
             #[cfg(windows)]
             job_object: None,
             fd_registry: malt_platform::vfs::SharedFdRegistry::new(),
+            endless_fds: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
             fd_aliases: Arc::new(Mutex::new(HashMap::new())),
             fd_snapshots: Arc::new(Mutex::new(HashMap::new())),
             bg_pid_reporter: None,
@@ -1267,7 +1282,62 @@ impl Env {
     pub fn register_fd(&self, fd: u32, file: File) {
         self.clear_fd_alias(fd);
         self.clear_fd_snapshot(fd);
+        self.mark_fd_endless(fd, false);
         self.fd_registry.register_file_at(fd, file);
+    }
+
+    /// Register a descriptor that is an endless stream -- a terminal
+    /// session's input, not a file or a pipeline stage.
+    ///
+    /// Reading such a descriptor to EOF never returns. Callers that would
+    /// otherwise slurp must consult [`Env::is_fd_endless`] first; see the
+    /// in-process tool dispatch in `executor.rs`, which is exactly that case.
+    pub fn register_endless_fd(&self, fd: u32, file: File) {
+        self.clear_fd_alias(fd);
+        self.clear_fd_snapshot(fd);
+        self.fd_registry.register_file_at(fd, file);
+        self.mark_fd_endless(fd, true);
+    }
+
+    /// Open `fd` for reading, but refuse if it is an endless stream.
+    ///
+    /// This is what every caller that intends to `read_to_end` should use.
+    /// In-process tools take a pre-read `&[u8]`, so their dispatch slurps
+    /// whatever occupies fd 0; against a terminal session's stdin that never
+    /// returns. There are three such dispatch sites in `executor.rs` (in-process
+    /// tools reachable by three different routes), and guarding them
+    /// individually is how the second and third were missed the first time —
+    /// so the rule lives here, not at the call sites.
+    ///
+    /// Returns `Err(NotFound)` for an endless descriptor, which callers already
+    /// handle as "no stdin available": the tool then sees empty input, exactly
+    /// as it did before sessions had an input channel at all.
+    pub fn open_fd_read_unless_endless(&self, fd: u32) -> std::io::Result<File> {
+        if self.is_fd_endless(fd) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "descriptor is an endless stream and must not be read to EOF",
+            ));
+        }
+        self.open_fd_read(fd)
+    }
+
+    /// Whether `fd` is an endless stream that must not be read to EOF.
+    pub fn is_fd_endless(&self, fd: u32) -> bool {
+        let fd = self.resolve_fd_target(fd).unwrap_or(fd);
+        self.endless_fds
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&fd)
+    }
+
+    fn mark_fd_endless(&self, fd: u32, endless: bool) {
+        let mut set = self.endless_fds.lock().unwrap_or_else(|e| e.into_inner());
+        if endless {
+            set.insert(fd);
+        } else {
+            set.remove(&fd);
+        }
     }
 
     pub fn register_fd_alias(&self, fd: u32, target_fd: u32) {

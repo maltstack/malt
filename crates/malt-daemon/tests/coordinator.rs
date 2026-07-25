@@ -903,16 +903,17 @@ fn last_detach_after_queued_write_input_keeps_session_active_and_runs_command() 
         .register_vnp_client(id.clone(), 1, caps(), render_tx)
         .unwrap();
 
-    // This command is deliberately queued on the control actor immediately
-    // before the final detach. Dormancy must observe its admission in FIFO
-    // order rather than decide from an earlier ingress-idle sample.
-    coord
-        .send_command(
-            id.clone(),
-            SessionCommand::WriteInput {
-                data: b"sleep 1; echo queued-at-detach\n".to_vec(),
-            },
-        )
+    // This command is deliberately queued immediately before the final
+    // detach. Dormancy must observe its admission in FIFO order rather than
+    // decide from an earlier ingress-idle sample.
+    //
+    // Submitted via `submit_execution` rather than `WriteInput`: as of spec
+    // 005, WriteInput delivers raw bytes to whatever is reading the session's
+    // input and no longer executes its payload as a command, so it is no
+    // longer a way to queue work. The subject of this test — the dormancy
+    // ordering — is unchanged; only the vehicle is.
+    let _queued = coord
+        .submit_execution(id.clone(), "sleep 1; echo queued-at-detach".to_string())
         .unwrap();
     coord.unregister_vnp_client(id.clone(), 1).unwrap();
 

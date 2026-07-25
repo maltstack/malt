@@ -1215,7 +1215,7 @@ fn execute_simple_with_io(
             .stdin
             .take()
             .or(stdin_file.take())
-            .or_else(|| env.open_fd_read(0).ok())
+            .or_else(|| env.open_fd_read_unless_endless(0).ok())
         {
             let mut buf = Vec::new();
             if let Err(e) = std::io::Read::read_to_end(&mut file, &mut buf) {
@@ -1276,12 +1276,22 @@ fn execute_simple_with_io(
     config.args = argv.iter().map(|a| a.into()).collect();
     configure_command_spawn_identity(&mut config, &resolved_cmd_name, &program);
 
-    // stdin: explicit redirect wins, then pipeline, then inherit.
+    // stdin: explicit redirect wins, then pipeline, then a registered fd 0,
+    // then inherit.
+    //
+    // The fd-0 step matters when mash runs inside the daemon: the session
+    // registers its input pipe there, so an interactive child (a REPL, a
+    // password prompt) reads from the session's clients. Without it the child
+    // inherits the *daemon's* stdin, which no client can reach. Falling back
+    // to Inherit keeps standalone mash behaving as before.
     config.stdin = match resolved_io.stdin {
         Some(f) => malt_platform::process::Io::File(f),
         None => match stdin_file {
             Some(f) => malt_platform::process::Io::File(f),
-            None => malt_platform::process::Io::Inherit,
+            None => match env.open_fd_read(0) {
+                Ok(f) => malt_platform::process::Io::File(f),
+                Err(_) => malt_platform::process::Io::Inherit,
+            },
         },
     };
 
@@ -1594,7 +1604,7 @@ fn execute_simple(
             let mut buf = Vec::new();
             let _ = std::io::Read::read_to_end(&mut file, &mut buf);
             buf
-        } else if let Ok(mut file) = env.open_fd_read(0) {
+        } else if let Ok(mut file) = env.open_fd_read_unless_endless(0) {
             let mut buf = Vec::new();
             let _ = std::io::Read::read_to_end(&mut file, &mut buf);
             buf
@@ -5890,9 +5900,14 @@ fn execute_expanded_command(
     let mut config = malt_platform::process::SpawnConfig::new(&program);
     config.args = argv.iter().map(|a| a.into()).collect();
     configure_command_spawn_identity(&mut config, cmd_name, &program);
+    // See the note at the other stdin site: a registered fd 0 is the session's
+    // input pipe, and must win over inheriting the daemon's console.
     config.stdin = match resolved_io.stdin {
         Some(f) => malt_platform::process::Io::File(f),
-        None => malt_platform::process::Io::Inherit,
+        None => match env.open_fd_read(0) {
+            Ok(f) => malt_platform::process::Io::File(f),
+            Err(_) => malt_platform::process::Io::Inherit,
+        },
     };
     config.stdout = match resolved_io.stdout {
         Some(f) => malt_platform::process::Io::File(f),

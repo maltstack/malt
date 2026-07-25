@@ -97,6 +97,7 @@ fn map_execution_error(error: DaemonError) -> GatewayError {
         // restore it"), not a server fault -- reporting it as a 500 told
         // clients the daemon had broken when nothing had.
         DaemonError::SessionDormant(_) => GatewayError::SessionDormant(message),
+        DaemonError::InputBufferFull(_) => GatewayError::InputBufferFull(message),
         DaemonError::SessionNotFound(id) => GatewayError::SessionNotFound(id.0),
         other => GatewayError::Internal(other.to_string()),
     }
@@ -202,19 +203,16 @@ impl GatewayBackend for DaemonBackend {
     }
 
     fn send_input(&self, session_id: u32, input: String) -> Result<(), GatewayError> {
-        let reply_rx = {
-            let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
-            coord
-                .submit_execution(SessionId(session_id), input)
-                .map_err(map_execution_error)?
-        };
-        // Wait for completion but discard output
-        match reply_rx.recv_timeout(std::time::Duration::from_secs(30)) {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => return Err(map_execution_error(error)),
-            Err(_) => return Err(GatewayError::Internal("command timed out".to_string())),
-        }
-        Ok(())
+        // Raw input to whatever is reading, NOT a command to execute.
+        //
+        // This previously submitted the payload as a new execution and waited
+        // up to 30 seconds for it to run, which meant `send` could not answer
+        // a prompt and could run a command the caller never intended. A caller
+        // that wants to run something uses `exec`.
+        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+        coord
+            .write_session_input(SessionId(session_id), input.into_bytes())
+            .map_err(map_execution_error)
     }
 
     fn get_output(&self, session_id: u32) -> Result<serde_json::Value, GatewayError> {

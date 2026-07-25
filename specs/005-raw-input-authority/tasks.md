@@ -66,22 +66,53 @@
 
 ### Implementation for User Story 2
 
-- [ ] T016 [US2] Create `crates/malt-daemon/src/executor/input.rs`: a `SessionInputChannel` built on `malt_platform::io::create_pipe()`, holding the write end. Writes are **non-blocking** — a full pipe is refused with a distinct error, never waited on, because the control actor must never block on a client (the discipline features 002/004 established). Register the module in `executor/mod.rs`.
-- [ ] T017 [US2] Own the channel in `crates/malt-daemon/src/executor/session_thread.rs` and register its read end at fd `0` in the session's `mash::Env` via `Env::register_fd`. This is what makes `read` take session input: the builtin already resolves `env.open_fd_read(0)` before falling back to `std::io::stdin()`, so **no change to `mash`'s `read` is needed** (research R2) — and the fall-through to the daemon's own console stops being reachable.
-- [ ] T018 [US2] Add a raw-input `SessionCommand` variant carrying `Vec<u8>` (plus `client_id`, wired in US3) in `crates/malt-daemon/src/executor/session_thread.rs`, with a handler that writes to the input channel. **It must not call `run_mash_command`** — that is the only producer of `CommandBlock`s and `CommandStarted` events, so keeping raw input off that path is what satisfies FR-010 structurally rather than by filtering (research R7).
-- [ ] T019 [US2] Rewrite `WriteInput` handling in `crates/malt-daemon/src/executor/session_thread.rs` to route to the input channel. Remove the `from_utf8_lossy` → `trim` → submit-as-command chain: each step independently corrupts input (mangles non-text bytes, destroys significant whitespace, discards a bare newline).
-- [ ] T020 [US2] Change `send_input` in `crates/malt-daemon/src/gateway_backend.rs` to write raw bytes instead of submitting an execution and waiting 30 seconds. **This changes the meaning of an existing endpoint** (`POST /sessions/{id}/send`) — note it in the commit body, since a caller relying on `send` to run a command must switch to `exec`.
-- [ ] T021 [US2] Add `Coordinator` passthrough for raw input in `crates/malt-daemon/src/executor/coordinator.rs`, following the `begin_*` pattern: do not wait while holding the coordinator lock.
-- [ ] T022 [US2] Give external processes the session's stdin in `crates/mash/src/executor.rs`. Spawns currently default to `Io::Inherit` (~lines 1284, 5682, 5895), so a REPL or `ssh` prompt inherits the *daemon's* stdin. Use `Io::File` with a handle to fd 0 when one is registered, falling back to `Inherit` when it is not so non-daemon `mash` usage is unaffected.
-- [ ] T023 [US2] Byte-fidelity tests in `crates/malt-daemon/tests/input.rs` (new): a blocked `read` receives exactly what was sent for three cases that the old path each broke differently — leading/trailing whitespace preserved, non-UTF-8 bytes unchanged, a bare newline delivered rather than discarded.
-- [ ] T024 [US2] Confidentiality test in `crates/malt-daemon/tests/input.rs`: answer a prompt with a recognisable secret, then assert it appears in **neither** the session's command history **nor** its lifecycle event stream. Assert absence from both surfaces explicitly — "we did not call that function" is not something a later reader can verify.
-- [ ] T025 [US2] Type-ahead and bound tests in `crates/malt-daemon/tests/input.rs`: input sent with nothing reading is delivered to the next read; filling the channel without a reader is refused with a clear error and the control actor keeps servicing other commands (assert by issuing another command successfully while the pipe is full).
-- [ ] T026 [P] [US2] External-process test in `crates/malt-daemon/tests/input.rs`: run `cat` (or an equivalent portable external reader) and assert it receives client input rather than hanging or reading the daemon's console.
-- [ ] T027 [US2] **Run the Smoosh conformance suite** and confirm 183/183 on native Windows. `read` and external-process stdin are POSIX surface; a regression here blocks this story.
-
-**Checkpoint**: all four gates green, Smoosh 183/183, quickstart Scenario 2 verified live. Commit. **Merge to main.**
-
----
+> **Status 2026-07-25 — the hang is fixed; the builtin path works; external
+> processes do not yet receive client input.**
+>
+> **Fixed.** Registering the session pipe at fd 0 hung every in-process tool.
+> In-process tools take a pre-read `&[u8]`, so their dispatch slurps fd 0 to
+> EOF -- and the session pipe never EOFs, because the daemon holds the write
+> end for the session's lifetime. `Env::register_endless_fd` marks that
+> descriptor and `Env::open_fd_read_unless_endless` refuses it, which every
+> slurp site now calls.
+>
+> The rule lives in `Env`, not at the call sites, for a specific reason:
+> there are **three** tool-dispatch sites in `executor.rs`, and guarding them
+> one at a time is how the second and third were missed. The first attempt
+> guarded only `executor.rs:1214` and the hang persisted, which cost far more
+> time than the fix.
+>
+> The regression test (`crates/mash/tests/endless_stdin.rs`) times real
+> commands with and without an endless fd 0 rather than inspecting the flag.
+> That is deliberate: the bug is a hang, and a flag-inspecting test passes
+> while two of three sites are still broken -- which is exactly what happened.
+> `echo` is kept in it as the control, because `echo` is a builtin and passed
+> throughout, including while every tool site was broken.
+>
+> **Verified live** against a real daemon on port 7920: `read -r X` receives
+> client bytes, a bare newline answers a prompt, `IFS= read -r U` with `café`
+> reports `len=4` (multi-byte intact), input is captured as data rather than
+> executed, and the answer does not appear in command history.
+>
+> **Known limitation, deliberately not fixed here (Principle IX).** Only the
+> `read` builtin receives session input. Neither in-process tools (`cat`,
+> `grep`, `wc`) nor **external processes** do -- verified: `cat`,
+> `/usr/bin/cat`, and `/usr/bin/head -n1` all return empty. So an external
+> program's password prompt still cannot be answered, which is a motivating
+> case in this spec.
+>
+> This is not a regression: before this feature fd 0 was unregistered, so
+> those commands got empty stdin then too. It is an unmet requirement, and
+> US2 stays open until it is met. Two distinct causes:
+> - **In-process tools** cannot stream by construction --
+>   `ToolFn = fn(&[String], &[u8])` takes a fully-read buffer, so a tool can
+>   never consume a stream that has not ended. Needs a streaming tool
+>   signature; backlog item.
+> - **External processes** already resolve stdin from a registered fd 0 at
+>   the spawn sites (`executor.rs:1129`, `:5410`), yet the child still reads
+>   EOF. The likely cause is Windows handle inheritance -- the duplicated
+>   handle is probably not marked inheritable -- but that is unconfirmed and
+>   is the first thing to check when US2 resumes.
 
 ## Phase 5: User Story 3 — Exactly one client can type at a time (Priority: P2)
 

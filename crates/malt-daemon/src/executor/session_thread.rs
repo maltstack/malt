@@ -6,6 +6,7 @@ use crate::executor::command_worker::{
 use crate::executor::events::{
     DeliveryOutcome, EventLog, GapReason, LifecycleEvent, LifecycleEventKind, SubscriberSink,
 };
+use crate::executor::input::{InputError, SessionInputChannel};
 use crate::DaemonError;
 use malt_compat::CompatTranslator;
 use malt_layout::resolve::compute_resolved_panes;
@@ -191,6 +192,16 @@ pub enum SessionCommand {
     ExecutionCompleted(ExecutionCompletion),
     /// Write input to PTY stdin.
     WriteInput { data: Vec<u8> },
+    /// Deliver raw bytes to whatever is reading this session's input.
+    ///
+    /// Deliberately separate from command submission. Routing a prompt answer
+    /// through `run_mash_command` would give it a command id, a persisted
+    /// history entry, and a published lifecycle event carrying its text --
+    /// and prompt answers are routinely passwords.
+    RawInput {
+        data: Vec<u8>,
+        reply: mpsc::Sender<Result<(), InputError>>,
+    },
     /// Get the current output snapshot as styled-grid JSON (requester sends
     /// back via channel). Built for human rendering clients
     /// (`malt-tui`/`maltty`) — for a program-readable variant see
@@ -279,6 +290,10 @@ impl std::fmt::Debug for SessionCommand {
                 .field("command_id", command_id)
                 .finish(),
             Self::ExecutionCompleted(_) => f.debug_struct("ExecutionCompleted").finish(),
+            Self::RawInput { data, .. } => f
+                .debug_struct("RawInput")
+                .field("bytes", &data.len())
+                .finish(),
             Self::WriteInput { data } => f
                 .debug_struct("WriteInput")
                 .field("len", &data.len())
@@ -340,6 +355,10 @@ pub struct SessionExecutor {
     /// what keeps a running command visible in history and what leaves an
     /// honestly-unfinished record if the daemon stops mid-command.
     pane_runtime: PaneRuntime,
+    /// Where raw client input goes. Its read end is registered at fd 0 in
+    /// the worker's `mash::Env`, which is what makes `read` take input from
+    /// the session instead of the daemon's own console.
+    input_channel: SessionInputChannel,
     /// Bounded catch-up window for reconnecting subscribers, and the
     /// authority on this session's event sequence numbers.
     event_log: EventLog,
@@ -475,6 +494,7 @@ impl SessionExecutor {
         env: Env,
         command_blocks: Vec<CommandBlock>,
     ) -> Result<SessionSpawn, DaemonError> {
+        let env = env;
         let snapshot = env.to_snapshot();
         let pane_cwd = env.get_str("PWD").to_string();
         // Resume the id sequence past everything already recorded so restored
@@ -494,6 +514,20 @@ impl SessionExecutor {
             DEFAULT_MAX_BLOCKS,
             command_blocks,
         );
+        // Create the session's input channel and register its read end at fd
+        // 0 *before* `env` moves into the worker. `mash`'s `read` builtin
+        // resolves `env.open_fd_read(0)` before falling back to
+        // `std::io::stdin()`, so this single registration both routes client
+        // input to the builtin and makes the fall-through to the daemon's own
+        // console unreachable -- with no change to `mash`.
+        let (input_channel, input_read) =
+            SessionInputChannel::new(session_id.0).map_err(DaemonError::Io)?;
+        // Registered as *endless*: the daemon holds the write end for the
+        // session's lifetime, so this descriptor never reaches EOF. `read`
+        // consumes it a line at a time and is unaffected; the in-process tool
+        // dispatch checks this flag and declines to slurp it.
+        env.register_endless_fd(0, input_read);
+
         let (control_tx, control_rx) = mpsc::channel();
         let (ingress, requests) = ExecutionIngress::new(session_id.clone(), capacity)?;
         let worker_thread = spawn_command_worker(
@@ -524,6 +558,7 @@ impl SessionExecutor {
                     finalization: None,
                     expected_completion_sequence: 1,
                     pane_runtime,
+                    input_channel,
                     event_log: EventLog::new(),
                     event_sinks: Vec::new(),
                     next_subscriber_id: 1,
@@ -622,11 +657,20 @@ impl SessionExecutor {
                     });
                     self.dispatch_render();
                 }
+                Ok(SessionCommand::RawInput { data, reply }) => {
+                    let _ = reply.send(self.input_channel.try_write(&data));
+                }
                 Ok(SessionCommand::WriteInput { data }) => {
-                    let input = String::from_utf8_lossy(&data);
-                    let input = input.trim();
-                    if !input.is_empty() {
-                        self.submit_discarded_command(input.to_string());
+                    // Raw bytes to the session's input, not a command to run.
+                    //
+                    // This used to decode lossily, trim, and submit the result
+                    // as a top-level command line. Each step corrupted input a
+                    // different way -- from_utf8_lossy mangles non-text bytes,
+                    // trim destroys whitespace a password may contain, and the
+                    // empty check discarded a bare newline, which is exactly
+                    // the byte a confirmation prompt waits for.
+                    if let Err(e) = self.input_channel.try_write(&data) {
+                        warn!(session = ?self.session.id(), error = %e, "raw input refused");
                     }
                 }
                 Ok(SessionCommand::GetOutput { reply }) => {

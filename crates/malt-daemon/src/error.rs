@@ -58,4 +58,7 @@ pub enum DaemonError {
 
     #[error("invalid pool configuration: {0}")]
     InvalidPoolConfig(String),
+
+    #[error("session {0:?} input buffer is full; the command has not consumed prior input")]
+    InputBufferFull(malt_protocol::common::SessionId),
 }

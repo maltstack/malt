@@ -287,8 +287,20 @@ impl MaltClient {
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<serde_json::Value> =
             resp.json().context("invalid send response")?;
-        let _: serde_json::Value = envelope.into_data("send input")?;
-        Ok(())
+        // `send` returns `data: null` on success, so `into_data` -- which
+        // treats a missing payload as a failure -- reported "response
+        // contained no data" for a request that had in fact succeeded. Check
+        // the `ok` flag and surface the server's message on failure instead.
+        if envelope.ok {
+            return Ok(());
+        }
+        Err(anyhow::anyhow!(
+            "{}",
+            envelope
+                .error
+                .map(ApiError::into_message)
+                .unwrap_or_else(|| "send input failed".to_string())
+        ))
     }
 }
 
