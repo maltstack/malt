@@ -14,7 +14,7 @@ const PATH_SEP: char = ';';
 /// - Print path if found
 /// - Exit 1 if any not found
 /// - Windows: check PATHEXT extensions (.exe, .cmd, .bat, etc.)
-pub fn which(args: &[String], _stdin: &[u8]) -> BuiltinResult {
+pub fn which(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
     if args.is_empty() {
         return BuiltinResult::failure(1, b"which: missing argument\n".to_vec());
     }
@@ -114,13 +114,16 @@ mod tests {
 
     #[test]
     fn which_missing_arg() {
-        let r = which(&[], &[]);
+        let r = which(&[], &mut &[][..]);
         assert_eq!(r.exit_code, 1);
     }
 
     #[test]
     fn which_not_found() {
-        let r = which(&["definitely_not_a_real_tool_xyz_12345".into()], &[]);
+        let r = which(
+            &["definitely_not_a_real_tool_xyz_12345".into()],
+            &mut &[][..],
+        );
         assert_eq!(r.exit_code, 1);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("not found"));
@@ -129,7 +132,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn which_finds_cmd_on_windows() {
-        let r = which(&["cmd".into()], &[]);
+        let r = which(&["cmd".into()], &mut &[][..]);
         let out = String::from_utf8_lossy(&r.stdout).to_ascii_lowercase();
         assert_eq!(r.exit_code, 0, "which cmd failed: {}", out);
         assert!(out.contains("cmd"), "expected cmd in: {}", out);
@@ -138,7 +141,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn which_finds_ls_on_unix() {
-        let r = which(&["ls".into()], &[]);
+        let r = which(&["ls".into()], &mut &[][..]);
         let out = String::from_utf8_lossy(&r.stdout);
         assert_eq!(r.exit_code, 0, "which ls failed: {}", out);
         assert!(out.contains("/ls"), "expected path with /ls in: {}", out);

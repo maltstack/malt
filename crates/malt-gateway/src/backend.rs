@@ -24,6 +24,14 @@ pub trait GatewayBackend: Send + Sync + 'static {
 
     fn send_input(&self, session_id: u32, input: String) -> Result<(), GatewayError>;
 
+    /// Signal end-of-input to whatever is currently reading -- Ctrl-D.
+    ///
+    /// Distinct from `send_input` with an empty payload: an empty write is a
+    /// zero-byte write, which a reader does not see at all, whereas this ends
+    /// the read. A command consuming to the end (`cat`, `wc`) needs it to
+    /// terminate, since a session's stdin has no natural end.
+    fn end_input(&self, session_id: u32) -> Result<(), GatewayError>;
+
     fn get_output(&self, session_id: u32) -> Result<serde_json::Value, GatewayError>;
 
     /// Plain-text variant of `get_output`, for programmatic/agent

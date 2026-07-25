@@ -17,7 +17,7 @@ use std::path::Path;
 /// Update file timestamps or create empty files.
 ///
 /// Exit 0 on success, 1 on error.
-pub fn touch(args: &[String], _stdin: &[u8]) -> BuiltinResult {
+pub fn touch(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
     let mut no_create = false;
     let mut paths: Vec<&str> = Vec::new();
 
@@ -82,7 +82,7 @@ mod tests {
         // Remove if exists
         let _ = fs::remove_file(path);
 
-        let r = touch(&[path.into()], b"");
+        let r = touch(&[path.into()], &mut &b""[..]);
         assert_eq!(r.exit_code, 0);
         assert!(Path::new(path).exists());
 
@@ -96,7 +96,7 @@ mod tests {
         // Create file first
         let _ = fs::write(path, "content");
 
-        let r = touch(&[path.into()], b"");
+        let r = touch(&[path.into()], &mut &b""[..]);
         assert_eq!(r.exit_code, 0);
         assert!(Path::new(path).exists());
 
@@ -110,7 +110,7 @@ mod tests {
         // Remove if exists
         let _ = fs::remove_file(path);
 
-        let r = touch(&["-c".into(), path.into()], b"");
+        let r = touch(&["-c".into(), path.into()], &mut &b""[..]);
         assert_eq!(r.exit_code, 0);
         assert!(!Path::new(path).exists());
     }

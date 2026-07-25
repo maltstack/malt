@@ -279,6 +279,25 @@ impl MaltClient {
         })
     }
 
+    pub fn end_input(&self, id: u32) -> Result<()> {
+        let resp = self
+            .authed(self.http.post(self.url(&format!("/sessions/{id}/eof"))))
+            .send()
+            .context("failed to reach daemon")?;
+        let envelope: ApiEnvelope<serde_json::Value> =
+            resp.json().context("invalid eof response")?;
+        if envelope.ok {
+            return Ok(());
+        }
+        Err(anyhow::anyhow!(
+            "{}",
+            envelope
+                .error
+                .map(ApiError::into_message)
+                .unwrap_or_else(|| "end-of-input failed".to_string())
+        ))
+    }
+
     pub fn send_input(&self, id: u32, input: &str) -> Result<()> {
         let resp = self
             .authed(self.http.post(self.url(&format!("/sessions/{id}/send"))))

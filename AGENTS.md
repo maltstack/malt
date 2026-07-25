@@ -184,6 +184,7 @@ malt output ID                # Print session's current output as plain text
 malt history ID               # List the session's command execution history
 malt watch ID                 # Stream the session's lifecycle events live (SSE)
 malt send ID "input"          # Send raw input to session
+malt eof ID                   # Signal end-of-input to the current reader (Ctrl-D)
 malt kill ID                  # Destroy session
 ```
 
@@ -344,6 +345,12 @@ as-is.
 - `rgb` type = `(u8, u8, u8)` tuple in generated code
 - `PaneId(u32)`, `SessionId(u32)` — NOT Copy, use `.clone()`
 - `encode_message`/`encode_envelope` return `Result` (not infallible)
+- `ToolFn` is `fn(&[String], &mut dyn Read)` — a *reader*, not a pre-read
+  `&[u8]` (changed 2026-07-25). Tools that consume to the end call
+  `malt_tools::read_all`; tools that stop early (`head -n`) must read
+  incrementally, or they wait for an end a live session never reaches. There
+  are three tool-dispatch sites in `executor.rs` and all call `tool_stdin` —
+  keep it that way; guarding them individually is how two were once missed.
 - mash `Env` created per session thread via `Env::from_os()` + `set_interactive(true)`
 - mash `execute_list` is synchronous — perfect for session executor's thread model
 - `Env` carries an `Option<Arc<isolation::job_objects::JobObject>>` on Windows (added 2026-07-24) — shared across `Env::clone()` (subshells) so a session's whole process tree lives in one job

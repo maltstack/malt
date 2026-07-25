@@ -215,6 +215,13 @@ impl GatewayBackend for DaemonBackend {
             .map_err(map_execution_error)
     }
 
+    fn end_input(&self, session_id: u32) -> Result<(), GatewayError> {
+        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+        coord
+            .end_session_input(SessionId(session_id))
+            .map_err(map_execution_error)
+    }
+
     fn get_output(&self, session_id: u32) -> Result<serde_json::Value, GatewayError> {
         let reply = {
             let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());

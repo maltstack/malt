@@ -16,6 +16,7 @@ pub fn build_router(backend: Arc<dyn GatewayBackend>) -> Router {
         .route("/sessions/{id}", delete(routes::sessions::destroy))
         .route("/sessions/{id}/exec", post(routes::sessions::exec))
         .route("/sessions/{id}/send", post(routes::sessions::send_input))
+        .route("/sessions/{id}/eof", post(routes::sessions::end_input))
         .route("/sessions/{id}/output", get(routes::sessions::output))
         .route(
             "/sessions/{id}/output/text",

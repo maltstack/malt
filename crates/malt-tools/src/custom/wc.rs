@@ -12,7 +12,7 @@ use std::path::Path;
 /// - `-w`: words only
 /// - `-c`: bytes only
 /// - `-m`: characters only
-pub fn wc(args: &[String], stdin: &[u8]) -> BuiltinResult {
+pub fn wc(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
     let mut lines_only = false;
     let mut words_only = false;
     let mut bytes_only = false;
@@ -42,7 +42,7 @@ pub fn wc(args: &[String], stdin: &[u8]) -> BuiltinResult {
     let show_all = !lines_only && !words_only && !bytes_only && !chars_only;
 
     if file_args.is_empty() {
-        let counts = count_data(stdin);
+        let counts = count_data(&crate::read_all(stdin));
         let line = format_counts(
             &counts, show_all, lines_only, words_only, bytes_only, chars_only, None,
         );
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn wc_stdin_default() {
-        let r = wc(&[], b"hello world\ngoodbye\n");
+        let r = wc(&[], &mut &b"hello world\ngoodbye\n"[..]);
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         // 2 lines, 3 words, some bytes
@@ -174,14 +174,14 @@ mod tests {
 
     #[test]
     fn wc_lines_only() {
-        let r = wc(&["-l".into()], b"a\nb\nc\n");
+        let r = wc(&["-l".into()], &mut &b"a\nb\nc\n"[..]);
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "3");
     }
 
     #[test]
     fn wc_words_only() {
-        let r = wc(&["-w".into()], b"one two three\nfour\n");
+        let r = wc(&["-w".into()], &mut &b"one two three\nfour\n"[..]);
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "4");
     }
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn wc_bytes_only() {
         let data = b"hello\n";
-        let r = wc(&["-c".into()], data);
+        let r = wc(&["-c".into()], &mut &data[..]);
         assert_eq!(r.exit_code, 0);
         assert_eq!(
             String::from_utf8_lossy(&r.stdout).trim(),
@@ -199,14 +199,14 @@ mod tests {
 
     #[test]
     fn wc_chars_only() {
-        let r = wc(&["-m".into()], "hello\n".as_bytes());
+        let r = wc(&["-m".into()], &mut "hello\n".as_bytes());
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "6");
     }
 
     #[test]
     fn wc_empty_input() {
-        let r = wc(&[], &[]);
+        let r = wc(&[], &mut &[][..]);
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("0"));

@@ -12,7 +12,7 @@ use std::path::Path;
 /// Remove files or directories.
 ///
 /// Exit 0 on success, 1 on error (unless -f).
-pub fn rm(args: &[String], _stdin: &[u8]) -> BuiltinResult {
+pub fn rm(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
     let mut recursive = false;
     let mut force = false;
     let mut paths: Vec<&str> = Vec::new();
@@ -115,7 +115,7 @@ mod tests {
         let path = "test_rm_file.txt";
         fs::write(path, "content").unwrap();
 
-        let r = rm(&[path.into()], b"");
+        let r = rm(&[path.into()], &mut &b""[..]);
         assert_eq!(r.exit_code, 0);
         assert!(!Path::new(path).exists());
     }
@@ -126,7 +126,7 @@ mod tests {
         // Ensure doesn't exist
         let _ = fs::remove_file(path);
 
-        let r = rm(&[path.into()], b"");
+        let r = rm(&[path.into()], &mut &b""[..]);
         assert_eq!(r.exit_code, 1);
     }
 
@@ -136,7 +136,7 @@ mod tests {
         // Ensure doesn't exist
         let _ = fs::remove_file(path);
 
-        let r = rm(&["-f".into(), path.into()], b"");
+        let r = rm(&["-f".into(), path.into()], &mut &b""[..]);
         assert_eq!(r.exit_code, 0);
     }
 
@@ -148,7 +148,7 @@ mod tests {
         fs::create_dir_all(path).unwrap();
         fs::write(&nested, "content").unwrap();
 
-        let r = rm(&["-rf".into(), path.display().to_string()], b"");
+        let r = rm(&["-rf".into(), path.display().to_string()], &mut &b""[..]);
         assert_eq!(
             r.exit_code,
             0,
@@ -182,7 +182,7 @@ mod tests {
 
         fs::remove_file(&target).unwrap();
 
-        let result = rm(&[link.display().to_string()], b"");
+        let result = rm(&[link.display().to_string()], &mut &b""[..]);
         assert_eq!(
             result.exit_code,
             0,

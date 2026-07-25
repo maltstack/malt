@@ -5,7 +5,7 @@
 use crate::BuiltinResult;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn date(args: &[String], _stdin: &[u8]) -> BuiltinResult {
+pub fn date(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
     if args.is_empty() || (args.len() == 1 && args[0] == "+%s") {
         let seconds = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(duration) => duration.as_secs(),

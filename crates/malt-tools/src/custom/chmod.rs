@@ -13,7 +13,7 @@ use std::path::Path;
 /// Change file mode bits.
 ///
 /// Exit 0 on success, 1 on error.
-pub fn chmod(args: &[String], _stdin: &[u8]) -> BuiltinResult {
+pub fn chmod(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
     let mut _recursive = false;
     let mut mode_str: Option<&str> = None;
     let mut paths: Vec<&str> = Vec::new();
@@ -189,7 +189,7 @@ mod tests {
         let path = "test_chmod.txt";
         fs::write(path, "content").unwrap();
 
-        let r = chmod(&["644".into(), path.into()], b"");
+        let r = chmod(&["644".into(), path.into()], &mut &b""[..]);
         // On Windows this succeeds with no-op, on Unix it changes permissions
         assert_eq!(r.exit_code, 0);
 
@@ -202,7 +202,7 @@ mod tests {
         let path = "test_chmod_nonexistent.txt";
         let _ = fs::remove_file(path);
 
-        let r = chmod(&["644".into(), path.into()], b"");
+        let r = chmod(&["644".into(), path.into()], &mut &b""[..]);
         assert_eq!(r.exit_code, 1);
     }
 
@@ -212,7 +212,10 @@ mod tests {
         let path = dir.path().join("script.sh");
         fs::write(&path, "echo hi\n").unwrap();
 
-        let result = chmod(&["-r".into(), path.to_string_lossy().into_owned()], b"");
+        let result = chmod(
+            &["-r".into(), path.to_string_lossy().into_owned()],
+            &mut &b""[..],
+        );
 
         assert_eq!(
             result.exit_code,

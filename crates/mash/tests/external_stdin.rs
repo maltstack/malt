@@ -16,16 +16,17 @@
 use mash::env::Env;
 use std::io::Write;
 
-/// Run `script` with an endless pipe at fd 0 pre-loaded with `INPUT`.
+/// Run `script` with a never-EOF pipe at fd 0 pre-loaded with input.
 fn run(script: &str) -> (i32, String) {
     let mut env = Env::from_os();
     env.set_interactive(true);
     let (read_end, mut write_end) = malt_platform::io::create_pipe().expect("pipe");
     write_end.write_all(b"through-external\n").expect("write");
     write_end.flush().expect("flush");
-    // Held open for the whole run, exactly like a session: this must not EOF.
+    // Held open for the whole run, exactly like a session: this must not EOF,
+    // so anything that reads it to the end would block forever.
     std::mem::forget(write_end);
-    env.register_endless_fd(0, read_end);
+    env.register_fd(0, read_end);
 
     let commands = mash::parser::parse(script).expect("script should parse");
     let result = mash::executor::execute_list(&commands, script, &mut env);
@@ -82,10 +83,10 @@ fn the_read_builtin_reads_a_registered_fd_zero() {
     );
 }
 
-/// A pipeline still feeds an in-process tool, even though fd 0 is endless.
+/// An explicit pipeline source still wins over the session's fd 0.
 ///
-/// This is the guard against "fixing" the tool gap by making tools ignore
-/// stdin wholesale: an explicit pipeline source must keep working.
+/// The guard against "fixing" stdin resolution by preferring one source
+/// everywhere: a pipeline must still feed the tool.
 #[test]
 fn a_pipeline_still_feeds_an_in_process_tool() {
     let (_, out) = run("echo piped-in | /usr/bin/head -n1");
@@ -95,18 +96,21 @@ fn a_pipeline_still_feeds_an_in_process_tool() {
     );
 }
 
-/// Known gap, asserted so it is visible and cannot regress silently.
+/// In-process tools read session stdin too, and stop when they have enough.
 ///
-/// In-process tools take a pre-read `&[u8]` (`ToolFn = fn(&[String], &[u8])`),
-/// so they cannot consume a stream that has not ended. Against a session's
-/// endless stdin they are handed an empty buffer instead of hanging. When
-/// streaming tools land, this test should be inverted, not deleted.
-/// See docs/BACKLOG.md.
+/// This was the inverse assertion until tools became reader-based: `ToolFn`
+/// took a finished `&[u8]`, so dispatch had to slurp fd 0 to EOF, and a
+/// session's stdin has no EOF. Tools were handed an empty buffer to keep them
+/// from hanging.
+///
+/// `head -n1` is the sharp case. It must return on its first line without
+/// waiting for a second, which is only true because `head_reader` takes
+/// exactly `num_lines` rather than reading one more and then breaking.
 #[test]
-fn an_in_process_tool_currently_sees_empty_session_stdin() {
+fn an_in_process_tool_reads_session_stdin_and_stops_early() {
     let (_, out) = run("/usr/bin/head -n1");
     assert!(
-        !out.contains("through-external"),
-        "if a tool now reads session stdin, invert this test and update the backlog; got {out:?}"
+        out.contains("through-external"),
+        "an in-process tool should read client input, got {out:?}"
     );
 }

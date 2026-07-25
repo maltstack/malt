@@ -42,6 +42,11 @@ pub enum Command {
     Exec { session_id: u32, command: String },
     /// Send raw input to a session
     Send { session_id: u32, input: String },
+    /// Signal end-of-input to a session's current reader (Ctrl-D)
+    ///
+    /// Ends the current read, not the session. A command that consumes to the
+    /// end -- `cat`, `wc`, `grep` with no file -- needs this to finish.
+    Eof { session_id: u32 },
     /// Print a session's current output as plain text
     Output { session_id: u32 },
     /// List a session's command execution history, oldest first

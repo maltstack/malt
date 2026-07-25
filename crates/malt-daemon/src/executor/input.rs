@@ -47,24 +47,44 @@ pub enum InputError {
 /// construction so it can be registered as the session's fd 0.
 #[derive(Debug)]
 pub struct SessionInputChannel {
-    tx: SyncSender<Vec<u8>>,
+    tx: SyncSender<InputMessage>,
+}
+
+/// What the writer thread is being asked to do.
+///
+/// End-of-input is a queued message rather than an immediate action so that it
+/// keeps its place in line: bytes sent before it must reach the reader before
+/// the stream ends, which a side-channel flag could not guarantee.
+#[derive(Debug)]
+enum InputMessage {
+    Bytes(Vec<u8>),
+    EndOfInput,
 }
 
 impl SessionInputChannel {
     /// Create the channel and return it alongside the pipe's read end.
     ///
-    /// The caller is expected to register that read end at fd `0` in the
-    /// session's `mash::Env`. Until it does, `read` will still fall through
-    /// to the daemon's console.
-    pub fn new(session_id: u32) -> std::io::Result<(Self, std::fs::File)> {
-        Self::with_depth(session_id, INPUT_QUEUE_DEPTH)
+    /// The caller registers that read end at fd `0` in the session's
+    /// `mash::Env`, and passes the env's [`fd_registry`] handle so the channel
+    /// can replace fd 0 later when a client signals end-of-input.
+    ///
+    /// [`fd_registry`]: mash::env::Env::fd_registry
+    pub fn new(
+        session_id: u32,
+        registry: malt_platform::vfs::SharedFdRegistry,
+    ) -> std::io::Result<(Self, std::fs::File)> {
+        Self::with_depth(session_id, registry, INPUT_QUEUE_DEPTH)
     }
 
     /// As [`SessionInputChannel::new`] with an explicit queue depth, so tests
     /// can exhaust the bound without writing a pipe buffer's worth of data.
-    pub fn with_depth(session_id: u32, depth: usize) -> std::io::Result<(Self, std::fs::File)> {
-        let (read_end, mut write_end) = malt_platform::io::create_pipe()?;
-        let (tx, rx) = sync_channel::<Vec<u8>>(depth.max(1));
+    pub fn with_depth(
+        session_id: u32,
+        registry: malt_platform::vfs::SharedFdRegistry,
+        depth: usize,
+    ) -> std::io::Result<(Self, std::fs::File)> {
+        let (read_end, write_end) = malt_platform::io::create_pipe()?;
+        let (tx, rx) = sync_channel::<InputMessage>(depth.max(1));
 
         // The writer thread exists so the blocking write happens somewhere
         // that is allowed to block. It ends when the channel closes, which
@@ -72,17 +92,67 @@ impl SessionInputChannel {
         std::thread::Builder::new()
             .name(format!("session-input-{session_id}"))
             .spawn(move || {
-                while let Ok(bytes) = rx.recv() {
-                    if write_end.write_all(&bytes).is_err() {
-                        break;
-                    }
-                    if write_end.flush().is_err() {
-                        break;
+                let mut write_end = write_end;
+                while let Ok(message) = rx.recv() {
+                    match message {
+                        InputMessage::Bytes(bytes) => {
+                            if write_end.write_all(&bytes).is_err() {
+                                break;
+                            }
+                            if write_end.flush().is_err() {
+                                break;
+                            }
+                        }
+                        InputMessage::EndOfInput => {
+                            // Dropping the only write end is what the reader
+                            // observes as EOF -- there is no in-band byte that
+                            // means "end of input", which is exactly why a
+                            // sentinel value would not work here.
+                            let (next_read, next_write) = match malt_platform::io::create_pipe() {
+                                Ok(pair) => pair,
+                                Err(e) => {
+                                    // Without a replacement pipe the session
+                                    // could never be given input again. Stop
+                                    // the writer rather than pretend.
+                                    tracing::error!(
+                                        session_id,
+                                        %e,
+                                        "session input: could not replace pipe after EOF; \
+                                         this session can no longer receive input"
+                                    );
+                                    break;
+                                }
+                            };
+                            // Install the replacement *before* dropping the old
+                            // write end, so a command starting immediately
+                            // after EOF finds a live fd 0 rather than a closed
+                            // one.
+                            registry.register_file_at(0, next_read);
+                            write_end = next_write;
+                        }
                     }
                 }
             })?;
 
         Ok((Self { tx }, read_end))
+    }
+
+    /// Signal end-of-input to whatever is currently reading -- the daemon's
+    /// equivalent of Ctrl-D.
+    ///
+    /// A command consuming to the end (`cat`, `wc`, `grep`) terminates on
+    /// this. Without it those commands would wait forever, because a session's
+    /// stdin has no natural end: the daemon holds the write end for the
+    /// session's lifetime.
+    ///
+    /// This ends the *current* read, not the session. A fresh pipe is put in
+    /// place immediately, so the next command can still be given input.
+    pub fn end_of_input(&self) -> Result<(), InputError> {
+        match self.tx.try_send(InputMessage::EndOfInput) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(InputError::BufferFull),
+            Err(TrySendError::Disconnected(_)) => Err(InputError::Closed),
+        }
     }
 
     /// Queue bytes for delivery to whatever is reading this session's input.
@@ -92,7 +162,7 @@ impl SessionInputChannel {
     /// to a confirmation prompt, and leading or trailing whitespace can be
     /// part of a password.
     pub fn try_write(&self, data: &[u8]) -> Result<(), InputError> {
-        match self.tx.try_send(data.to_vec()) {
+        match self.tx.try_send(InputMessage::Bytes(data.to_vec())) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(InputError::BufferFull),
             Err(TrySendError::Disconnected(_)) => Err(InputError::Closed),
@@ -107,7 +177,8 @@ mod tests {
 
     #[test]
     fn written_bytes_arrive_at_the_read_end_unmodified() {
-        let (channel, mut read_end) = SessionInputChannel::new(1).unwrap();
+        let (channel, mut read_end) =
+            SessionInputChannel::new(1, malt_platform::vfs::SharedFdRegistry::new()).unwrap();
 
         // Each of these is a way the previous input path corrupted data.
         channel.try_write(b"  padded  \n").unwrap();
@@ -122,7 +193,8 @@ mod tests {
 
     #[test]
     fn bytes_that_are_not_valid_text_survive() {
-        let (channel, mut read_end) = SessionInputChannel::new(2).unwrap();
+        let (channel, mut read_end) =
+            SessionInputChannel::new(2, malt_platform::vfs::SharedFdRegistry::new()).unwrap();
         let raw = [0xff, 0xfe, 0x00, 0x41, 0x0a];
         channel.try_write(&raw).unwrap();
 
@@ -136,7 +208,8 @@ mod tests {
 
     #[test]
     fn a_bare_newline_is_delivered_rather_than_discarded() {
-        let (channel, mut read_end) = SessionInputChannel::new(3).unwrap();
+        let (channel, mut read_end) =
+            SessionInputChannel::new(3, malt_platform::vfs::SharedFdRegistry::new()).unwrap();
         channel.try_write(b"\n").unwrap();
 
         let mut buf = [0u8; 1];
@@ -152,7 +225,9 @@ mod tests {
     fn a_full_queue_is_refused_rather_than_blocking() {
         // Depth 1, and nothing ever reads the pipe. Once the pipe buffer and
         // the queue are both full, further writes must return promptly.
-        let (channel, _read_end) = SessionInputChannel::with_depth(4, 1).unwrap();
+        let (channel, _read_end) =
+            SessionInputChannel::with_depth(4, malt_platform::vfs::SharedFdRegistry::new(), 1)
+                .unwrap();
 
         let big = vec![b'x'; 256 * 1024]; // larger than a default pipe buffer
         let started = std::time::Instant::now();
@@ -177,7 +252,8 @@ mod tests {
 
     #[test]
     fn submissions_are_delivered_in_order() {
-        let (channel, mut read_end) = SessionInputChannel::new(5).unwrap();
+        let (channel, mut read_end) =
+            SessionInputChannel::new(5, malt_platform::vfs::SharedFdRegistry::new()).unwrap();
         channel.try_write(b"first\n").unwrap();
         channel.try_write(b"second\n").unwrap();
 

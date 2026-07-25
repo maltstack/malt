@@ -11,7 +11,7 @@ use std::path::Path;
 /// - `head [OPTION]... [FILE]...`
 /// - `-n NUM`: output first NUM lines (default 10)
 /// - Exit 0 on success, 1 if any file can't be read
-pub fn head(args: &[String], stdin: &[u8]) -> BuiltinResult {
+pub fn head(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
     let mut num_lines: usize = 10;
     let mut file_args: Vec<&str> = Vec::new();
 
@@ -97,7 +97,7 @@ pub fn head(args: &[String], stdin: &[u8]) -> BuiltinResult {
 
     if file_args.is_empty() {
         // Read from stdin
-        head_reader(stdin, num_lines, &mut stdout);
+        head_reader(&mut *stdin, num_lines, &mut stdout);
     } else {
         // Read from files
         let multiple_files = file_args.len() > 1;
@@ -112,7 +112,7 @@ pub fn head(args: &[String], stdin: &[u8]) -> BuiltinResult {
             }
 
             if *path_str == "-" {
-                head_reader(stdin, num_lines, &mut stdout);
+                head_reader(&mut *stdin, num_lines, &mut stdout);
             } else {
                 let path = Path::new(path_str);
                 match std::fs::read_to_string(path) {
@@ -135,14 +135,20 @@ pub fn head(args: &[String], stdin: &[u8]) -> BuiltinResult {
     }
 }
 
-fn head_reader(input: &[u8], num_lines: usize, output: &mut Vec<u8>) {
+/// Copy at most `num_lines` lines from `input` to `output`.
+///
+/// Generic over `Read` so this streams: against a live session's stdin,
+/// `head -n1` must return as soon as it has one line.
+///
+/// `take(num_lines)` rather than enumerate-and-break. They are equivalent on a
+/// finished buffer, but break only fires on the *next* iteration, so the old
+/// form pulled one line beyond the limit -- which on a live stream means
+/// blocking for a line the user has no reason to type.
+fn head_reader<R: std::io::Read>(input: R, num_lines: usize, output: &mut Vec<u8>) {
     let reader = std::io::BufReader::new(input);
     // map_while rather than flatten: on a reader that keeps returning Err,
     // flatten spins forever instead of stopping.
-    for (count, line) in reader.lines().map_while(Result::ok).enumerate() {
-        if count >= num_lines {
-            break;
-        }
+    for line in reader.lines().map_while(Result::ok).take(num_lines) {
         output.extend_from_slice(line.as_bytes());
         output.push(b'\n');
     }
@@ -154,7 +160,7 @@ mod tests {
 
     #[test]
     fn head_stdin_default() {
-        let r = head(&[], b"line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\n");
+        let r = head(&[], &mut &b"line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\n"[..]);
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert_eq!(out.lines().count(), 10);
@@ -162,14 +168,14 @@ mod tests {
 
     #[test]
     fn head_stdin_n3() {
-        let r = head(&["-n".into(), "3".into()], b"a\nb\nc\nd\ne\n");
+        let r = head(&["-n".into(), "3".into()], &mut &b"a\nb\nc\nd\ne\n"[..]);
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "a\nb\nc\n");
     }
 
     #[test]
     fn head_stdin_short_form() {
-        let r = head(&["-3".into()], b"a\nb\nc\nd\ne\n");
+        let r = head(&["-3".into()], &mut &b"a\nb\nc\nd\ne\n"[..]);
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "a\nb\nc\n");
     }

@@ -30,7 +30,7 @@ fn registry_does_not_contain_unknown() {
 fn cat_stdin() {
     let reg = Registry::new();
     let cat = reg.get("cat").unwrap();
-    let result = cat(&[], b"hello\nworld\n");
+    let result = cat(&[], &mut &b"hello\nworld\n"[..]);
     assert_eq!(result.exit_code, 0);
     assert_eq!(String::from_utf8_lossy(&result.stdout), "hello\nworld\n");
 }
@@ -42,7 +42,7 @@ fn cat_file() {
     std::fs::write(&path, "content\n").unwrap();
     let reg = Registry::new();
     let cat = reg.get("cat").unwrap();
-    let result = cat(&[path.to_string_lossy().to_string()], &[]);
+    let result = cat(&[path.to_string_lossy().to_string()], &mut &[][..]);
     assert_eq!(result.exit_code, 0);
     assert!(String::from_utf8_lossy(&result.stdout).contains("content"));
 }
@@ -51,7 +51,7 @@ fn cat_file() {
 fn cat_missing_file() {
     let reg = Registry::new();
     let cat = reg.get("cat").unwrap();
-    let result = cat(&["/nonexistent/file".into()], &[]);
+    let result = cat(&["/nonexistent/file".into()], &mut &[][..]);
     assert_ne!(result.exit_code, 0);
 }
 
@@ -59,7 +59,10 @@ fn cat_missing_file() {
 fn grep_matches() {
     let reg = Registry::new();
     let grep = reg.get("grep").unwrap();
-    let result = grep(&["hello".into()], b"hello world\ngoodbye\nhello again\n");
+    let result = grep(
+        &["hello".into()],
+        &mut &b"hello world\ngoodbye\nhello again\n"[..],
+    );
     assert_eq!(result.exit_code, 0);
     let output = String::from_utf8_lossy(&result.stdout);
     assert!(output.contains("hello world"));
@@ -71,7 +74,7 @@ fn grep_matches() {
 fn grep_no_match() {
     let reg = Registry::new();
     let grep = reg.get("grep").unwrap();
-    let result = grep(&["xyz".into()], b"hello\nworld\n");
+    let result = grep(&["xyz".into()], &mut &b"hello\nworld\n"[..]);
     assert_eq!(result.exit_code, 1);
 }
 
@@ -79,7 +82,7 @@ fn grep_no_match() {
 fn grep_invert() {
     let reg = Registry::new();
     let grep = reg.get("grep").unwrap();
-    let result = grep(&["-v".into(), "hello".into()], b"hello\nworld\n");
+    let result = grep(&["-v".into(), "hello".into()], &mut &b"hello\nworld\n"[..]);
     let output = String::from_utf8_lossy(&result.stdout);
     assert!(!output.contains("hello"));
     assert!(output.contains("world"));
@@ -89,7 +92,10 @@ fn grep_invert() {
 fn grep_count() {
     let reg = Registry::new();
     let grep = reg.get("grep").unwrap();
-    let result = grep(&["-c".into(), "hello".into()], b"hello\nhello\nworld\n");
+    let result = grep(
+        &["-c".into(), "hello".into()],
+        &mut &b"hello\nhello\nworld\n"[..],
+    );
     assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "2");
 }
 
@@ -97,7 +103,7 @@ fn grep_count() {
 fn wc_stdin() {
     let reg = Registry::new();
     let wc = reg.get("wc").unwrap();
-    let result = wc(&[], b"hello world\ngoodbye\n");
+    let result = wc(&[], &mut &b"hello world\ngoodbye\n"[..]);
     assert_eq!(result.exit_code, 0);
     let output = String::from_utf8_lossy(&result.stdout);
     // Should contain line count (2), word count (3), byte count
@@ -108,7 +114,7 @@ fn wc_stdin() {
 fn wc_lines_only() {
     let reg = Registry::new();
     let wc = reg.get("wc").unwrap();
-    let result = wc(&["-l".into()], b"a\nb\nc\n");
+    let result = wc(&["-l".into()], &mut &b"a\nb\nc\n"[..]);
     assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "3");
 }
 
@@ -118,11 +124,11 @@ fn which_finds_something() {
     let which = reg.get("which").unwrap();
     // On Windows, cmd.exe should be findable; on Unix, sh
     if cfg!(windows) {
-        let result = which(&["cmd".into()], &[]);
+        let result = which(&["cmd".into()], &mut &[][..]);
         // May or may not find it depending on PATH config
         let _ = result;
     } else {
-        let result = which(&["sh".into()], &[]);
+        let result = which(&["sh".into()], &mut &[][..]);
         let _ = result;
     }
 }
@@ -131,7 +137,7 @@ fn which_finds_something() {
 fn env_prints_vars() {
     let reg = Registry::new();
     let env = reg.get("env").unwrap();
-    let result = env(&[], &[]);
+    let result = env(&[], &mut &[][..]);
     assert_eq!(result.exit_code, 0);
     let output = String::from_utf8_lossy(&result.stdout);
     // Should contain at least PATH

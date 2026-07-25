@@ -18,7 +18,7 @@ use std::path::Path;
 /// - `-n`: line numbers
 /// - `-l`: list matching filenames only
 /// - Exit 0 if match found, 1 if not, 2 on error
-pub fn grep(args: &[String], stdin: &[u8]) -> BuiltinResult {
+pub fn grep(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
     let mut case_insensitive = false;
     let mut invert = false;
     let mut count_only = false;
@@ -106,7 +106,7 @@ pub fn grep(args: &[String], stdin: &[u8]) -> BuiltinResult {
 
     if file_args.is_empty() {
         return grep_reader(
-            stdin,
+            &crate::read_all(stdin),
             &re,
             invert,
             count_only,
@@ -244,7 +244,10 @@ mod tests {
 
     #[test]
     fn grep_basic_match() {
-        let r = grep(&["hello".into()], b"hello world\ngoodbye\nhello again\n");
+        let r = grep(
+            &["hello".into()],
+            &mut &b"hello world\ngoodbye\nhello again\n"[..],
+        );
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("hello world"));
@@ -254,7 +257,7 @@ mod tests {
 
     #[test]
     fn grep_no_match() {
-        let r = grep(&["xyz".into()], b"hello\nworld\n");
+        let r = grep(&["xyz".into()], &mut &b"hello\nworld\n"[..]);
         assert_eq!(r.exit_code, 1);
     }
 
@@ -262,7 +265,7 @@ mod tests {
     fn grep_case_insensitive() {
         let r = grep(
             &["-i".into(), "hello".into()],
-            b"Hello World\nhello world\nHELLO\n",
+            &mut &b"Hello World\nhello world\nHELLO\n"[..],
         );
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
@@ -271,7 +274,7 @@ mod tests {
 
     #[test]
     fn grep_invert() {
-        let r = grep(&["-v".into(), "hello".into()], b"hello\nworld\n");
+        let r = grep(&["-v".into(), "hello".into()], &mut &b"hello\nworld\n"[..]);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(!out.contains("hello"));
         assert!(out.contains("world"));
@@ -279,14 +282,17 @@ mod tests {
 
     #[test]
     fn grep_count() {
-        let r = grep(&["-c".into(), "hello".into()], b"hello\nhello\nworld\n");
+        let r = grep(
+            &["-c".into(), "hello".into()],
+            &mut &b"hello\nhello\nworld\n"[..],
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "2");
     }
 
     #[test]
     fn grep_line_numbers() {
-        let r = grep(&["-n".into(), "aaa".into()], b"aaa\nbbb\naaa\n");
+        let r = grep(&["-n".into(), "aaa".into()], &mut &b"aaa\nbbb\naaa\n"[..]);
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("1:aaa"));
@@ -295,26 +301,29 @@ mod tests {
 
     #[test]
     fn grep_no_pattern() {
-        let r = grep(&[], &[]);
+        let r = grep(&[], &mut &[][..]);
         assert_eq!(r.exit_code, 2);
     }
 
     #[test]
     fn grep_invalid_regex() {
-        let r = grep(&["[invalid".into()], b"test\n");
+        let r = grep(&["[invalid".into()], &mut &b"test\n"[..]);
         assert_eq!(r.exit_code, 2);
     }
 
     #[test]
     fn grep_e_option_uses_following_pattern() {
-        let r = grep(&["-e".into(), "^.$".into()], b".\n..\n");
+        let r = grep(&["-e".into(), "^.$".into()], &mut &b".\n..\n"[..]);
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), ".\n");
     }
 
     #[test]
     fn grep_combined_flags_can_be_followed_by_e_pattern() {
-        let r = grep(&["-in".into(), "-e".into(), "hello".into()], b"HELLO\n");
+        let r = grep(
+            &["-in".into(), "-e".into(), "hello".into()],
+            &mut &b"HELLO\n"[..],
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "1:HELLO\n");
     }

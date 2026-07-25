@@ -52,7 +52,27 @@ impl BuiltinResult {
 ///
 /// Arguments: `(args, stdin)` -> `BuiltinResult`.
 /// `stdin` is the byte content piped into the tool (empty slice if none).
-pub type ToolFn = fn(args: &[String], stdin: &[u8]) -> BuiltinResult;
+pub type ToolFn = fn(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult;
+
+/// Read a tool's entire standard input.
+///
+/// Correct for tools whose semantics really are "consume until end of input"
+/// -- `cat`, `wc`, `sed`, `grep`. Against a terminal session's stdin this
+/// blocks until the client signals end-of-input, which is exactly what a real
+/// shell does; it is not a hang, and the cure is for the client to send EOF.
+///
+/// Tools that must stop before the end -- `head -n` is the obvious one --
+/// must read incrementally instead of calling this, or they will wait for an
+/// end that a live session has no reason to reach.
+///
+/// A read error yields whatever was read so far rather than being reported.
+/// That matches the previous behaviour, where the caller pre-read the bytes
+/// and a failure simply produced a shorter buffer.
+pub fn read_all(stdin: &mut dyn std::io::Read) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let _ = stdin.read_to_end(&mut buf);
+    buf
+}
 
 /// Registry of in-process tools.
 ///
@@ -134,7 +154,7 @@ mod tests {
         let date = registry
             .get("date")
             .expect("date tool should be registered");
-        let result = date(&["+%s".to_string()], b"");
+        let result = date(&["+%s".to_string()], &mut &b""[..]);
 
         assert_eq!(result.exit_code, 0);
         assert!(result.stderr.is_empty());
@@ -153,7 +173,7 @@ mod tests {
             .get("sleep")
             .expect("sleep tool should be registered");
         let start = Instant::now();
-        let result = sleep(&["0.05".to_string()], b"");
+        let result = sleep(&["0.05".to_string()], &mut &b""[..]);
         let elapsed = start.elapsed();
 
         assert_eq!(

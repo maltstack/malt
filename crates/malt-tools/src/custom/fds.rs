@@ -6,7 +6,7 @@
 use crate::{BuiltinResult, ToolFn};
 
 /// Run the fds utility: report status of file descriptors 0-9
-fn fds_tool(_args: &[String], _stdin: &[u8]) -> BuiltinResult {
+fn fds_tool(_args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
     let mut output = String::new();
 
     for fd in 0..=9 {

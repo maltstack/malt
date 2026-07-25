@@ -1211,26 +1211,10 @@ fn execute_simple_with_io(
     }
     if tools_registry.contains(resolved_dispatch_name) {
         record_hashed_command(env, &resolved_cmd_name, resolved_dispatch_name);
-        let stdin_bytes: Vec<u8> = if let Some(mut file) = resolved_io
-            .stdin
-            .take()
-            .or(stdin_file.take())
-            .or_else(|| env.open_fd_read_unless_endless(0).ok())
-        {
-            let mut buf = Vec::new();
-            if let Err(e) = std::io::Read::read_to_end(&mut file, &mut buf) {
-                return ExecResult::failure(
-                    1,
-                    format!("mash: {resolved_dispatch_name}: read stdin failed: {e}\n"),
-                );
-            }
-            buf
-        } else {
-            Vec::new()
-        };
+        let mut stdin_reader = tool_stdin(resolved_io.stdin.take(), stdin_file.take(), env);
 
         let tool_fn = tools_registry.get(resolved_dispatch_name).unwrap();
-        let tool_result = tool_fn(&argv, &stdin_bytes);
+        let tool_result = tool_fn(&argv, &mut stdin_reader);
         let mut result = ExecResult {
             exit_code: tool_result.exit_code,
             stdout: tool_result.stdout,
@@ -1600,21 +1584,11 @@ fn execute_simple(
     if tools_registry.contains(dispatch_name) {
         record_hashed_command(env, &cmd_name, dispatch_name);
         // Read stdin if redirected.
-        let stdin_bytes: Vec<u8> = if let Some(mut file) = resolved_io.stdin.take() {
-            let mut buf = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut file, &mut buf);
-            buf
-        } else if let Ok(mut file) = env.open_fd_read_unless_endless(0) {
-            let mut buf = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut file, &mut buf);
-            buf
-        } else {
-            Vec::new()
-        };
+        let mut stdin_reader = tool_stdin(resolved_io.stdin.take(), None, env);
 
         // Execute the tool.
         let tool_fn = tools_registry.get(dispatch_name).unwrap();
-        let tool_result = tool_fn(&argv, &stdin_bytes);
+        let tool_result = tool_fn(&argv, &mut stdin_reader);
 
         // Convert to ExecResult and apply redirects.
         let mut result = ExecResult {
@@ -5865,16 +5839,10 @@ fn execute_expanded_command(
         return result;
     }
     if tools_registry.contains(cmd_name) {
-        let stdin_bytes: Vec<u8> = if let Some(mut file) = resolved_io.stdin.take() {
-            let mut buf = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut file, &mut buf);
-            buf
-        } else {
-            Vec::new()
-        };
+        let mut stdin_reader = tool_stdin(resolved_io.stdin.take(), None, env);
 
         let tool_fn = tools_registry.get(cmd_name).unwrap();
-        let tool_result = tool_fn(argv, &stdin_bytes);
+        let tool_result = tool_fn(argv, &mut stdin_reader);
         let mut result = ExecResult {
             exit_code: tool_result.exit_code,
             stdout: tool_result.stdout,
@@ -6066,6 +6034,34 @@ fn wait_for_child_exit_code(
             Some(status) => return Ok(status.code()),
             None => std::thread::sleep(Duration::from_millis(10)),
         }
+    }
+}
+
+/// Resolve the standard input an in-process tool should read.
+///
+/// Returns a *reader*, not a pre-read buffer. That distinction is the whole
+/// point: tools used to take `&[u8]`, so dispatch had to read the source to
+/// EOF before it could call one. Against a terminal session's stdin -- whose
+/// write end the daemon holds open for the session's lifetime -- that never
+/// returned, and every tool in a session hung.
+///
+/// With a reader, a tool that stops early stops early (`head -n1` returns on
+/// its first line), and one that genuinely consumes to the end blocks until
+/// the client sends end-of-input, exactly as a real shell does.
+///
+/// **There are three tool-dispatch sites in this file and all of them must
+/// call this.** Guarding them one at a time is precisely how two were missed
+/// before; keeping the rule in one function is what stops that recurring.
+fn tool_stdin(
+    explicit: Option<std::fs::File>,
+    pipeline: Option<std::fs::File>,
+    env: &Env,
+) -> Box<dyn std::io::Read> {
+    match explicit.or(pipeline).or_else(|| env.open_fd_read(0).ok()) {
+        Some(file) => Box::new(file),
+        // No redirect, no pipeline, no registered fd 0: standalone mash with
+        // nothing attached. An empty reader, not the daemon's own console.
+        None => Box::new(std::io::empty()),
     }
 }
 

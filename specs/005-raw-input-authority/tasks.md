@@ -66,46 +66,32 @@
 
 ### Implementation for User Story 2
 
-> **Status 2026-07-25 — US2 met. One narrow gap remains, in in-process tools.**
+> **US2 complete 2026-07-25.** Client input reaches a waiting command --
+> the `read` builtin, an external process, and in-process tools alike.
 >
-> **The hang.** Registering the session pipe at fd 0 hung every in-process
-> tool: tools take a pre-read `&[u8]`, so their dispatch reads fd 0 to EOF,
-> and the session pipe never EOFs because the daemon holds the write end for
-> the session's lifetime. `Env::register_endless_fd` marks that descriptor and
-> `Env::open_fd_read_unless_endless` refuses it.
+> Verified live: an external program's password prompt answered by a client;
+> `cat` echoing streamed lines and terminating on end-of-input; `head -n1`
+> returning on its first line with no EOF needed; `wc -l` counting 3; `grep`
+> matching; and the session still accepting input afterwards.
 >
-> The rule lives in `Env`, not at the call sites, because there are **three**
-> tool-dispatch sites in `executor.rs`. The first attempt guarded one and the
-> hang persisted; that cost far more than the fix.
+> Three things worth carrying forward:
 >
-> **Verified.** `crates/mash/tests/endless_stdin.rs` times real commands rather
-> than inspecting the flag — the bug is a hang, and a flag-inspecting test
-> passes while two of three sites are broken.
-> `crates/mash/tests/external_stdin.rs` covers delivery to an external process,
-> to the `read` builtin, and through a pipeline, plus the known tool gap.
-> Live against a real daemon: an **external** program's password prompt was
-> answered by a client (`external-got=[s3cret-from-client]`), a line-reading
-> loop received input, `café` arrived intact as 4 characters, a bare newline
-> answered a prompt, input was captured as data rather than executed, and the
-> answer never reached command history.
+> - **`ToolFn` is reader-based now.** It took a finished `&[u8]`, so dispatch
+>   had to read fd 0 to EOF before calling a tool -- which a session's stdin
+>   never reaches. The earlier workaround (hand tools an empty buffer) is gone
+>   along with the whole `endless_fds` mechanism it needed.
+> - **Streaming input required end-of-input to ship with it.** A tool reading
+>   for real hangs without a way to end the stream, which would have been the
+>   same hang, reintroduced. `malt eof` / `POST /sessions/{id}/eof` ends the
+>   read and installs a fresh pipe, so the session stays usable.
+> - **`head` had a latent off-by-one**: enumerate-and-break pulled one line
+>   past the limit. Equivalent on a finished buffer, but on a live stream it
+>   means blocking for a line the user has no reason to type.
 >
-> **Remaining gap:** in-process tools (`cat`, `grep`, `wc`, `head`) see an
-> empty buffer rather than client input, because `ToolFn` takes a finished
-> buffer and cannot represent a stream. Not a regression — fd 0 was
-> unregistered before, so they got empty stdin then too. Backlogged as a
-> streaming-tool-signature item, asserted by a test so it cannot drift.
->
-> **Correction to an earlier note here:** this previously said external
-> processes were also broken and suspected Windows handle inheritance. Both
-> were wrong. mash dispatches by **basename**, so `cat`, `/usr/bin/cat`, and
-> `/usr/bin/head` resolve to in-process tools and never spawn — three rounds
-> of "external is broken" were measuring the tool path. Pick a program with no
-> `malt-tools` entry when testing external behaviour.
->
-> **One unexplained observation, not reproduced:** a single `/exec` returned
-> HTTP 500 during live verification, with nothing logged daemon-side. Three
-> subsequent isolated runs of the same command all succeeded. Recorded rather
-> than dismissed; if it recurs, start with the gateway's error mapping.
+> Remaining, deliberately not done here: tool *output* is still buffered until
+> the command finishes, so an interactive `cat` shows its echo at the end
+> rather than line by line. Input was the gap that made tools unusable;
+> output streaming needs a writer-based `ToolFn` and a different result type.
 
 ## Phase 5: User Story 3 — Exactly one client can type at a time (Priority: P2)
 

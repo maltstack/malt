@@ -11,7 +11,7 @@ use std::path::Path;
 /// List directory contents.
 ///
 /// Exit 0 on success, 1 on error.
-pub fn ls(args: &[String], _stdin: &[u8]) -> BuiltinResult {
+pub fn ls(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
     let mut show_all = false;
     let mut long_format = false;
     let mut dir_itself = false;
@@ -140,14 +140,14 @@ mod tests {
 
     #[test]
     fn ls_current_dir() {
-        let r = ls(&[], b"");
+        let r = ls(&[], &mut &b""[..]);
         assert_eq!(r.exit_code, 0);
         assert!(!r.stdout.is_empty());
     }
 
     #[test]
     fn ls_nonexistent() {
-        let r = ls(&["/nonexistent".into()], b"");
+        let r = ls(&["/nonexistent".into()], &mut &b""[..]);
         assert_eq!(r.exit_code, 1);
     }
 }

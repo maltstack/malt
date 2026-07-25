@@ -1008,41 +1008,6 @@ then credentials/rate limiting, then process termination and raw input.
   Gateway, and `CommandBlock` never actually constructed anywhere outside
   tests.
 
-### In-process tools cannot read session stdin (from 005/US2)
-
-Found 2026-07-25 while implementing raw input; **narrowed and partly retracted
-the same day** — see the correction note below before acting on this.
-
-`ToolFn` is `fn(&[String], &[u8])` across all 17 in-process tools: a
-fully-read buffer, so a tool can never consume a stream that has not ended.
-Registering the session pipe at fd 0 made this visible by hanging every tool
-(the pipe never EOFs). The fix (`Env::open_fd_read_unless_endless`) makes
-them see an empty buffer instead of hanging, which is correct-but-inert:
-`cat`, `grep`, `wc`, and `head` cannot read what a client types.
-
-Not a regression — before this feature fd 0 was unregistered, so those tools
-got empty stdin then too. A real fix needs a streaming tool signature.
-
-Covered by `crates/mash/tests/external_stdin.rs`, which asserts the gap
-explicitly so it cannot change silently. When streaming tools land, invert
-`an_in_process_tool_currently_sees_empty_session_stdin` rather than deleting
-it.
-
-**Correction: external processes are NOT affected.** An earlier version of
-this entry claimed external processes also read EOF, and proposed Windows
-handle inheritance as the cause. Both were wrong. A genuinely external
-program reads a registered fd 0 correctly — verified at the lowest layer and
-live through the daemon, where an external password prompt was answered by a
-client.
-
-The error was in the test commands, not the code: **mash dispatches by
-basename**, so `cat`, `/usr/bin/cat`, and `/usr/bin/head` never spawn
-anything — they resolve to in-process tools. Three rounds of "external
-processes are broken" were all measuring the tool path. When testing external
-behaviour here, pick a program with no entry in `malt-tools`
-(`crates/malt-tools/src/custom/`); the test above uses an interpreter for
-exactly this reason.
-
 ### `read` treats an explicitly-empty `IFS=` as "use the default" (mash, POSIX)
 
 Found 2026-07-25 while live-verifying raw input delivery (spec 005). It is a

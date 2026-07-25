@@ -73,6 +73,14 @@ pub async fn send_input(
     Ok(Json(serde_json::json!({"ok": true, "data": null})))
 }
 
+pub async fn end_input(
+    State(backend): State<Arc<dyn GatewayBackend>>,
+    Path(id): Path<u32>,
+) -> Result<Json<serde_json::Value>, GatewayError> {
+    backend.end_input(id)?;
+    Ok(Json(serde_json::json!({"ok": true, "data": null})))
+}
+
 pub async fn output(
     State(backend): State<Arc<dyn GatewayBackend>>,
     Path(id): Path<u32>,

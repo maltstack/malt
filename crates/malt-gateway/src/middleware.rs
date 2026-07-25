@@ -34,6 +34,7 @@ fn required_scope(method: &Method, path: &str) -> AuthScope {
         (&Method::DELETE, "/sessions/{id}") => AuthScope::Admin,
         (&Method::POST, "/sessions/{id}/exec") => AuthScope::Interact,
         (&Method::POST, "/sessions/{id}/send") => AuthScope::Interact,
+        (&Method::POST, "/sessions/{id}/eof") => AuthScope::Interact,
         (&Method::GET, "/sessions/{id}/output") => AuthScope::Read,
         (&Method::GET, "/sessions/{id}/output/text") => AuthScope::Read,
         // Same sensitivity class as output: command text can contain paths,

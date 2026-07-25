@@ -90,6 +90,14 @@ impl GatewayBackend for MockBackend {
         }
     }
 
+    fn end_input(&self, session_id: u32) -> Result<(), GatewayError> {
+        if self.sessions.iter().any(|s| s.id == session_id) {
+            Ok(())
+        } else {
+            Err(GatewayError::SessionNotFound(session_id))
+        }
+    }
+
     fn get_output(&self, session_id: u32) -> Result<serde_json::Value, GatewayError> {
         if !self.sessions.iter().any(|s| s.id == session_id) {
             return Err(GatewayError::SessionNotFound(session_id));

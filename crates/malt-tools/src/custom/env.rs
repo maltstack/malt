@@ -6,7 +6,7 @@ use crate::BuiltinResult;
 ///
 /// - No args: print all environment variables (`KEY=VALUE` per line, sorted)
 /// - With args: not yet supported (returns error)
-pub fn env_cmd(args: &[String], _stdin: &[u8]) -> BuiltinResult {
+pub fn env_cmd(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
     if args.is_empty() {
         // Print all environment variables, one per line, sorted.
         let mut lines: Vec<String> = std::env::vars()
@@ -27,7 +27,7 @@ mod tests {
 
     #[test]
     fn env_prints_vars() {
-        let r = env_cmd(&[], &[]);
+        let r = env_cmd(&[], &mut &[][..]);
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         // Should contain at least PATH (or Path on Windows)
@@ -39,7 +39,7 @@ mod tests {
 
     #[test]
     fn env_output_is_sorted() {
-        let r = env_cmd(&[], &[]);
+        let r = env_cmd(&[], &mut &[][..]);
         let out = String::from_utf8_lossy(&r.stdout);
         let lines: Vec<&str> = out.lines().collect();
         let mut sorted = lines.clone();
@@ -49,7 +49,7 @@ mod tests {
 
     #[test]
     fn env_with_args_unsupported() {
-        let r = env_cmd(&["FOO=bar".into()], &[]);
+        let r = env_cmd(&["FOO=bar".into()], &mut &[][..]);
         assert_ne!(r.exit_code, 0);
     }
 }

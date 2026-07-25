@@ -202,6 +202,15 @@ pub enum SessionCommand {
         data: Vec<u8>,
         reply: mpsc::Sender<Result<(), InputError>>,
     },
+    /// Signal end-of-input to whatever is currently reading -- Ctrl-D.
+    ///
+    /// Ends the current read, not the session: a fresh input pipe is put in
+    /// place so the next command can still be given input. Without this a
+    /// command that consumes to the end (`cat`, `wc`) would never terminate,
+    /// because a session's stdin has no natural end.
+    EndOfInput {
+        reply: mpsc::Sender<Result<(), InputError>>,
+    },
     /// Get the current output snapshot as styled-grid JSON (requester sends
     /// back via channel). Built for human rendering clients
     /// (`malt-tui`/`maltty`) — for a program-readable variant see
@@ -294,6 +303,7 @@ impl std::fmt::Debug for SessionCommand {
                 .debug_struct("RawInput")
                 .field("bytes", &data.len())
                 .finish(),
+            Self::EndOfInput { .. } => f.debug_struct("EndOfInput").finish(),
             Self::WriteInput { data } => f
                 .debug_struct("WriteInput")
                 .field("len", &data.len())
@@ -520,13 +530,14 @@ impl SessionExecutor {
         // `std::io::stdin()`, so this single registration both routes client
         // input to the builtin and makes the fall-through to the daemon's own
         // console unreachable -- with no change to `mash`.
+        // The channel is handed the env's descriptor table so that an
+        // end-of-input signal can swap fd 0 for a fresh pipe. It cannot go
+        // through `env`, which moves into the worker thread below and is
+        // unreachable while a command is running -- which is precisely when a
+        // client sends EOF.
         let (input_channel, input_read) =
-            SessionInputChannel::new(session_id.0).map_err(DaemonError::Io)?;
-        // Registered as *endless*: the daemon holds the write end for the
-        // session's lifetime, so this descriptor never reaches EOF. `read`
-        // consumes it a line at a time and is unaffected; the in-process tool
-        // dispatch checks this flag and declines to slurp it.
-        env.register_endless_fd(0, input_read);
+            SessionInputChannel::new(session_id.0, env.fd_registry()).map_err(DaemonError::Io)?;
+        env.register_fd(0, input_read);
 
         let (control_tx, control_rx) = mpsc::channel();
         let (ingress, requests) = ExecutionIngress::new(session_id.clone(), capacity)?;
@@ -659,6 +670,9 @@ impl SessionExecutor {
                 }
                 Ok(SessionCommand::RawInput { data, reply }) => {
                     let _ = reply.send(self.input_channel.try_write(&data));
+                }
+                Ok(SessionCommand::EndOfInput { reply }) => {
+                    let _ = reply.send(self.input_channel.end_of_input());
                 }
                 Ok(SessionCommand::WriteInput { data }) => {
                     // Raw bytes to the session's input, not a command to run.

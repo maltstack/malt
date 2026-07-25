@@ -12,7 +12,7 @@ use std::path::Path;
 /// Move (rename) files.
 ///
 /// Exit 0 on success, 1 on error.
-pub fn mv(args: &[String], _stdin: &[u8]) -> BuiltinResult {
+pub fn mv(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
     let mut force = false;
     let mut paths: Vec<&str> = Vec::new();
 
@@ -137,7 +137,7 @@ mod tests {
         fs::write(src, "content").unwrap();
         let _ = fs::remove_file(dst);
 
-        let r = mv(&[src.into(), dst.into()], b"");
+        let r = mv(&[src.into(), dst.into()], &mut &b""[..]);
         assert_eq!(r.exit_code, 0);
         assert!(!Path::new(src).exists());
         assert!(Path::new(dst).exists());
@@ -153,7 +153,7 @@ mod tests {
         let _ = fs::remove_file(src);
         let _ = fs::remove_file(dst);
 
-        let r = mv(&[src.into(), dst.into()], b"");
+        let r = mv(&[src.into(), dst.into()], &mut &b""[..]);
         assert_eq!(r.exit_code, 1);
         assert!(!Path::new(dst).exists());
     }

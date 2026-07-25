@@ -23,8 +23,7 @@ fn run(script: &str, endless_stdin: bool) -> Duration {
         // Hold the write end open for the whole run so the pipe never EOFs,
         // which is precisely the session case.
         std::mem::forget(write_end);
-        env.register_endless_fd(0, read_end);
-        assert!(env.is_fd_endless(0), "fd 0 should be marked endless");
+        env.register_fd(0, read_end);
     }
     let commands = mash::parser::parse(script).expect("script should parse");
     let start = Instant::now();

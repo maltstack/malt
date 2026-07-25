@@ -29,6 +29,11 @@ fn main() -> Result<()> {
             command,
         }) => handle_exec(&client, session_id, &command),
         Some(Command::Send { session_id, input }) => handle_send(&client, session_id, &input),
+        Some(Command::Eof { session_id }) => {
+            client.end_input(session_id)?;
+            println!("end-of-input sent to session {session_id}");
+            Ok(())
+        }
         Some(Command::Output { session_id }) => handle_output(&client, session_id),
         Some(Command::History { session_id }) => handle_history(&client, session_id),
         Some(Command::Watch {

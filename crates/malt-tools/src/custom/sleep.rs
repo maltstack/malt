@@ -10,7 +10,7 @@ use std::time::Duration;
 /// Sleep for the requested duration.
 ///
 /// Exit 0 on success, 1 on invalid input.
-pub fn sleep(args: &[String], _stdin: &[u8]) -> BuiltinResult {
+pub fn sleep(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
     if args.is_empty() {
         return BuiltinResult::failure(1, b"sleep: missing operand\n".to_vec());
     }
@@ -47,7 +47,7 @@ mod tests {
 
     #[test]
     fn sleep_requires_operand() {
-        let result = sleep(&[], b"");
+        let result = sleep(&[], &mut &b""[..]);
         assert_eq!(result.exit_code, 1);
         assert_eq!(result.stdout, Vec::<u8>::new());
         assert_eq!(
@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn sleep_rejects_invalid_interval() {
-        let result = sleep(&["abc".into()], b"");
+        let result = sleep(&["abc".into()], &mut &b""[..]);
         assert_eq!(result.exit_code, 1);
         assert_eq!(
             String::from_utf8_lossy(&result.stderr),
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn sleep_sums_multiple_operands() {
         let start = Instant::now();
-        let result = sleep(&["0.02".into(), "0.03".into()], b"");
+        let result = sleep(&["0.02".into(), "0.03".into()], &mut &b""[..]);
         let elapsed = start.elapsed();
 
         assert_eq!(result.exit_code, 0);

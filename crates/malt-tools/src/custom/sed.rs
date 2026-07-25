@@ -15,10 +15,10 @@ use std::path::Path;
 /// - Capture groups `\(...\)` and backreferences `\1`, `\2`, etc.
 ///
 /// Exit 0 on success, 1 on error
-pub fn sed(args: &[String], stdin: &[u8]) -> BuiltinResult {
+pub fn sed(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
     if args.is_empty() {
         // No script: just copy stdin to stdout (cat-like behavior)
-        return BuiltinResult::success(stdin.to_vec());
+        return BuiltinResult::success(crate::read_all(stdin));
     }
 
     // Check for -e or direct script argument
@@ -82,7 +82,8 @@ pub fn sed(args: &[String], stdin: &[u8]) -> BuiltinResult {
     // Get input from files or stdin
     let input_lines: Vec<String> = if file_args.is_empty() {
         // Read from stdin
-        let s = String::from_utf8_lossy(stdin);
+        let stdin_bytes = crate::read_all(stdin);
+        let s = String::from_utf8_lossy(&stdin_bytes);
         s.lines().map(|l| l.to_string()).collect()
     } else {
         // Read from files
@@ -332,21 +333,21 @@ mod tests {
 
     #[test]
     fn sed_substitute_first() {
-        let r = sed(&["s/foo/bar/".into()], b"foo foo foo\n");
+        let r = sed(&["s/foo/bar/".into()], &mut &b"foo foo foo\n"[..]);
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "bar foo foo\n");
     }
 
     #[test]
     fn sed_substitute_global() {
-        let r = sed(&["s/foo/bar/g".into()], b"foo foo foo\n");
+        let r = sed(&["s/foo/bar/g".into()], &mut &b"foo foo foo\n"[..]);
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "bar bar bar\n");
     }
 
     #[test]
     fn sed_substitute_nth() {
-        let r = sed(&["s/foo/bar/2".into()], b"foo foo foo\n");
+        let r = sed(&["s/foo/bar/2".into()], &mut &b"foo foo foo\n"[..]);
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "foo bar foo\n");
     }
@@ -357,7 +358,7 @@ mod tests {
         let input = "0m1.234s 0m2.567s\n";
         let r = sed(
             &["s/\\([0-9]*\\)m\\([0-9]*\\).\\([0-9]*\\)s.*/\\1/".into()],
-            input.as_bytes(),
+            &mut input.as_bytes(),
         );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "0\n");
@@ -369,7 +370,7 @@ mod tests {
         let input = "0m1.234s\n";
         let r = sed(
             &["s/\\([0-9]*\\)m\\([0-9]*\\).\\([0-9]*\\)s.*/\\1/".into()],
-            input.as_bytes(),
+            &mut input.as_bytes(),
         );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "0\n");
@@ -381,7 +382,7 @@ mod tests {
         let input = "0m1.234s\n";
         let r = sed(
             &["s/\\([0-9]*\\)m\\([0-9]*\\).\\([0-9]*\\)s.*/\\2/".into()],
-            input.as_bytes(),
+            &mut input.as_bytes(),
         );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "1\n");
@@ -393,7 +394,7 @@ mod tests {
         let input = "0m1.234s\n";
         let r = sed(
             &["s/\\([0-9]*\\)m\\([0-9]*\\).\\([0-9]*\\)s.*/\\3/".into()],
-            input.as_bytes(),
+            &mut input.as_bytes(),
         );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "234\n");

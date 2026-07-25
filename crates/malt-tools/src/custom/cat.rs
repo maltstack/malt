@@ -8,7 +8,7 @@ use crate::BuiltinResult;
 /// - File args: read each file, concatenate to stdout
 /// - `-n`: number all output lines
 /// - Error on missing files (stderr message, exit 1)
-pub fn cat(args: &[String], stdin: &[u8]) -> BuiltinResult {
+pub fn cat(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
     let mut number_lines = false;
     let mut file_args: Vec<&str> = Vec::new();
 
@@ -21,7 +21,7 @@ pub fn cat(args: &[String], stdin: &[u8]) -> BuiltinResult {
 
     if file_args.is_empty() {
         // POSIX: no file operands -> read from standard input.
-        let data = stdin.to_vec();
+        let data = crate::read_all(stdin);
         if number_lines {
             return BuiltinResult::success(number_output(&data));
         }
@@ -35,7 +35,7 @@ pub fn cat(args: &[String], stdin: &[u8]) -> BuiltinResult {
     for path in &file_args {
         if *path == "-" {
             // POSIX: `-` means read stdin.
-            stdout.extend_from_slice(stdin);
+            stdout.extend_from_slice(&crate::read_all(stdin));
             continue;
         }
         if *path == "/dev/null" {
@@ -79,28 +79,28 @@ mod tests {
 
     #[test]
     fn cat_stdin_passthrough() {
-        let r = cat(&[], b"hello\n");
+        let r = cat(&[], &mut &b"hello\n"[..]);
         assert_eq!(r.exit_code, 0);
         assert_eq!(r.stdout, b"hello\n");
     }
 
     #[test]
     fn cat_no_args_no_stdin() {
-        let r = cat(&[], &[]);
+        let r = cat(&[], &mut &[][..]);
         assert_eq!(r.exit_code, 0);
         assert!(r.stdout.is_empty());
     }
 
     #[test]
     fn cat_dash_reads_stdin() {
-        let r = cat(&["-".into()], b"from stdin\n");
+        let r = cat(&["-".into()], &mut &b"from stdin\n"[..]);
         assert_eq!(r.exit_code, 0);
         assert_eq!(r.stdout, b"from stdin\n");
     }
 
     #[test]
     fn cat_number_lines() {
-        let r = cat(&["-n".into()], b"aaa\nbbb\n");
+        let r = cat(&["-n".into()], &mut &b"aaa\nbbb\n"[..]);
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("1\taaa"));
@@ -109,14 +109,14 @@ mod tests {
 
     #[test]
     fn cat_missing_file() {
-        let r = cat(&["/nonexistent/file.txt".into()], &[]);
+        let r = cat(&["/nonexistent/file.txt".into()], &mut &[][..]);
         assert_eq!(r.exit_code, 1);
         assert!(!r.stderr.is_empty());
     }
 
     #[test]
     fn cat_dev_null() {
-        let r = cat(&["/dev/null".into()], &[]);
+        let r = cat(&["/dev/null".into()], &mut &[][..]);
         assert_eq!(r.exit_code, 0);
         assert!(r.stdout.is_empty());
     }
