@@ -1,7 +1,7 @@
-# Specification Quality Checklist: Genuine Raw Input with Input Authority
+# Specification Quality Checklist: Authenticated Raw Input with Input Authority
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
-**Created**: 2026-07-25
+**Created**: 2026-07-25 | **Re-validated**: 2026-07-25 after the A-01 revision
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality
@@ -31,35 +31,60 @@
 
 ## Notes
 
-All items pass on the first validation pass.
+All items pass. Re-validated after the revision described below.
 
-**On combining ADR-0003 priorities 5 and 6 into one feature.** The backlog
-lists raw input and input authority as separate items. They are specified
-together here because the second is not an enhancement of the first but a
-constraint on its design: a session-scoped input destination built without
-attribution produces a shared sink with no rules about who may write to it,
-and retrofitting arbitration means reworking the same delivery points a
-second time. The decisive detail is that input events currently carry no
-client identity at all, which blocks both items equally — so identity has to
-be established once, for both. The stories remain independently shippable
-and independently testable, so the combination does not force a
-bigger-bang delivery.
+**The revision, and why it was not a small edit.** The first draft assumed
+clients reaching a session were already authenticated, and scoped the
+feature to arbitrating between them. That assumption was false for the
+transport this feature depends on most — the connection path the
+interactive client uses performs no identity check of any kind and
+discloses the session inventory during its opening exchange. Verified
+directly before revising, and independently reported as finding A-01 in
+`docs/findings/2026-07-25-architecture-spec-codebase-audit.md`.
 
-**On the confidentiality requirement (FR-004).** This one exists because
-features 003 and 004 shipped first. Both command execution history and the
-lifecycle event stream record command text, and both are readable by any
-client with Read scope. Routing prompt answers through the ordinary command
-path — which is what happens today — would publish passwords into two
-durable, readable surfaces. Stated as a functional requirement rather than
-left to implementation judgment.
+The consequence was not cosmetic. FR-006 requires input to be attributable
+to the client that sent it; attribution to a self-asserted identity is not
+attribution, so the requirement was unsatisfiable as written. "Exactly one
+client holds input authority" would have been a coordination convention
+rather than a guarantee, and the spec would have described a security
+property it did not deliver. Worse, shipping interactive input first would
+have made password prompts injectable by any local process — actively worse
+than today, where such prompts simply cannot be answered at all.
 
-**On the absence of clarification markers.** Six points were genuinely
+Authenticated identity is therefore User Story 1, ahead of the capability
+the feature is named for. That ordering matches the audit's own recommended
+closure order, which pairs transport authentication with client-scoped
+authority enforcement as a single first item.
+
+**On combining what the backlog lists separately.** This spec now covers
+three backlog concerns: raw input (ADR-0003 priority 5), input authority
+(priority 6), and transport authentication (audit A-01, with the related
+pre-identification resource exhaustion A-08 folded in as FR-003/FR-004 —
+same connection path, and "an unidentified caller must not harm the daemon"
+is the same requirement expressed twice). They are one feature because each
+is a constraint on the others' design, not an enhancement: identity has to
+be established once, for all of them, and retrofitting it would mean
+reworking the same delivery points three times. The four stories remain
+independently shippable and independently testable.
+
+**On the confidentiality requirement (FR-010).** This exists because
+features 003 and 004 shipped first. Command execution history and the
+lifecycle event stream both record command text and are both readable at
+Read scope. Routing prompt answers through the ordinary command path —
+today's behavior — would publish passwords into two durable, readable
+surfaces.
+
+**On FR-009 (byte-for-byte).** Strengthened during revision from the
+audit's A-07 detail: the current path decodes lossily *and* trims
+whitespace *and* executes the result. Each is an independent way to corrupt
+a password, so the requirement names all three explicitly rather than
+saying "unmodified".
+
+**On the absence of clarification markers.** Seven points were genuinely
 ambiguous and are resolved as documented assumptions, each with a stated
-reason a reviewer can overturn: authority is claimed rather than granted
-(a consent protocol lets a departed holder strand the session); first
-attach takes authority (matches single-client reality); the daemon never
-echoes input (echoing would print passwords to observers); authority
-arbitrates between already-authorized clients rather than adding an access
-layer; terminal control concerns such as resize, job control, and raw/cooked
-modes are out of scope; and retained type-ahead is not persisted across a
-restart.
+reason a reviewer can overturn: the transport is unauthenticated and
+closing that is in scope; authority is claimed rather than granted (a
+consent protocol lets a departed holder strand the session); first attach
+takes authority; the daemon never echoes input; terminal control concerns
+are out of scope; retained type-ahead is not persisted; and identity should
+extend the existing permission model rather than create a parallel one.
