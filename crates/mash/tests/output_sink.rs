@@ -131,6 +131,98 @@ fn redirected_command_does_not_stream_to_the_sink() {
 }
 
 #[test]
+fn a_built_in_utility_copying_input_makes_each_line_observable_before_the_next_is_sent() {
+    // SC-008: a utility that copies its input to its output -- here `cat`,
+    // one of the in-process malt-tools that Phase 6/US4 made stream -- must
+    // make each line observable at the sink before the next line is even
+    // sent, not only once the whole command finishes.
+    struct ChunkSink {
+        tx: Mutex<std::sync::mpsc::Sender<Vec<u8>>>,
+    }
+    impl OutputSink for ChunkSink {
+        fn write_stdout(&self, data: &[u8]) {
+            let _ = self.tx.lock().unwrap().send(data.to_vec());
+        }
+        fn write_stderr(&self, _data: &[u8]) {}
+    }
+
+    let mut env = Env::from_os();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    env.set_output_sink(Arc::new(ChunkSink { tx: Mutex::new(tx) }));
+
+    // A real pipe as fd 0, mirroring how a live session's stdin is wired
+    // (see `Env::register_fd`) -- this lets the test control exactly when
+    // each line becomes available to `cat`, which a pre-built buffer could
+    // not.
+    let (read_end, mut write_end) =
+        malt_platform::io::create_pipe().expect("failed to create test pipe");
+    env.register_fd(0, read_end);
+
+    let cmds = parse("cat").expect("parse failed");
+    let handle = std::thread::spawn(move || {
+        let mut env = env;
+        execute_list(&cmds, "cat", &mut env)
+    });
+
+    use std::io::Write as _;
+    write_end
+        .write_all(b"line one\n")
+        .expect("failed to write first line");
+
+    let first = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("first line was not streamed to the sink before the timeout");
+    assert_eq!(first, b"line one\n");
+
+    // Only send the second line after observing the first at the sink --
+    // that ordering is what proves the first became observable *before* the
+    // next was sent, not merely before the command finished.
+    write_end
+        .write_all(b"line two\n")
+        .expect("failed to write second line");
+    drop(write_end); // EOF, so `cat` can finish reading.
+
+    let second = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("second line was not streamed to the sink");
+    assert_eq!(second, b"line two\n");
+
+    let result = handle.join().expect("cat command thread panicked");
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.stdout, b"line one\nline two\n");
+}
+
+#[test]
+fn a_tool_redirected_to_a_file_writes_the_full_output_there_and_not_to_the_sink() {
+    // FR-014 / T035: redirecting a malt-tool's stdout must behave exactly as
+    // it did before tools could stream -- the file gets every byte, and
+    // nothing leaks to a live sink in the meantime. A plain (non-pipeline)
+    // command exercises the same top-level dispatch site `tool_stdout` was
+    // added to.
+    let (mut env, sink) = env_with_sink();
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.txt");
+    let output = dir.path().join("out.txt");
+    std::fs::write(&input, "a\nb\nc\n").unwrap();
+    let cmd = format!(
+        "cat '{}' > '{}'",
+        input.to_string_lossy(),
+        output.to_string_lossy()
+    );
+    let cmds = parse(&cmd).expect("parse failed");
+    let result = execute_list(&cmds, &cmd, &mut env);
+
+    assert_eq!(result.exit_code, 0, "stderr: {:?}", result.stderr);
+    assert!(
+        sink.is_empty(),
+        "a tool's output redirected to a file must not also stream to the sink, got stdout={:?}",
+        sink.stdout_string()
+    );
+    let written = std::fs::read_to_string(&output).unwrap();
+    assert_eq!(written, "a\nb\nc\n");
+}
+
+#[test]
 fn no_sink_installed_means_no_panic_and_normal_accumulation() {
     let mut env = Env::from_os();
     let cmds = parse("echo hello").expect("parse failed");

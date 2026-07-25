@@ -5,13 +5,17 @@
 //! - `-l`: long listing format
 //! - `-d`: list directories themselves
 
-use crate::BuiltinResult;
+use crate::{emit, BuiltinResult};
 use std::path::Path;
 
 /// List directory contents.
 ///
 /// Exit 0 on success, 1 on error.
-pub fn ls(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
+pub fn ls(
+    args: &[String],
+    _stdin: &mut dyn std::io::Read,
+    stdout_writer: &mut dyn std::io::Write,
+) -> BuiltinResult {
     let mut show_all = false;
     let mut long_format = false;
     let mut dir_itself = false;
@@ -127,11 +131,14 @@ pub fn ls(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
         }
     }
 
-    BuiltinResult {
-        exit_code,
-        stdout,
-        stderr,
-    }
+    emit(
+        stdout_writer,
+        BuiltinResult {
+            exit_code,
+            stdout,
+            stderr,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -140,14 +147,14 @@ mod tests {
 
     #[test]
     fn ls_current_dir() {
-        let r = ls(&[], &mut &b""[..]);
+        let r = ls(&[], &mut &b""[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         assert!(!r.stdout.is_empty());
     }
 
     #[test]
     fn ls_nonexistent() {
-        let r = ls(&["/nonexistent".into()], &mut &b""[..]);
+        let r = ls(&["/nonexistent".into()], &mut &b""[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 1);
     }
 }

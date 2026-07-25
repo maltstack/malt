@@ -11,7 +11,11 @@ use std::path::Path;
 /// Create directories.
 ///
 /// Exit 0 on success, 1 on error.
-pub fn mkdir(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
+pub fn mkdir(
+    args: &[String],
+    _stdin: &mut dyn std::io::Read,
+    _stdout: &mut dyn std::io::Write,
+) -> BuiltinResult {
     let mut create_parents = false;
     let mut paths: Vec<&str> = Vec::new();
 
@@ -75,7 +79,7 @@ mod tests {
         // Remove if exists
         let _ = fs::remove_dir(path);
 
-        let r = mkdir(&[path.into()], &mut &b""[..]);
+        let r = mkdir(&[path.into()], &mut &b""[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         assert!(Path::new(path).exists());
 
@@ -89,7 +93,7 @@ mod tests {
         // Remove if exists
         let _ = fs::remove_dir_all("test_mkdir_parent");
 
-        let r = mkdir(&["-p".into(), path.into()], &mut &b""[..]);
+        let r = mkdir(&["-p".into(), path.into()], &mut &b""[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         assert!(Path::new(path).exists());
 

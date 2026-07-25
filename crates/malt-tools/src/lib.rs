@@ -50,9 +50,42 @@ impl BuiltinResult {
 
 /// A tool implementation function.
 ///
-/// Arguments: `(args, stdin)` -> `BuiltinResult`.
+/// Arguments: `(args, stdin, stdout)` -> `BuiltinResult`.
 /// `stdin` is the byte content piped into the tool (empty slice if none).
-pub type ToolFn = fn(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult;
+///
+/// `stdout` is where the tool's output is observable *while the tool is
+/// still running* -- the mirror of feature 005's `stdin` reader change,
+/// for the same reason: a tool that copies input to output (`cat`) must
+/// make each piece of output visible before it reads the next piece of
+/// input, not only after it has consumed all of it. A tool still returns
+/// its complete output in `BuiltinResult::stdout` too, unconditionally --
+/// that copy is what `apply_output_redirects` and pipeline capture use,
+/// and it must be correct whether or not anything was streaming to
+/// `stdout` (the caller supplies a no-op writer when this call's own
+/// output is redirected or part of a pipeline). A tool that produces its
+/// whole output at once (most of them) still writes it to `stdout` in one
+/// call before returning -- there is no framing decision to make for
+/// those, only for a tool that genuinely produces output incrementally
+/// (`cat`, `grep`, `sed`, `head`, `wc`).
+pub type ToolFn =
+    fn(args: &[String], stdin: &mut dyn std::io::Read, stdout: &mut dyn std::io::Write) -> BuiltinResult;
+
+/// Write a finished result's stdout to the streaming writer, then return the
+/// result unchanged.
+///
+/// For a tool that builds its whole output before returning (most of them --
+/// see the note on [`ToolFn`]), this is the one call that makes that output
+/// observable while the command is still "running" from the caller's
+/// perspective, without requiring the tool to restructure how it builds that
+/// output. A tool with genuinely incremental output (`cat`, `grep`, `sed`,
+/// `head`, `wc`) writes to `stdout` itself as it goes instead, and should not
+/// also call this at the end -- that would write the same bytes twice.
+pub fn emit(stdout: &mut dyn std::io::Write, result: BuiltinResult) -> BuiltinResult {
+    if !result.stdout.is_empty() {
+        let _ = stdout.write_all(&result.stdout);
+    }
+    result
+}
 
 /// Read a tool's entire standard input.
 ///
@@ -154,7 +187,7 @@ mod tests {
         let date = registry
             .get("date")
             .expect("date tool should be registered");
-        let result = date(&["+%s".to_string()], &mut &b""[..]);
+        let result = date(&["+%s".to_string()], &mut &b""[..], &mut std::io::sink());
 
         assert_eq!(result.exit_code, 0);
         assert!(result.stderr.is_empty());
@@ -173,7 +206,7 @@ mod tests {
             .get("sleep")
             .expect("sleep tool should be registered");
         let start = Instant::now();
-        let result = sleep(&["0.05".to_string()], &mut &b""[..]);
+        let result = sleep(&["0.05".to_string()], &mut &b""[..], &mut std::io::sink());
         let elapsed = start.elapsed();
 
         assert_eq!(

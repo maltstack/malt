@@ -3,7 +3,7 @@
 //! Supports `-i`, `-v`, `-c`, `-n`, `-l` flags and regex patterns via the
 //! `regex` crate.
 
-use crate::BuiltinResult;
+use crate::{emit, BuiltinResult};
 use regex::RegexBuilder;
 use std::io::BufRead;
 use std::path::Path;
@@ -18,7 +18,11 @@ use std::path::Path;
 /// - `-n`: line numbers
 /// - `-l`: list matching filenames only
 /// - Exit 0 if match found, 1 if not, 2 on error
-pub fn grep(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
+pub fn grep(
+    args: &[String],
+    stdin: &mut dyn std::io::Read,
+    stdout_writer: &mut dyn std::io::Write,
+) -> BuiltinResult {
     let mut case_insensitive = false;
     let mut invert = false;
     let mut count_only = false;
@@ -59,9 +63,12 @@ pub fn grep(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
                         } else {
                             i += 1;
                             if i >= args.len() {
-                                return BuiltinResult::failure(
-                                    2,
-                                    b"grep: option requires an argument -- 'e'\n".to_vec(),
+                                return emit(
+                                    stdout_writer,
+                                    BuiltinResult::failure(
+                                        2,
+                                        b"grep: option requires an argument -- 'e'\n".to_vec(),
+                                    ),
                                 );
                             }
                             pattern_str = Some(args[i].clone());
@@ -70,7 +77,7 @@ pub fn grep(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
                     }
                     _ => {
                         let msg = format!("grep: unknown option: -{}\n", ch);
-                        return BuiltinResult::failure(2, msg.into_bytes());
+                        return emit(stdout_writer, BuiltinResult::failure(2, msg.into_bytes()));
                     }
                 }
             }
@@ -85,9 +92,12 @@ pub fn grep(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
     let pattern_str = match pattern_str {
         Some(p) => p,
         None => {
-            return BuiltinResult::failure(
-                2,
-                b"grep: usage: grep [OPTIONS] PATTERN [FILE...]\n".to_vec(),
+            return emit(
+                stdout_writer,
+                BuiltinResult::failure(
+                    2,
+                    b"grep: usage: grep [OPTIONS] PATTERN [FILE...]\n".to_vec(),
+                ),
             );
         }
     };
@@ -100,19 +110,22 @@ pub fn grep(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
         Ok(re) => re,
         Err(e) => {
             let msg = format!("grep: invalid regex '{}': {}\n", pattern_str, e);
-            return BuiltinResult::failure(2, msg.into_bytes());
+            return emit(stdout_writer, BuiltinResult::failure(2, msg.into_bytes()));
         }
     };
 
     if file_args.is_empty() {
+        // Stream: each matching line is written to `stdout_writer` as soon
+        // as it is found, instead of only after all of stdin is read.
         return grep_reader(
-            &crate::read_all(stdin),
+            stdin,
             &re,
             invert,
             count_only,
             line_numbers,
             files_only,
             None,
+            stdout_writer,
         );
     }
 
@@ -135,14 +148,18 @@ pub fn grep(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
         };
 
         let label = if show_filename { Some(*path_str) } else { None };
+        // Files are already fully read into memory above, so there is
+        // nothing to stream incrementally here -- collect and write once,
+        // below, like `cat`'s file-operand path.
         let result = grep_reader(
-            &data,
+            &data[..],
             &re,
             invert,
             count_only,
             line_numbers,
             files_only,
             label,
+            &mut std::io::sink(),
         );
 
         if result.exit_code == 0 {
@@ -169,27 +186,38 @@ pub fn grep(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
         1
     };
 
-    BuiltinResult {
-        exit_code,
-        stdout,
-        stderr,
-    }
+    emit(
+        stdout_writer,
+        BuiltinResult {
+            exit_code,
+            stdout,
+            stderr,
+        },
+    )
 }
 
+/// Generic over `Read` so a live stdin streams: each matching line is
+/// written to `stdout_writer` as soon as it is found, not only after the
+/// input reaches end-of-input. `count_only`/`files_only` modes have no
+/// meaningful per-line output (a count or a filename, known only once
+/// input is exhausted or a first match is found), so they do not stream --
+/// same reasoning as `wc`.
+#[allow(clippy::too_many_arguments)]
 fn grep_reader(
-    data: &[u8],
+    data: impl std::io::Read,
     re: &regex::Regex,
     invert: bool,
     count_only: bool,
     line_numbers: bool,
     files_only: bool,
     filename: Option<&str>,
+    stdout_writer: &mut dyn std::io::Write,
 ) -> BuiltinResult {
-    let cursor = std::io::Cursor::new(data);
+    let reader = std::io::BufReader::new(data);
     let mut stdout = Vec::new();
     let mut match_count = 0usize;
 
-    for (idx, line_result) in cursor.lines().enumerate() {
+    for (idx, line_result) in reader.lines().enumerate() {
         let line = match line_result {
             Ok(l) => l,
             Err(_) => continue,
@@ -207,30 +235,48 @@ fn grep_reader(
             }
 
             if !count_only {
+                let mut rendered = Vec::new();
                 if let Some(fname) = filename {
-                    stdout.extend_from_slice(fname.as_bytes());
-                    stdout.push(b':');
+                    rendered.extend_from_slice(fname.as_bytes());
+                    rendered.push(b':');
                 }
                 if line_numbers {
                     let num = format!("{}:", idx + 1);
-                    stdout.extend_from_slice(num.as_bytes());
+                    rendered.extend_from_slice(num.as_bytes());
                 }
-                stdout.extend_from_slice(line.as_bytes());
-                stdout.push(b'\n');
+                rendered.extend_from_slice(line.as_bytes());
+                rendered.push(b'\n');
+                let _ = stdout_writer.write_all(&rendered);
+                stdout.extend_from_slice(&rendered);
             }
         }
     }
 
+    let exit_code = if match_count > 0 { 0 } else { 1 };
+
     if count_only {
+        // Nothing streamed above for this mode (there is no meaningful
+        // per-line output for a count) -- write the one summary line now,
+        // through the same seam every tool uses.
         if let Some(fname) = filename {
             stdout.extend_from_slice(fname.as_bytes());
             stdout.push(b':');
         }
         let count_str = format!("{}\n", match_count);
         stdout.extend_from_slice(count_str.as_bytes());
+        return emit(
+            stdout_writer,
+            BuiltinResult {
+                exit_code,
+                stdout,
+                stderr: Vec::new(),
+            },
+        );
     }
 
-    let exit_code = if match_count > 0 { 0 } else { 1 };
+    // Matching lines (if any) were already streamed to `stdout_writer`
+    // above, one at a time -- returning them again through `emit` here
+    // would write every line twice.
     BuiltinResult {
         exit_code,
         stdout,
@@ -247,7 +293,8 @@ mod tests {
         let r = grep(
             &["hello".into()],
             &mut &b"hello world\ngoodbye\nhello again\n"[..],
-        );
+        &mut std::io::sink(),
+    );
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("hello world"));
@@ -257,7 +304,7 @@ mod tests {
 
     #[test]
     fn grep_no_match() {
-        let r = grep(&["xyz".into()], &mut &b"hello\nworld\n"[..]);
+        let r = grep(&["xyz".into()], &mut &b"hello\nworld\n"[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 1);
     }
 
@@ -266,7 +313,8 @@ mod tests {
         let r = grep(
             &["-i".into(), "hello".into()],
             &mut &b"Hello World\nhello world\nHELLO\n"[..],
-        );
+        &mut std::io::sink(),
+    );
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert_eq!(out.lines().count(), 3);
@@ -274,7 +322,7 @@ mod tests {
 
     #[test]
     fn grep_invert() {
-        let r = grep(&["-v".into(), "hello".into()], &mut &b"hello\nworld\n"[..]);
+        let r = grep(&["-v".into(), "hello".into()], &mut &b"hello\nworld\n"[..], &mut std::io::sink());
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(!out.contains("hello"));
         assert!(out.contains("world"));
@@ -285,14 +333,15 @@ mod tests {
         let r = grep(
             &["-c".into(), "hello".into()],
             &mut &b"hello\nhello\nworld\n"[..],
-        );
+        &mut std::io::sink(),
+    );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "2");
     }
 
     #[test]
     fn grep_line_numbers() {
-        let r = grep(&["-n".into(), "aaa".into()], &mut &b"aaa\nbbb\naaa\n"[..]);
+        let r = grep(&["-n".into(), "aaa".into()], &mut &b"aaa\nbbb\naaa\n"[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("1:aaa"));
@@ -301,19 +350,19 @@ mod tests {
 
     #[test]
     fn grep_no_pattern() {
-        let r = grep(&[], &mut &[][..]);
+        let r = grep(&[], &mut &[][..], &mut std::io::sink());
         assert_eq!(r.exit_code, 2);
     }
 
     #[test]
     fn grep_invalid_regex() {
-        let r = grep(&["[invalid".into()], &mut &b"test\n"[..]);
+        let r = grep(&["[invalid".into()], &mut &b"test\n"[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 2);
     }
 
     #[test]
     fn grep_e_option_uses_following_pattern() {
-        let r = grep(&["-e".into(), "^.$".into()], &mut &b".\n..\n"[..]);
+        let r = grep(&["-e".into(), "^.$".into()], &mut &b".\n..\n"[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), ".\n");
     }
@@ -323,7 +372,8 @@ mod tests {
         let r = grep(
             &["-in".into(), "-e".into(), "hello".into()],
             &mut &b"HELLO\n"[..],
-        );
+        &mut std::io::sink(),
+    );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "1:HELLO\n");
     }

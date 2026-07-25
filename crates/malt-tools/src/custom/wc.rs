@@ -1,6 +1,6 @@
 //! Built-in `wc` implementation.
 
-use crate::BuiltinResult;
+use crate::{emit, BuiltinResult};
 use std::path::Path;
 
 /// Count lines, words, and bytes.
@@ -12,7 +12,18 @@ use std::path::Path;
 /// - `-w`: words only
 /// - `-c`: bytes only
 /// - `-m`: characters only
-pub fn wc(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
+///
+/// `wc` produces exactly one summary line per operand, computed only once
+/// all of its input has been read -- there is no meaningful way to emit a
+/// count before that point, unlike `cat`/`grep`/`sed`/`head`. It still takes
+/// the writer parameter, and still uses it (via [`emit`]) for the one thing
+/// that is true of every tool: its result reaches the caller through the
+/// same seam, whether or not anything was streamed incrementally.
+pub fn wc(
+    args: &[String],
+    stdin: &mut dyn std::io::Read,
+    stdout_writer: &mut dyn std::io::Write,
+) -> BuiltinResult {
     let mut lines_only = false;
     let mut words_only = false;
     let mut bytes_only = false;
@@ -29,7 +40,7 @@ pub fn wc(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
                     'm' => chars_only = true,
                     _ => {
                         let msg = format!("wc: unknown option: -{}\n", ch);
-                        return BuiltinResult::failure(1, msg.into_bytes());
+                        return emit(stdout_writer, BuiltinResult::failure(1, msg.into_bytes()));
                     }
                 }
             }
@@ -46,7 +57,7 @@ pub fn wc(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
         let line = format_counts(
             &counts, show_all, lines_only, words_only, bytes_only, chars_only, None,
         );
-        return BuiltinResult::success(line.into_bytes());
+        return emit(stdout_writer, BuiltinResult::success(line.into_bytes()));
     }
 
     let mut stdout = Vec::new();
@@ -96,11 +107,14 @@ pub fn wc(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
         stdout.extend_from_slice(line.as_bytes());
     }
 
-    BuiltinResult {
-        exit_code,
-        stdout,
-        stderr,
-    }
+    emit(
+        stdout_writer,
+        BuiltinResult {
+            exit_code,
+            stdout,
+            stderr,
+        },
+    )
 }
 
 #[derive(Default)]
@@ -164,7 +178,7 @@ mod tests {
 
     #[test]
     fn wc_stdin_default() {
-        let r = wc(&[], &mut &b"hello world\ngoodbye\n"[..]);
+        let r = wc(&[], &mut &b"hello world\ngoodbye\n"[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         // 2 lines, 3 words, some bytes
@@ -174,14 +188,14 @@ mod tests {
 
     #[test]
     fn wc_lines_only() {
-        let r = wc(&["-l".into()], &mut &b"a\nb\nc\n"[..]);
+        let r = wc(&["-l".into()], &mut &b"a\nb\nc\n"[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "3");
     }
 
     #[test]
     fn wc_words_only() {
-        let r = wc(&["-w".into()], &mut &b"one two three\nfour\n"[..]);
+        let r = wc(&["-w".into()], &mut &b"one two three\nfour\n"[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "4");
     }
@@ -189,7 +203,7 @@ mod tests {
     #[test]
     fn wc_bytes_only() {
         let data = b"hello\n";
-        let r = wc(&["-c".into()], &mut &data[..]);
+        let r = wc(&["-c".into()], &mut &data[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         assert_eq!(
             String::from_utf8_lossy(&r.stdout).trim(),
@@ -199,14 +213,14 @@ mod tests {
 
     #[test]
     fn wc_chars_only() {
-        let r = wc(&["-m".into()], &mut "hello\n".as_bytes());
+        let r = wc(&["-m".into()], &mut "hello\n".as_bytes(), &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "6");
     }
 
     #[test]
     fn wc_empty_input() {
-        let r = wc(&[], &mut &[][..]);
+        let r = wc(&[], &mut &[][..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("0"));

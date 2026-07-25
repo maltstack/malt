@@ -32,7 +32,7 @@ use std::{
 };
 
 use crate::ast::{Command, ListOp, Redirect, RedirectKind, Span, Spanned};
-use crate::env::{CallFrame, Env, EnvError, LoopControl, TrapAction, Variable};
+use crate::env::{CallFrame, Env, EnvError, LoopControl, OutputSink, TrapAction, Variable};
 use crate::expander;
 
 // ── ExecResult ─────────────────────────────────────────────────────────
@@ -1300,9 +1300,10 @@ fn execute_simple_with_io(
     if tools_registry.contains(resolved_dispatch_name) {
         record_hashed_command(env, &resolved_cmd_name, resolved_dispatch_name);
         let mut stdin_reader = tool_stdin(resolved_io.stdin.take(), stdin_file.take(), env);
+        let mut stdout_writer = tool_stdout(resolved_io.stdout.is_some(), env);
 
         let tool_fn = tools_registry.get(resolved_dispatch_name).unwrap();
-        let tool_result = tool_fn(&argv, &mut stdin_reader);
+        let tool_result = tool_fn(&argv, &mut stdin_reader, &mut stdout_writer);
         let mut result = ExecResult {
             exit_code: tool_result.exit_code,
             stdout: tool_result.stdout,
@@ -1675,19 +1676,21 @@ fn execute_simple(
         record_hashed_command(env, &cmd_name, dispatch_name);
         // Read stdin if redirected.
         let mut stdin_reader = tool_stdin(resolved_io.stdin.take(), None, env);
+        let mut stdout_writer = tool_stdout(resolved_io.stdout.is_some(), env);
 
         // Execute the tool.
         let tool_fn = tools_registry.get(dispatch_name).unwrap();
-        let tool_result = tool_fn(&argv, &mut stdin_reader);
+        let tool_result = tool_fn(&argv, &mut stdin_reader, &mut stdout_writer);
 
-        // Convert to ExecResult and apply redirects.
+        // Convert to ExecResult and apply redirects. The tool already
+        // streamed unredirected output to the sink above, so there is
+        // nothing left to forward here.
         let mut result = ExecResult {
             exit_code: tool_result.exit_code,
             stdout: tool_result.stdout,
             stderr: tool_result.stderr,
         };
         apply_output_redirects(&mut result, resolved_io);
-        forward_to_sink(env, &result);
         return result;
     }
 
@@ -5969,9 +5972,10 @@ fn execute_expanded_command(
     }
     if tools_registry.contains(cmd_name) {
         let mut stdin_reader = tool_stdin(resolved_io.stdin.take(), None, env);
+        let mut stdout_writer = tool_stdout(resolved_io.stdout.is_some(), env);
 
         let tool_fn = tools_registry.get(cmd_name).unwrap();
-        let tool_result = tool_fn(argv, &mut stdin_reader);
+        let tool_result = tool_fn(argv, &mut stdin_reader, &mut stdout_writer);
         let mut result = ExecResult {
             exit_code: tool_result.exit_code,
             stdout: tool_result.stdout,
@@ -6191,6 +6195,51 @@ fn tool_stdin(
         // No redirect, no pipeline, no registered fd 0: standalone mash with
         // nothing attached. An empty reader, not the daemon's own console.
         None => Box::new(std::io::empty()),
+    }
+}
+
+/// Adapts an `OutputSink` to `std::io::Write` so a tool can stream to it
+/// through the same writer parameter it would use for any other
+/// destination.
+struct SinkWriter(std::sync::Arc<dyn OutputSink>);
+
+impl std::io::Write for SinkWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write_stdout(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Resolve the writer an in-process tool should stream its stdout to.
+///
+/// A tool writes to this AS PRODUCED -- the dual-write design mirrors
+/// `OutputSink` at the mash boundary: the same bytes still land in the
+/// tool's returned `BuiltinResult.stdout`, which
+/// `apply_output_redirects`/`apply_builtin_output_redirects` continues to
+/// act on exactly as before (FR-014). This only changes *when* unredirected
+/// bytes reach a live sink, never what ends up in the buffer those
+/// functions see.
+///
+/// Returns a no-op writer whenever streaming would be wrong: no sink is
+/// installed (nothing to stream to), or this invocation's stdout is being
+/// redirected to a file (`redirect_to_file` true) -- writing to the sink now
+/// AND to the file once the buffer is redirected would duplicate the output
+/// for anyone watching the sink.
+///
+/// **There are three tool-dispatch sites in this file and all of them must
+/// call this.** Same rule as `tool_stdin`, in the same place for the same
+/// reason.
+fn tool_stdout(redirect_to_file: bool, env: &Env) -> Box<dyn std::io::Write> {
+    if redirect_to_file {
+        return Box::new(std::io::sink());
+    }
+    match env.output_sink() {
+        Some(sink) => Box::new(SinkWriter(sink.clone())),
+        None => Box::new(std::io::sink()),
     }
 }
 

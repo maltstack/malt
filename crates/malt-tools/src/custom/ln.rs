@@ -10,7 +10,11 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-pub fn ln(args: &[String], _stdin: &mut dyn std::io::Read) -> BuiltinResult {
+pub fn ln(
+    args: &[String],
+    _stdin: &mut dyn std::io::Read,
+    _stdout: &mut dyn std::io::Write,
+) -> BuiltinResult {
     let mut symbolic = false;
     let mut force = false;
     let mut operands: Vec<&str> = Vec::new();
@@ -138,6 +142,7 @@ mod tests {
                 link.to_string_lossy().into_owned(),
             ],
             &mut &b""[..],
+            &mut std::io::sink(),
         );
 
         #[cfg(unix)]
@@ -180,6 +185,7 @@ mod tests {
                 link.to_string_lossy().into_owned(),
             ],
             &mut &b""[..],
+            &mut std::io::sink(),
         );
         #[cfg(unix)]
         assert_eq!(
@@ -207,6 +213,7 @@ mod tests {
                 link.to_string_lossy().into_owned(),
             ],
             &mut &b""[..],
+            &mut std::io::sink(),
         );
 
         assert_eq!(

@@ -2,8 +2,9 @@
 //!
 //! Supports basic substitution patterns used by Smoosh tests.
 
-use crate::BuiltinResult;
+use crate::{emit, BuiltinResult};
 use regex::Regex;
+use std::io::BufRead;
 use std::path::Path;
 
 /// Stream editor for filtering and transforming text.
@@ -15,10 +16,15 @@ use std::path::Path;
 /// - Capture groups `\(...\)` and backreferences `\1`, `\2`, etc.
 ///
 /// Exit 0 on success, 1 on error
-pub fn sed(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
+pub fn sed(
+    args: &[String],
+    stdin: &mut dyn std::io::Read,
+    stdout_writer: &mut dyn std::io::Write,
+) -> BuiltinResult {
     if args.is_empty() {
-        // No script: just copy stdin to stdout (cat-like behavior)
-        return BuiltinResult::success(crate::read_all(stdin));
+        // No script: just copy stdin to stdout (cat-like behavior), streaming
+        // each chunk as it is read instead of only after stdin ends.
+        return BuiltinResult::success(stream_copy(stdin, stdout_writer));
     }
 
     // Check for -e or direct script argument
@@ -74,38 +80,57 @@ pub fn sed(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
 
     let script = script.unwrap_or("");
 
-    // Parse and execute the script
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut exit_code = 0;
 
-    // Get input from files or stdin
-    let input_lines: Vec<String> = if file_args.is_empty() {
-        // Read from stdin
-        let stdin_bytes = crate::read_all(stdin);
-        let s = String::from_utf8_lossy(&stdin_bytes);
-        s.lines().map(|l| l.to_string()).collect()
-    } else {
-        // Read from files
-        let mut lines = Vec::new();
-        for path_str in file_args {
-            let path = Path::new(path_str);
-            match std::fs::read_to_string(path) {
-                Ok(content) => {
-                    for line in content.lines() {
-                        lines.push(line.to_string());
-                    }
+    if file_args.is_empty() {
+        // Stream: each transformed line is written to `stdout_writer` as
+        // soon as it is produced, instead of only after stdin reaches
+        // end-of-input.
+        let reader = std::io::BufReader::new(&mut *stdin);
+        // map_while rather than flatten: on a reader that keeps returning
+        // Err, flatten spins forever instead of stopping.
+        for line in reader.lines().map_while(Result::ok) {
+            match apply_script(&line, script) {
+                Ok(result) => {
+                    let mut rendered = result.into_bytes();
+                    rendered.push(b'\n');
+                    let _ = stdout_writer.write_all(&rendered);
+                    stdout.extend_from_slice(&rendered);
                 }
                 Err(e) => {
-                    stderr.extend_from_slice(format!("sed: {}: {}\n", path_str, e).as_bytes());
+                    stderr.extend_from_slice(format!("sed: {}\n", e).as_bytes());
                     exit_code = 1;
                 }
             }
         }
-        lines
-    };
+        return BuiltinResult {
+            exit_code,
+            stdout,
+            stderr,
+        };
+    }
 
-    // Process each line through the script
+    // Files are read whole up front, so there is nothing to stream
+    // incrementally here -- process and write once, below, like `cat`'s and
+    // `grep`'s file-operand paths.
+    let mut input_lines: Vec<String> = Vec::new();
+    for path_str in file_args {
+        let path = Path::new(path_str);
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                for line in content.lines() {
+                    input_lines.push(line.to_string());
+                }
+            }
+            Err(e) => {
+                stderr.extend_from_slice(format!("sed: {}: {}\n", path_str, e).as_bytes());
+                exit_code = 1;
+            }
+        }
+    }
+
     for line in input_lines {
         match apply_script(&line, script) {
             Ok(result) => {
@@ -119,10 +144,33 @@ pub fn sed(args: &[String], stdin: &mut dyn std::io::Read) -> BuiltinResult {
         }
     }
 
-    BuiltinResult {
-        exit_code,
-        stdout,
-        stderr,
+    emit(
+        stdout_writer,
+        BuiltinResult {
+            exit_code,
+            stdout,
+            stderr,
+        },
+    )
+}
+
+/// Read `reader` to end-of-input, writing each chunk to `writer` as soon as
+/// it is read and accumulating the same bytes for the returned buffer (used
+/// for redirect/pipeline capture, which need the complete output regardless
+/// of whether anything was streaming).
+fn stream_copy(reader: &mut dyn std::io::Read, writer: &mut dyn std::io::Write) -> Vec<u8> {
+    let mut collected = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => return collected,
+            Ok(n) => {
+                let _ = writer.write_all(&buf[..n]);
+                collected.extend_from_slice(&buf[..n]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return collected,
+        }
     }
 }
 
@@ -332,22 +380,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sed_streams_each_transformed_line_as_it_is_read_not_only_at_the_end() {
+        let mut written = Vec::new();
+        let r = sed(
+            &["s/foo/bar/".into()],
+            &mut &b"foo one\nfoo two\n"[..],
+            &mut written,
+        );
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, b"bar one\nbar two\n");
+        assert_eq!(
+            written, b"bar one\nbar two\n",
+            "each transformed line must have been streamed to the writer"
+        );
+    }
+
+    #[test]
     fn sed_substitute_first() {
-        let r = sed(&["s/foo/bar/".into()], &mut &b"foo foo foo\n"[..]);
+        let r = sed(&["s/foo/bar/".into()], &mut &b"foo foo foo\n"[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "bar foo foo\n");
     }
 
     #[test]
     fn sed_substitute_global() {
-        let r = sed(&["s/foo/bar/g".into()], &mut &b"foo foo foo\n"[..]);
+        let r = sed(&["s/foo/bar/g".into()], &mut &b"foo foo foo\n"[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "bar bar bar\n");
     }
 
     #[test]
     fn sed_substitute_nth() {
-        let r = sed(&["s/foo/bar/2".into()], &mut &b"foo foo foo\n"[..]);
+        let r = sed(&["s/foo/bar/2".into()], &mut &b"foo foo foo\n"[..], &mut std::io::sink());
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "foo bar foo\n");
     }
@@ -359,6 +423,7 @@ mod tests {
         let r = sed(
             &["s/\\([0-9]*\\)m\\([0-9]*\\).\\([0-9]*\\)s.*/\\1/".into()],
             &mut input.as_bytes(),
+            &mut std::io::sink(),
         );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "0\n");
@@ -371,6 +436,7 @@ mod tests {
         let r = sed(
             &["s/\\([0-9]*\\)m\\([0-9]*\\).\\([0-9]*\\)s.*/\\1/".into()],
             &mut input.as_bytes(),
+            &mut std::io::sink(),
         );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "0\n");
@@ -383,6 +449,7 @@ mod tests {
         let r = sed(
             &["s/\\([0-9]*\\)m\\([0-9]*\\).\\([0-9]*\\)s.*/\\2/".into()],
             &mut input.as_bytes(),
+            &mut std::io::sink(),
         );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "1\n");
@@ -395,6 +462,7 @@ mod tests {
         let r = sed(
             &["s/\\([0-9]*\\)m\\([0-9]*\\).\\([0-9]*\\)s.*/\\3/".into()],
             &mut input.as_bytes(),
+            &mut std::io::sink(),
         );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "234\n");
