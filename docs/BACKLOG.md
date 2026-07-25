@@ -26,7 +26,7 @@ original ten, in order. Each links to its detail below.
 - **0b. Single-threaded session executor blocks attach/output/input** — see P0.
 - 1. Correct plain stdout and stderr — see P0 (stderr), P1 (`get_output` shape).
 - 2. Real exit codes and execution IDs — exit codes done (2026-07-24); execution IDs — see P1.
-- 3. Command lifecycle events — see P1.
+- 3. Command lifecycle events — DONE 2026-07-25 (feature 004).
 - 4. Persistent execution history — see P1 (two-part: in-memory + schema).
 - 5. Genuine raw input — see P0 (0b is the precondition), P1.
 - 6. Human and agent coexistence — see P0 (render-dispatch gap), P1 (input authority).
@@ -234,34 +234,79 @@ original ten, in order. Each links to its detail below.
   rather than persisted separately — a second source of truth could only
   disagree. Asserted by
   `command_history_survives_dormant_restore_and_ids_stay_monotonic`.
-- **`CommandStarted`/`CommandFinished` are schema-defined with correct
-  codec constants but have zero producers anywhere — and even if
-  published, nothing would deliver them.** Grepped the whole workspace:
-  every hit is a test or a doc comment. `run_mash_command` publishes only
-  an `OutputChunk`-shaped `BusMessage` for stdout. Separately, **the `Bus`
-  itself has zero consumers in non-test code, for any message type** —
-  nothing calls `subscribe`/`drain`/`drain_critical` outside the bus's own
-  unit tests, so publishing these two events alone delivers them nowhere;
-  a real consumer path (SSE endpoint, or VNP-forwarded lifecycle channel)
-  is a separate, necessary piece of work this depends on. Not previously
-  called out in this specific "the bus has zero consumers period" framing
-  by ADR-0002. See
-  `docs/findings/2026-07-24-audit-execution-correctness.md` §3
-  (recommendations 4 and 6).
-  **Update 2026-07-25: the producer half now effectively exists, as a side
-  effect of features 002 + 003.** The command worker already announces
-  `SessionCommand::ExecutionStarted { command_id, command, started_at }`
-  before running, and `ExecutionCompleted` carries the finished result;
-  the control actor already handles both (that pair is what drives command
-  history). So "when did a command start / finish, with what id and exit
-  code" is live, structured, and already crossing a thread boundary —
-  what's missing is publishing it as `CommandStarted`/`CommandFinished`
-  and, the actual hard part, **giving the Bus its first real consumer**
-  (an SSE endpoint or a VNP-forwarded lifecycle channel). Re-verified
-  2026-07-25: `subscribe`/`drain`/`drain_critical` still have zero
-  non-test callers outside the bus's own internals. This meaningfully
-  reduces the scope of priority 3 — it is now a delivery-path problem,
-  not an instrumentation problem.
+- **Command lifecycle event delivery (ADR-0003 priority 3) — DELIVERED
+  2026-07-25.** Full Spec Kit treatment:
+  `specs/004-command-lifecycle-events/`. `GET /sessions/{id}/events`
+  streams `command_started`/`command_finished` as Server-Sent Events with
+  `Last-Event-ID` resume, `AuthScope::Read`, and a defined slow-consumer
+  policy. `malt watch <ID>` is the first-party consumer.
+  Published from the two control-actor handlers that already drive command
+  history, so events and history derive from one source and cannot
+  disagree; the finish event is emitted at the *commit* point, so it never
+  arrives before the output that produced it is visible.
+  Evidence: 12 unit + 12 integration tests in `malt-daemon`, 5 route tests
+  in `malt-gateway`, 10 frame-parser tests in `malt-bin`, plus live-daemon
+  validation (`docs/findings/2026-07-25-command-lifecycle-events.md`).
+  **Three real bugs were caught by driving the real path rather than by
+  review** — a frame parser that never stripped the line terminator (the
+  client received nothing while eight unit tests passed on pre-trimmed
+  input), an off-by-one that made a resuming subscriber's gap claim events
+  it had already seen, and a terminal gap that shared the buffer which had
+  just overflowed so a lagged subscriber could not be told it lagged.
+- **⚠️ The `Bus` STILL has zero consumers — this feature deliberately did
+  not use it, contradicting how this backlog previously framed the work.**
+  Recorded under Constitution IX rather than quietly re-scoped. The reason
+  is concrete: `Bus`'s `Reliable` priority is documented and implemented to
+  grow its ring "beyond capacity rather than evict", and both
+  `CommandStarted` and `CommandFinished` are specified `Reliable`. Routing
+  them through the Bus would have handed an untrusted, possibly-stalled
+  subscriber unbounded daemon memory growth — the exact failure the
+  feature existed to prevent. Delivery instead uses a bounded
+  per-subscriber channel plus a bounded per-session event log, following
+  the `render_pushers` precedent.
+  **The open question this exposes**: a message bus whose highest
+  reliability tier grows without bound has no safe consumer. It needs
+  either (a) a bounded `Reliable` policy with explicit gap signalling —
+  essentially what `executor/events.rs` now implements, which could be
+  generalized back into it — or (b) an honest re-scoping to trusted
+  in-daemon consumers only, with the unbounded growth documented as
+  intentional and the "zero consumers" status accepted. Deciding that is
+  its own change with its own tests; it was explicitly *not* fixed
+  opportunistically inside feature 004. See
+  `specs/004-command-lifecycle-events/research.md` R2.
+- **`malt watch` does not promptly reconnect after an abrupt daemon
+  death.** Found 2026-07-25 during feature 004's live validation
+  (`docs/findings/2026-07-25-command-lifecycle-events.md`). The reconnect
+  loop is correct — a *graceful* stream close is detected immediately and
+  resumes via `Last-Event-ID` — but a vanished peer leaves the client
+  blocked in `read_line` on a half-open socket until the OS TCP timeout,
+  which on Windows can be minutes. The clean fix is a read timeout on the
+  streaming response (a stream silent for longer than the server's SSE
+  keep-alive interval is dead), but `reqwest` 0.13.2's blocking API has no
+  `read_timeout`, and its total-request `timeout` would tear down healthy
+  streams too. Options: a bounded stream lifetime with automatic resume
+  (simple, adds a periodic reconnect), or move the client to the async
+  API. A real design choice, not a one-liner — deliberately left for its
+  own change.
+- **Deferred from feature 004, deliberately, not overlooked:**
+  - **VNP lifecycle-event forwarding to `malt-tui`.** The two schema
+    messages exist and the daemon-side event source is transport-neutral
+    precisely so this is additive. Gateway SSE was served first because
+    ADR-0002 makes the Gateway canonical and the P1 story was an agent;
+    `malt-tui` already renders command output live, so it gains less.
+    See research R1.
+  - **An MCP-native subscription.** A long-lived stream does not fit MCP's
+    request/response tool shape, and a polling tool over a streaming
+    endpoint would be a worse interface than the endpoint agents can
+    already consume. Belongs with a real MCP notifications design. See
+    research R8.
+  - **`malt-gateway-sdk`.** Still correctly sequenced *after* contract
+    stabilization, not into it — the decisive test was whether designing
+    for an SDK would change the events contract, and it would not
+    (standard `Last-Event-ID` resume, explicit gap events, errors as HTTP
+    status before the stream opens). `crates/malt-bin/src/events.rs` is
+    written as its nucleus: CLI-free and self-contained, so extraction is
+    a move rather than a rewrite. See research R10.
 - **Persistent execution history (ADR-0002 Phase 3/4) — both stacked gaps
   FIXED 2026-07-25**, sequenced as one coordinated change per the
   original recommendation. Full Spec Kit treatment:

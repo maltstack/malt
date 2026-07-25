@@ -182,6 +182,7 @@ malt attach [ID]              # Open TUI connected to session (VNP + HTTP fallba
 malt exec ID "command"        # Run command via mash, return output
 malt output ID                # Print session's current output as plain text
 malt history ID               # List the session's command execution history
+malt watch ID                 # Stream the session's lifecycle events live (SSE)
 malt send ID "input"          # Send raw input to session
 malt kill ID                  # Destroy session
 ```
@@ -202,6 +203,7 @@ doesn't have a token mechanism yet.
 - **Coordinator:** Session lifecycle, message routing, output retrieval via reply channels; `DebouncedStore` field; counter restore from `DaemonState` on startup; session name uniqueness (auto-suffix `-2`…`-100`); `persist_daemon_state` after every create/destroy
 - **Process supervisor:** spawn_with_pty, kill, check_exited, resize (for future compat pane processes) — not yet wired to session isolation tiers, unlike mash's own external-command spawn path (see `docs/BACKLOG.md`)
 - **Session store:** Bitpack persistence (Pack/Unpack), atomic writes (temp+rename → `.bak` backup), corruption quarantine (`.corrupt.{ts}.vxb`), save/load/list/delete; `DebouncedStore` wrapper with background 1s flush thread and `flush_all()`
+- **Command lifecycle events (2026-07-25, spec 004):** `GET /sessions/{id}/events` streams `command_started`/`command_finished` as Server-Sent Events, with `Last-Event-ID` resume from a bounded per-session event log (1024) and a defined slow-consumer policy — a subscriber that stops reading is told it lagged and dropped, never accommodated by growing its 256-event channel. Published from the same two control-actor handlers that drive command history, so the two cannot disagree. `malt watch` is the first-party consumer. **Note: this does not use the `Bus`** — its `Reliable` tier grows without bound, which is unsafe for an untrusted subscriber; the Bus still has zero consumers, see `docs/BACKLOG.md`. See `specs/004-command-lifecycle-events/`.
 - **Command execution history (2026-07-25, spec 003):** `SessionExecutor` owns a `PaneRuntime`; `run_mash_command` pushes an *open* `CommandBlock` before executing and finalizes it after, so a daemon that stops mid-command persists an honestly-unfinished record. Persisted via `PersistedPane.command_blocks`, restored on `spawn_with_cwd` (which also resumes `next_command_id` from the restored max). Retrieved via `GET /sessions/{id}/history`, `malt history`, or the MCP `get_command_history` tool — a dormant session answers from its snapshot rather than being woken. See `specs/003-command-execution-history/`.
 - **VNP listener:** TCP socket on port+1, VNP handshake, typed bitpack envelope dispatch post-handshake — KeyEvent/Resize/FrameAck inbound, RenderBatch/InitialState outbound. No JSON in the message loop.
 - **Input bridge:** `input_bridge` module — `vnp_key_to_input_event` converts VNP `KeyEvent` → mash `InputEvent`
@@ -227,6 +229,7 @@ doesn't have a token mechanism yet.
 - HTTP REST: axum 0.8, 11 endpoints + /shutdown
 - GatewayBackend trait (extractable subsystem)
 - Auth: scopes (Monitor < Read < Interact < Admin), TokenStore with bearer tokens, token file persistence
+- SSE event stream: `GET /sessions/{id}/events` (Read scope), `Last-Event-ID` resume, bounded per-subscriber delivery
 - Token bucket rate limiter
 - Shadow tree: FrameElement → semantic JSON (styled spans with RGB)
 

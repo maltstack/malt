@@ -105,11 +105,11 @@
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T033 Update `docs/BACKLOG.md`: mark ADR-0003 priority 3 (command lifecycle events) delivered with evidence (test names). **Critically, record that the Bus still has zero consumers after this feature** — the backlog framed this work as "giving the Bus its first real consumer" and that is no longer what happened (research R2, Constitution IX). Add the follow-up it exposes: a bus whose `Reliable` tier grows without bound has no safe consumer, so it needs either a bounded `Reliable` policy with gap signalling or an honest re-scoping to in-daemon trusted consumers.
-- [ ] T034 [P] Add the two deferred follow-ups to `docs/BACKLOG.md`: VNP lifecycle-event forwarding to `malt-tui` (research R1) and an MCP-native subscription pending a real notifications design (research R8). Both are deliberate deferrals from this feature, not oversights.
-- [ ] T035 [P] Update `AGENTS.md`: add `GET /sessions/{id}/events` to the Gateway description and a "What's Implemented" bullet for lifecycle event delivery, noting the SSE transport and the per-session bounded event log.
-- [ ] T036 Run the full quickstart.md validation manually against a live daemon (all four scenarios, including the `SIGSTOP` slow-consumer case) and record the outcome in a dated `docs/findings/` entry — this feature's riskiest behavior is only observable against a real client, exactly like the 003 in-flight-history validation.
-- [ ] T037 Final `cargo build --workspace && cargo test --workspace` green run; final commit.
+- [X] T033 Update `docs/BACKLOG.md`: mark ADR-0003 priority 3 (command lifecycle events) delivered with evidence (test names). **Critically, record that the Bus still has zero consumers after this feature** — the backlog framed this work as "giving the Bus its first real consumer" and that is no longer what happened (research R2, Constitution IX). Add the follow-up it exposes: a bus whose `Reliable` tier grows without bound has no safe consumer, so it needs either a bounded `Reliable` policy with gap signalling or an honest re-scoping to in-daemon trusted consumers.
+- [X] T034 [P] Add the two deferred follow-ups to `docs/BACKLOG.md`: VNP lifecycle-event forwarding to `malt-tui` (research R1) and an MCP-native subscription pending a real notifications design (research R8). Both are deliberate deferrals from this feature, not oversights.
+- [X] T035 [P] Update `AGENTS.md`: add `GET /sessions/{id}/events` to the Gateway description and a "What's Implemented" bullet for lifecycle event delivery, noting the SSE transport and the per-session bounded event log.
+- [X] T036 Run the full quickstart.md validation manually against a live daemon (all four scenarios, including the `SIGSTOP` slow-consumer case) and record the outcome in a dated `docs/findings/` entry — this feature's riskiest behavior is only observable against a real client, exactly like the 003 in-flight-history validation.
+- [X] T037 Final `cargo build --workspace && cargo test --workspace` green run; final commit.
 
 ---
 
