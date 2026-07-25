@@ -5,7 +5,9 @@ pub mod input;
 pub mod pools;
 pub mod session_thread;
 
-pub use command_worker::{ExecutionCompletion, ExecutionIngress, ExecutionRequest, WorkerOutput};
+pub use command_worker::{
+    ExecutionCompletion, ExecutionIngress, ExecutionRequest, QueueState, WorkerOutput,
+};
 pub use coordinator::Coordinator;
 pub use events::{GapReason, LifecycleEvent, LifecycleEventKind};
 pub use input::{InputError, SessionInputChannel};

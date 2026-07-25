@@ -49,6 +49,27 @@ pub struct ExecutionCompletion {
     pub finalized: mpsc::Sender<()>,
 }
 
+/// A sample of one session's execution FIFO occupancy.
+///
+/// `pending` counts requests submitted but not yet picked up by the worker;
+/// `active` is whether the worker is running one right now. A session at
+/// `active: true, pending: capacity` will reject the next submission with
+/// [`DaemonError::ExecutionQueueFull`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct QueueState {
+    pub active: bool,
+    pub pending: usize,
+    pub capacity: usize,
+}
+
+impl QueueState {
+    /// Whether a further submission would be rejected as full.
+    pub fn is_full(&self) -> bool {
+        self.pending >= self.capacity
+    }
+}
+
 struct AdmissionState {
     session_id: SessionId,
     capacity: usize,
@@ -175,6 +196,28 @@ impl ExecutionIngress {
     pub fn is_idle(&self) -> bool {
         self.state.pending.load(Ordering::Acquire) == 0
             && !self.state.active.load(Ordering::Acquire)
+    }
+
+    /// Admission state of this session's FIFO: whether a command is currently
+    /// executing, and how many are queued behind it.
+    ///
+    /// This exists because the two states are not otherwise observable from
+    /// outside, and "not observable" previously meant callers had to *guess*
+    /// when a command had been admitted -- which is what made the concurrency
+    /// tests flaky. Anything that needs to wait for a queue to reach a known
+    /// depth should poll this rather than sleeping and hoping.
+    ///
+    /// The pair is read with two separate atomic loads and is therefore a
+    /// sample, not an atomic snapshot: `active` may flip between the loads.
+    /// That is sufficient for waiting on a condition that, once true, stays
+    /// true until the waiter acts on it. Do not use it to derive an exact
+    /// total.
+    pub fn queue_state(&self) -> QueueState {
+        QueueState {
+            active: self.state.active.load(Ordering::Acquire),
+            pending: self.state.pending.load(Ordering::Acquire),
+            capacity: self.state.capacity,
+        }
     }
 
     fn is_closing(&self) -> bool {

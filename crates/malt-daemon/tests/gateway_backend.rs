@@ -1,6 +1,7 @@
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
 use malt_daemon::executor::session_thread::SessionCommand;
+use malt_daemon::executor::QueueState;
 use malt_daemon::gateway_backend::DaemonBackend;
 use malt_daemon::store::{DebouncedStore, SessionStore};
 use malt_gateway::backend::GatewayBackend;
@@ -30,6 +31,37 @@ fn make_backend_with_config(config: PoolConfig) -> DaemonBackend {
     DaemonBackend::new(Arc::new(Mutex::new(
         Coordinator::try_new(config, store).unwrap(),
     )))
+}
+
+/// Block until the session's execution FIFO reaches an expected state.
+///
+/// This replaces `thread::sleep`, which cannot *establish* a precondition --
+/// it only makes a race likely to resolve one way. Under parallel test load
+/// it resolved the other way often enough that this file failed 3 runs in 5,
+/// which meant the FIFO guarantees it exists to verify were being reported
+/// intermittently rather than proven. Polling real admission state is
+/// deterministic: once the condition holds it stays held until we act on it.
+fn wait_for_queue<F>(backend: &DaemonBackend, session: u32, what: &str, predicate: F) -> QueueState
+where
+    F: Fn(QueueState) -> bool,
+{
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut last = None;
+    while std::time::Instant::now() < deadline {
+        let observed = backend
+            .coordinator()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execution_queue_state(&malt_protocol::common::SessionId(session));
+        if let Some(state) = observed {
+            if predicate(state) {
+                return state;
+            }
+            last = Some(state);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    panic!("timed out after 10s waiting for {what}; last observed {last:?}");
 }
 
 fn test_caps() -> malt_protocol::common::ClientCapabilities {
@@ -626,10 +658,35 @@ fn a_running_command_is_visible_in_history_before_it_finishes() {
     let command = std::thread::spawn(move || {
         command_backend.exec_command(session_id, "sleep 1; echo done".to_string())
     });
-    std::thread::sleep(Duration::from_millis(100));
 
+    // Wait for the record to exist rather than sleeping and hoping. Note that
+    // waiting on the FIFO's `active` flag is NOT sufficient here: the worker
+    // sets `active` before it sends `ExecutionStarted` to the control actor,
+    // and the control actor owns the history buffer. Waiting on `active` only
+    // narrows the window; waiting on the record itself closes it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let during = loop {
+        let history = backend.get_command_history(session.id).unwrap();
+        if !history.is_empty() {
+            break history;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the running command never appeared in history"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    };
+
+    // The command must still be running, or "visible *before* it finishes"
+    // is not what was just observed.
+    assert!(
+        during[0].finished_at.is_none(),
+        "command finished before the assertion could observe it running;          it needs to be long enough to still be in flight here"
+    );
+
+    // Now the real claim: reading history does not block behind the command.
     let started = Instant::now();
-    let during = backend.get_command_history(session.id).unwrap();
+    let _ = backend.get_command_history(session.id).unwrap();
     let unrelated = backend.get_command_history(other.id).unwrap();
     let elapsed = started.elapsed();
 
@@ -667,7 +724,6 @@ fn a_running_command_is_visible_in_history_before_it_finishes() {
 #[test]
 fn capacity_one_keeps_one_active_and_one_pending_in_fifo_order() {
     use std::sync::Arc;
-    use std::time::Duration;
 
     let config = PoolConfig {
         session_channel_size: 1,
@@ -684,14 +740,24 @@ fn capacity_one_keeps_one_active_and_one_pending_in_fifo_order() {
             "export MALT_FIFO=ready; sleep 1; echo first".to_string(),
         )
     });
-    std::thread::sleep(Duration::from_millis(50));
+    // The first command must hold the active slot before anything else is
+    // submitted, or the ordering this test asserts is not the ordering under
+    // test.
+    wait_for_queue(&backend, session.id, "the first command to start", |s| {
+        s.active
+    });
 
     let second_backend = Arc::clone(&backend);
     let second_id = session.id;
     let second = std::thread::spawn(move || {
         second_backend.exec_command(second_id, "echo second-$MALT_FIFO".to_string())
     });
-    std::thread::sleep(Duration::from_millis(50));
+    // And the second must actually occupy the single queue slot before a third
+    // can be expected to bounce off a full queue.
+    let state = wait_for_queue(&backend, session.id, "the second command to queue", |s| {
+        s.pending == 1
+    });
+    assert!(state.is_full(), "queue should now be full: {state:?}");
 
     let overflow = backend.exec_command(session.id, "echo overflow".to_string());
     assert!(matches!(overflow, Err(GatewayError::ExecutionQueueFull(_))));
@@ -762,7 +828,6 @@ fn snapshot_during_execution_uses_the_last_finalized_env_snapshot() {
 #[test]
 fn concurrent_exec_and_send_share_the_same_session_fifo() {
     use std::sync::Arc;
-    use std::time::Duration;
 
     let backend = Arc::new(make_backend());
     let created = backend.create_session(None, None).unwrap();
@@ -771,12 +836,21 @@ fn concurrent_exec_and_send_share_the_same_session_fifo() {
     let first = std::thread::spawn(move || {
         first_backend.exec_command(id, "export MALT_PRODUCER=ordered; sleep 1".to_string())
     });
-    std::thread::sleep(Duration::from_millis(50));
+    // Submitting the observing exec before the first command is active would
+    // test nothing: the env it checks for is exported *by* that command.
+    wait_for_queue(&backend, created.id, "the first command to start", |s| {
+        s.active
+    });
+
+    // Raw input races with the exec submission on purpose. Since feature 005
+    // it no longer travels the execution FIFO -- it goes to the session's
+    // input pipe -- so this now asserts the two paths do not interfere,
+    // rather than that they share a queue.
     let send_backend = Arc::clone(&backend);
     let sent = std::thread::spawn(move || {
         send_backend.send_input(id, "echo send-$MALT_PRODUCER".to_string())
     });
-    std::thread::sleep(Duration::from_millis(20));
+
     let observed = backend
         .exec_command(created.id, "echo exec-$MALT_PRODUCER".to_string())
         .unwrap();

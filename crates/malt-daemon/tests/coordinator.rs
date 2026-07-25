@@ -954,7 +954,20 @@ fn destroy_closes_intake_promptly_but_finalizes_active_work_once() {
     let active = coord
         .submit_execution(id.clone(), "sleep 1; echo active".to_string())
         .unwrap();
-    std::thread::sleep(Duration::from_millis(50));
+    // The first command must hold the active slot before the second is
+    // submitted. Sleeping only made that likely; when it lost the race the
+    // two swapped roles and both assertions below inverted.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !coord
+        .execution_queue_state(&id)
+        .is_some_and(|state| state.active)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the first command never started executing"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
     let pending = coord
         .submit_execution(id.clone(), "echo pending".to_string())
         .unwrap();

@@ -4,7 +4,7 @@ use crate::executor::pools::PoolConfig;
 use crate::executor::session_thread::{
     from_persisted_command_block, CommandOutput, SessionCommand, SessionExecutor,
 };
-use crate::executor::ExecutionIngress;
+use crate::executor::{ExecutionIngress, QueueState};
 use crate::store::{DebouncedStore, StoreError};
 use crate::supervisor::ProcessSupervisor;
 use crate::DaemonError;
@@ -467,6 +467,18 @@ impl Coordinator {
                 Ok(receiver)
             }
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
+    }
+
+    /// Sample a session's execution FIFO occupancy.
+    ///
+    /// Returns `None` for an unknown or dormant session -- a dormant session
+    /// has no worker and therefore no queue, which is distinct from having an
+    /// empty one.
+    pub fn execution_queue_state(&self, session_id: &SessionId) -> Option<QueueState> {
+        match &self.sessions.get(&session_id.0)?.lifecycle {
+            SessionLifecycle::Active { ingress, .. } => Some(ingress.queue_state()),
+            SessionLifecycle::Dormant { .. } => None,
         }
     }
 

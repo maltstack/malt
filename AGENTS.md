@@ -360,7 +360,26 @@ as-is.
 - Plugin SDK tests use `wat` crate for minimal WASM modules.
 - No tests requiring GPU (maltty build-only verification).
 - **Shared-process-state races are a real, recurring test bug class in this
-  repo** — two were found and fixed 2026-07-24: a `CWD_LOCK` mutex
+  repo.** A third was found 2026-07-25 in `mash/tests/executor.rs`:
+  `function_prefix_redirect_expansion_precedes_assignment_word_expansion`
+  called `set_current_dir` without holding `CWD_LOCK`. It never failed
+  itself — it yanked the CWD out from under whichever lock-holding test was
+  running, so the failures surfaced in `heredoc_redirect_feeds_stdin_to_cat`
+  and `exec_input_redirect_registers_readable_shell_fd`. That is why this
+  looked like three independent flaky tests for months. **When a test flakes,
+  suspect a different test**, and grep the whole binary for the shared-state
+  mutation rather than debugging the test that reported the failure.
+
+- **`thread::sleep` cannot establish a precondition**, only make a race
+  likely to resolve one way. Fixed 2026-07-25 across four daemon tests that
+  used `sleep(50ms)` to mean "the first command has started by now"; under
+  parallel load it hadn't, and `gateway_backend.rs` failed 3 runs in 5. Wait
+  on observable state instead — `Coordinator::execution_queue_state` exists
+  for exactly this. Note that `active` is set by the worker *before* the
+  control actor records history, so waiting on `active` is not sufficient
+  when the assertion is about history; wait on the record itself.
+
+- Two earlier instances of the same class were found and fixed 2026-07-24: a `CWD_LOCK` mutex
   protecting tests that call `cd` (mutating the process-wide working
   directory) wasn't held by two tests doing relative-path file I/O, and 9
   of its 19 call sites used poison-fragile `.lock().unwrap()` instead of

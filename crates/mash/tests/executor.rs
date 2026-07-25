@@ -1924,6 +1924,14 @@ echo $?
 
 #[test]
 fn function_prefix_redirect_expansion_precedes_assignment_word_expansion() {
+    // Held for the whole test: this mutates the process-wide working
+    // directory, which every other test in this binary shares. Without it this
+    // test did not fail itself -- it yanked the CWD out from under whichever
+    // lock-holding test happened to be running, so the failures surfaced in
+    // `heredoc_redirect_feeds_stdin_to_cat` and
+    // `exec_input_redirect_registers_readable_shell_fd` instead. That is why
+    // this was mistaken for three separate flaky tests.
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().expect("tempdir");
     let old_dir = std::env::current_dir().expect("cwd");
     std::env::set_current_dir(dir.path()).expect("cd tempdir");
