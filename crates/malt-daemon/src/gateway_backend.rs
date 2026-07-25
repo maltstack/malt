@@ -27,6 +27,10 @@ fn map_execution_error(error: DaemonError) -> GatewayError {
         DaemonError::ExecutionQueueFull { .. } => GatewayError::ExecutionQueueFull(message),
         DaemonError::ExecutionUnavailable(_) => GatewayError::ExecutionUnavailable(message),
         DaemonError::SessionShuttingDown(_) => GatewayError::SessionShuttingDown(message),
+        // A dormant session is a real, caller-actionable state ("attach to
+        // restore it"), not a server fault -- reporting it as a 500 told
+        // clients the daemon had broken when nothing had.
+        DaemonError::SessionDormant(_) => GatewayError::SessionDormant(message),
         DaemonError::SessionNotFound(id) => GatewayError::SessionNotFound(id.0),
         other => GatewayError::Internal(other.to_string()),
     }

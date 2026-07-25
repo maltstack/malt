@@ -324,18 +324,33 @@ original ten, in order. Each links to its detail below.
   (recommendation 5) and
   `docs/findings/2026-07-24-audit-persistence-restore.md` §1
   (recommendation 2).
-- **`exec`/`get_output_text` report an unknown session as an *internal
-  error*, not a 404.** Found 2026-07-25 while validating command history
-  against a live daemon (`docs/findings/2026-07-25-command-execution-history.md`).
-  `exec_command` and `get_output_text` in `gateway_backend.rs` map every
-  `DaemonError` through `GatewayError::Internal`, so `malt exec 1 "..."`
-  on a nonexistent session prints `internal error: session not found:
-  SessionId(1)` (500-shaped) where `malt history 1` correctly prints
-  `session not found: 1` (404). `get_command_history` avoids this by
-  resolving the pane first, which doubles as the existence check — the
-  same fix would work for both, but it changes observable HTTP status
-  codes and deserves its own change with its own tests. Small, isolated,
-  good first item.
+- **Gateway error mapping for unknown/dormant sessions — RESOLVED
+  2026-07-25.** Two separate issues, only one of which was real by the
+  time it was checked:
+  - *Unknown session reported as an internal error* — already fixed by
+    feature 002's `map_execution_error`, which maps
+    `DaemonError::SessionNotFound` to `GatewayError::SessionNotFound`.
+    The original finding predated that rebase. Verified live: `exec`,
+    `output`, `output/text`, and `history` all return 404 for a
+    nonexistent session.
+  - *Dormant session reported as an internal error* — this one was real
+    and is now fixed. `DaemonError::SessionDormant` fell through
+    `map_execution_error`'s catch-all to `GatewayError::Internal`, so
+    `exec`/`output` on a restored-but-not-yet-attached session returned
+    **HTTP 500** with the message "session ... is dormant — attach to
+    restore it". A caller-actionable lifecycle state was being reported
+    as the daemon having broken. Added `GatewayError::SessionDormant`
+    → **409 Conflict** (`session_dormant`), the same class as the
+    existing `SessionShuttingDown`. One enum variant, one status
+    mapping, one match arm — every affected route already funnels
+    through `map_execution_error`, and all nine dormant checks in
+    `coordinator.rs` already produced the right `DaemonError`.
+    Test: `a_dormant_session_reports_a_conflict_not_an_internal_error`
+    (`malt-daemon/tests/gateway_backend.rs`) drives a real
+    persist→dormant cycle and asserts 409-class for exec and output,
+    404 still distinct for a missing session, and that `history`
+    deliberately still succeeds on a dormant session (it answers from
+    the snapshot rather than requiring a restore).
 - **`vexilc` 0.5.1 attaches a field-level `@doc` to the *preceding*
   field.** Found 2026-07-25 while adding `PersistedCommandBlock`: a
   `@doc` written immediately above a field lands on the field before it

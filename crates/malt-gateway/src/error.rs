@@ -33,6 +33,12 @@ pub enum GatewayError {
     #[error("session shutting down: {0}")]
     SessionShuttingDown(String),
 
+    /// The session exists but is dormant, so it cannot service the request
+    /// until something attaches and restores it. A caller-actionable state,
+    /// not a server fault — the same class as `SessionShuttingDown`.
+    #[error("session dormant: {0}")]
+    SessionDormant(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -66,6 +72,9 @@ impl IntoResponse for GatewayError {
             }
             GatewayError::SessionShuttingDown(_) => {
                 (StatusCode::CONFLICT, "session_shutting_down")
+            }
+            GatewayError::SessionDormant(_) => {
+                (StatusCode::CONFLICT, "session_dormant")
             }
             GatewayError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };

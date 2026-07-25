@@ -369,6 +369,60 @@ fn command_history_survives_dormant_restore_and_ids_stay_monotonic() {
 }
 
 #[test]
+fn a_dormant_session_reports_a_conflict_not_an_internal_error() {
+    use malt_gateway::error::GatewayError;
+    use malt_protocol::common::SessionId;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session_id;
+    {
+        let backend = make_backend_with_store(&dir);
+        let created = backend.create_session(None, None).unwrap();
+        session_id = created.id;
+        backend
+            .exec_command(session_id, "echo before-dormant".to_string())
+            .unwrap();
+
+        let coord_arc = backend.coordinator().clone();
+        let mut coord = coord_arc.lock().unwrap();
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+        coord
+            .register_vnp_client(SessionId(session_id), 1, test_caps(), render_tx)
+            .unwrap();
+        coord.unregister_vnp_client(SessionId(session_id), 1).unwrap();
+    }
+
+    // Fresh coordinator over the same store: the session is known but dormant.
+    let backend = make_backend_with_store(&dir);
+
+    // "Attach to restore it" is something the caller can act on, so it must
+    // not be reported as the daemon having failed.
+    let exec_err = backend
+        .exec_command(session_id, "echo while-dormant".to_string())
+        .unwrap_err();
+    assert!(
+        matches!(exec_err, GatewayError::SessionDormant(_)),
+        "exec on a dormant session must be a conflict, not an internal error: {exec_err:?}"
+    );
+
+    let output_err = backend.get_output_text(session_id).unwrap_err();
+    assert!(
+        matches!(output_err, GatewayError::SessionDormant(_)),
+        "output on a dormant session must be a conflict, not an internal error: {output_err:?}"
+    );
+
+    // Still distinct from a session that does not exist at all.
+    let missing = backend.exec_command(9999, "echo nope".to_string()).unwrap_err();
+    assert!(matches!(missing, GatewayError::SessionNotFound(9999)));
+
+    // History deliberately still succeeds on a dormant session -- it answers
+    // from the persisted snapshot instead of requiring a restore.
+    let history = backend.get_command_history(session_id).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].cmd, "echo before-dormant");
+}
+
+#[test]
 fn shell_env_state_survives_dormant_restore_via_env_snapshot() {
     use malt_protocol::common::SessionId;
 
