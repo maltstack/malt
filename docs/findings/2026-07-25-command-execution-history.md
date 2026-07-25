@@ -86,3 +86,34 @@ Test session destroyed, daemon stopped. `malt kill 5` on a dormant session
 reported `destroy session response contained no data` while still removing
 the session — a separate, pre-existing response-shape wart in the destroy
 route, unrelated to this feature. Not investigated further.
+
+## Addendum (post-002 rebase, same day)
+
+Re-validated after rebasing onto feature 002 (responsive session control),
+which moved MASH execution to a dedicated worker thread. The behavior this
+feature could only assert structurally before is now directly observable
+against a live daemon.
+
+While a 4-second command runs, `malt history` at t+1s returns in **113 ms**:
+
+```
+    1  00:10:24  incomplete     -  sleep 4; echo slow
+```
+
+and the same entry after completion:
+
+```
+    1  00:10:24        4.0s     0  sleep 4; echo slow
+```
+
+Over raw HTTP during a 5-second command, `finished_at` and `exit_code` are
+both `null` as specified, returned in 117 ms. The in-flight record is
+finalized in place rather than duplicated.
+
+**One false alarm worth recording so it is not re-investigated.** The first
+CLI measurement of this appeared to take 1.99 s and showed the command
+already complete, which looked like history blocking behind execution. It
+was cold binary start: the same command warm takes 43 ms, and `malt --help`
+(which touches no daemon at all) took 45 ms warm versus the same ~2 s cold.
+The daemon was never the bottleneck — confirmed by the curl measurement
+above, which bypasses the CLI entirely.
