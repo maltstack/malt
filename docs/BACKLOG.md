@@ -189,11 +189,32 @@ termination that only removes bookkeeping (A-06).
   (`malt-daemon/tests/session_thread.rs`) proves an attached VNP client
   now receives a real `RenderBatch` after a gateway-driven `RunCommand`.
   **Still partial, as scoped**: this pushes one frame at completion, not
-  incremental output during a long-running command — true streaming needs
-  0b (decoupling execution from the session's single command-dispatch
-  thread) first, since the handler can't push intermediate frames while
-  it's still blocked inside `run_mash_command`. See
+  incremental output during a long-running command. See
   `docs/findings/2026-07-24-audit-input-concurrency.md` §3b (recommendation 2).
+
+  **Unblocked 2026-07-25.** This entry used to say true streaming needed 0b
+  first — the control actor could not push intermediate frames while blocked
+  inside `run_mash_command`. Feature 002 did exactly that decoupling: MASH now
+  runs on a dedicated worker and the control actor is free while a command
+  runs. So the stated prerequisite is met and this is now buildable, not
+  blocked.
+
+  It is a feature in its own right and belongs in its own spec, not folded
+  into 005 (input and authority). Two layers, in dependency order:
+
+  1. **Session output to clients.** The worker produces output continuously;
+     the control actor should feed the compat translator and dispatch render
+     batches as it arrives rather than once at finalization. This is what
+     ADR-0003's guiding demo means by "MALT reports structured progress", and
+     what makes a two-minute `cargo test` watchable instead of silent. It also
+     needs a decision on how incremental output reaches the Gateway — today
+     `/exec` returns one final payload, so an agent has the same blind spot.
+  2. **Tool output within mash.** `ToolFn` returns a buffered `BuiltinResult`,
+     so an interactive `cat` shows its echo only when the command ends. Needs
+     a writer-based signature and a different result type; note the output
+     redirect machinery (`apply_output_redirects`) currently operates on that
+     buffer, so it changes with it. Smaller than (1) and largely falls out of
+     it.
 
 
 ### From the 2026-07-25 architecture/spec/codebase audit
