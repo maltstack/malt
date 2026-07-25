@@ -1,4 +1,5 @@
 use crate::bus::BusMessage;
+use crate::executor::events::LifecycleEvent;
 use crate::executor::pools::PoolConfig;
 use crate::executor::session_thread::{
     from_persisted_command_block, CommandOutput, SessionCommand, SessionExecutor,
@@ -14,7 +15,6 @@ use malt_protocol::input::KeyEvent;
 use malt_protocol::persist::daemon::DaemonState;
 use malt_protocol::persist::session::PersistedSession;
 use malt_protocol::render::{InitialState, RenderBatch};
-use crate::executor::events::LifecycleEvent;
 use malt_session::pane::CommandBlock;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
@@ -661,7 +661,8 @@ impl Coordinator {
                             control_thread,
                             worker_thread,
                             ..
-                        } = &mut handle.lifecycle {
+                        } = &mut handle.lifecycle
+                        {
                             ingress.close();
                             let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
                             // Do not hold daemon shutdown behind an
@@ -680,7 +681,13 @@ impl Coordinator {
                     // Shut down thread anyway so it doesn't linger.
                     let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
                     if let Some(handle) = self.sessions.get_mut(&session_id.0) {
-                        if let SessionLifecycle::Active { ingress, control_thread, worker_thread, .. } = &mut handle.lifecycle {
+                        if let SessionLifecycle::Active {
+                            ingress,
+                            control_thread,
+                            worker_thread,
+                            ..
+                        } = &mut handle.lifecycle
+                        {
                             ingress.close();
                             spawn_session_reaper(control_thread.take(), worker_thread.take());
                         }
@@ -866,14 +873,14 @@ impl Coordinator {
                 None => return,
             };
             match &handle.lifecycle {
-                SessionLifecycle::Active { cmd_tx, ingress, .. } => {
-                    (
-                        cmd_tx.clone(),
-                        ingress.clone(),
-                        handle.name.clone(),
-                        handle.isolation,
-                    )
-                }
+                SessionLifecycle::Active {
+                    cmd_tx, ingress, ..
+                } => (
+                    cmd_tx.clone(),
+                    ingress.clone(),
+                    handle.name.clone(),
+                    handle.isolation,
+                ),
                 SessionLifecycle::Dormant { .. } => return,
             }
         };
@@ -920,11 +927,18 @@ impl Coordinator {
         // Shut down the session worker and control actor.
         let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
         if let Some(handle) = self.sessions.get_mut(&id.0) {
-            if let SessionLifecycle::Active { control_thread, worker_thread, .. } = &mut handle.lifecycle {
+            if let SessionLifecycle::Active {
+                control_thread,
+                worker_thread,
+                ..
+            } = &mut handle.lifecycle
+            {
                 if let Some(t) = control_thread.take() {
                     let _ = t.join();
                 }
-                if let Some(t) = worker_thread.take() { let _ = t.join(); }
+                if let Some(t) = worker_thread.take() {
+                    let _ = t.join();
+                }
             }
             handle.lifecycle = SessionLifecycle::Dormant { persisted };
         }
@@ -959,8 +973,12 @@ fn spawn_session_reaper(
     let _ = std::thread::Builder::new()
         .name("malt-session-reaper".to_string())
         .spawn(move || {
-            if let Some(thread) = control_thread { let _ = thread.join(); }
-            if let Some(thread) = worker_thread { let _ = thread.join(); }
+            if let Some(thread) = control_thread {
+                let _ = thread.join();
+            }
+            if let Some(thread) = worker_thread {
+                let _ = thread.join();
+            }
         });
 }
 

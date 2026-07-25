@@ -438,7 +438,10 @@ impl SessionExecutor {
                 warn!(%error, "spawn_with_cwd: failed to restore PWD in mash env");
             }
         } else {
-            warn!(?initial_cwd, "spawn_with_cwd: directory no longer exists; falling back to OS cwd");
+            warn!(
+                ?initial_cwd,
+                "spawn_with_cwd: directory no longer exists; falling back to OS cwd"
+            );
         }
         Self::spawn_with_env(
             session_id,
@@ -588,7 +591,9 @@ impl SessionExecutor {
                         started_at,
                     });
                 }
-                Ok(SessionCommand::ExecutionCompleted(completion)) => self.begin_finalization(completion),
+                Ok(SessionCommand::ExecutionCompleted(completion)) => {
+                    self.begin_finalization(completion)
+                }
                 Ok(SessionCommand::PtyOutput { data, .. }) => {
                     if let Some(compat) = &mut self.compat {
                         compat.feed(&data);
@@ -773,7 +778,10 @@ impl SessionExecutor {
     /// If the requested position predates what is still retained, a `Gap` is
     /// queued *before* the replayed events, so the client learns about the
     /// hole before receiving data that would otherwise look contiguous.
-    fn subscribe_events(&mut self, resume_from: Option<u64>) -> tokio::sync::mpsc::Receiver<LifecycleEvent> {
+    fn subscribe_events(
+        &mut self,
+        resume_from: Option<u64>,
+    ) -> tokio::sync::mpsc::Receiver<LifecycleEvent> {
         let id = self.next_subscriber_id;
         self.next_subscriber_id += 1;
         let (mut sink, rx) = SubscriberSink::new(id);
@@ -795,7 +803,10 @@ impl SessionExecutor {
                 if sink.try_deliver(&event) != DeliveryOutcome::Delivered {
                     // The replay itself outran the buffer -- say so rather
                     // than hand over a silently-truncated backlog.
-                    sink.try_notify_gap(self.event_log.latest_sequence(), GapReason::SubscriberLagged);
+                    sink.try_notify_gap(
+                        self.event_log.latest_sequence(),
+                        GapReason::SubscriberLagged,
+                    );
                     break;
                 }
             }
@@ -857,9 +868,11 @@ impl SessionExecutor {
                             let _ = reply.send(command_error_output(error));
                         }
                         Err(_) => {
-                            let _ = reply.send(command_error_output(DaemonError::ExecutionUnavailable(
-                                malt_protocol::common::SessionId(0),
-                            )));
+                            let _ = reply.send(command_error_output(
+                                DaemonError::ExecutionUnavailable(
+                                    malt_protocol::common::SessionId(0),
+                                ),
+                            ));
                         }
                     });
             }
@@ -887,10 +900,7 @@ impl SessionExecutor {
                     let _ = completion.finalized.send(());
                     return;
                 }
-                let staged_compat = self
-                    .compat
-                    .as_ref()
-                    .map(CompatTranslator::staging_clone);
+                let staged_compat = self.compat.as_ref().map(CompatTranslator::staging_clone);
                 self.finalization = Some(Finalization {
                     sequence: worker_output.sequence,
                     output: worker_output.result,
@@ -1210,7 +1220,11 @@ fn to_persisted_env_snapshot(
     PEnvSnapshot {
         variables,
         options,
-        aliases: snapshot.aliases.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        aliases: snapshot
+            .aliases
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
         functions: snapshot
             .functions
             .iter()
@@ -1218,7 +1232,11 @@ fn to_persisted_env_snapshot(
             .collect(),
         dir_stack: snapshot.dir_stack.clone(),
         cwd: snapshot.cwd.clone(),
-        traps: snapshot.traps.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        traps: snapshot
+            .traps
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
         _unknown: vec![],
     }
 }
@@ -1241,7 +1259,10 @@ pub(crate) fn from_persisted_env_snapshot(
                 }
                 PersistedVarValue::Arr { values } => mash::env::VarValue::Array(values.clone()),
                 PersistedVarValue::AssocArr { entries } => mash::env::VarValue::AssocArray(
-                    entries.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                    entries
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
                 ),
                 // PersistedVarValue is #[non_exhaustive] too (includes the
                 // schema's own forward-compat `Unknown` variant) -- treat
@@ -1282,7 +1303,11 @@ pub(crate) fn from_persisted_env_snapshot(
     mash::env::EnvSnapshot {
         variables,
         options,
-        aliases: persisted.aliases.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        aliases: persisted
+            .aliases
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
         functions: persisted
             .functions
             .iter()
@@ -1290,7 +1315,11 @@ pub(crate) fn from_persisted_env_snapshot(
             .collect(),
         dir_stack: persisted.dir_stack.clone(),
         cwd: persisted.cwd.clone(),
-        traps: persisted.traps.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        traps: persisted
+            .traps
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
     }
 }
 
@@ -1317,7 +1346,11 @@ fn build_persisted_session(
 ) -> PersistedSession {
     let shell_path = snapshot_string(env, "SHELL").unwrap_or_else(default_shell_path);
     let cwd = snapshot_string(env, "PWD").unwrap_or_else(|| {
-        if env.cwd.is_empty() { ".".to_string() } else { env.cwd.clone() }
+        if env.cwd.is_empty() {
+            ".".to_string()
+        } else {
+            env.cwd.clone()
+        }
     });
     let env_snapshot = Some(to_persisted_env_snapshot(env));
 
@@ -1328,7 +1361,10 @@ fn build_persisted_session(
             shell_path,
             env_snapshot,
         },
-        command_blocks: command_blocks.iter().map(to_persisted_command_block).collect(),
+        command_blocks: command_blocks
+            .iter()
+            .map(to_persisted_command_block)
+            .collect(),
         _unknown: vec![],
     };
 

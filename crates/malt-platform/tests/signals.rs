@@ -77,7 +77,10 @@ fn send_signal_term_actually_terminates_process_with_correct_exit_code() {
         .expect("spawn ping (must be present on any Windows host)");
 
     assert!(
-        child.try_wait().expect("try_wait should not error").is_none(),
+        child
+            .try_wait()
+            .expect("try_wait should not error")
+            .is_none(),
         "process should still be running right after spawn"
     );
 
@@ -112,7 +115,10 @@ fn send_signal_int_succeeds_against_running_process() {
     // asserting the latter would be testing console group semantics we
     // don't control here, not this function.
     let result = send_signal(child.id(), SignalKind::Int);
-    assert!(result.is_ok(), "send_signal(Int) against a real PID should not error: {result:?}");
+    assert!(
+        result.is_ok(),
+        "send_signal(Int) against a real PID should not error: {result:?}"
+    );
 
     // Clean up regardless of whether Ctrl+C actually killed it.
     let _ = child.kill();

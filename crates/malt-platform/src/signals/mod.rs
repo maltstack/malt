@@ -15,14 +15,14 @@ use thiserror::Error;
 pub use malt_protocol::common::SignalKind;
 
 #[cfg(unix)]
-pub use unix::send_signal;
-#[cfg(unix)]
 pub use unix::process_exists;
+#[cfg(unix)]
+pub use unix::send_signal;
 
 #[cfg(windows)]
-pub use windows::send_signal;
-#[cfg(windows)]
 pub use windows::process_exists;
+#[cfg(windows)]
+pub use windows::send_signal;
 
 // ── Error type ───────────────────────────────────────────────────────────
 
@@ -54,9 +54,9 @@ pub enum SignalError {
 /// This is the **single source of truth** for name/number resolution.
 /// POSIX standard numbers are used on all platforms.
 const SIGNAL_TABLE: &[(&str, i32, SignalKind)] = &[
-    ("HUP",  1,  SignalKind::Hup),
-    ("INT",  2,  SignalKind::Int),
-    ("QUIT", 3,  SignalKind::Quit),
+    ("HUP", 1, SignalKind::Hup),
+    ("INT", 2, SignalKind::Int),
+    ("QUIT", 3, SignalKind::Quit),
     ("TERM", 15, SignalKind::Term),
     ("USR1", 10, SignalKind::Usr1),
     ("USR2", 12, SignalKind::Usr2),

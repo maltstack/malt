@@ -70,12 +70,8 @@ impl IntoResponse for GatewayError {
             GatewayError::ExecutionUnavailable(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "execution_unavailable")
             }
-            GatewayError::SessionShuttingDown(_) => {
-                (StatusCode::CONFLICT, "session_shutting_down")
-            }
-            GatewayError::SessionDormant(_) => {
-                (StatusCode::CONFLICT, "session_dormant")
-            }
+            GatewayError::SessionShuttingDown(_) => (StatusCode::CONFLICT, "session_shutting_down"),
+            GatewayError::SessionDormant(_) => (StatusCode::CONFLICT, "session_dormant"),
             GatewayError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
 

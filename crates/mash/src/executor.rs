@@ -6314,7 +6314,10 @@ mod tests {
         // is what makes "dies within 2s after termination" meaningful rather
         // than a coincidence.
         assert!(
-            child.try_wait().expect("try_wait should not error").is_none(),
+            child
+                .try_wait()
+                .expect("try_wait should not error")
+                .is_none(),
             "ping should still be running right after spawn"
         );
 
@@ -6334,7 +6337,11 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut exited = false;
         while Instant::now() < deadline {
-            if child.try_wait().expect("try_wait should not error").is_some() {
+            if child
+                .try_wait()
+                .expect("try_wait should not error")
+                .is_some()
+            {
                 exited = true;
                 break;
             }

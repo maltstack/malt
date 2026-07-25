@@ -21,7 +21,9 @@ pub use isolation::{IsolationContext, IsolationTier};
 pub use fs::{malt_tmp_dir, normalize_device_path, to_windows_path};
 
 // Re-export vfs types for convenience
-pub use vfs::{classify_virtual_dev, open_virtual_dev, try_open_virtual_dev, DevOpenMode, VirtualDevKind};
+pub use vfs::{
+    classify_virtual_dev, open_virtual_dev, try_open_virtual_dev, DevOpenMode, VirtualDevKind,
+};
 
 // Re-export resource types for convenience
-pub use resource::{get_rusage, ResourceUsage, ResourceError};
+pub use resource::{get_rusage, ResourceError, ResourceUsage};

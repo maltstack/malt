@@ -335,8 +335,7 @@ mod tests {
     /// original tests skipped entirely.
     #[test]
     fn restricted_token_is_actually_more_restricted_than_current_token() {
-        let restricted =
-            create_sandbox_token().expect("create_sandbox_token should succeed");
+        let restricted = create_sandbox_token().expect("create_sandbox_token should succeed");
 
         // A token created with DISABLE_MAX_PRIVILEGE should fail to look up
         // as having SeDebugPrivilege enabled (it's stripped), whereas the

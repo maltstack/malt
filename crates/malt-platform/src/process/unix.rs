@@ -115,7 +115,9 @@ pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
         });
     }
 
-    let mut child = cmd.spawn().map_err(|e| map_spawn_error(e, &config.program))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| map_spawn_error(e, &config.program))?;
 
     let pid = child.id();
     let stdin = child.stdin.take();

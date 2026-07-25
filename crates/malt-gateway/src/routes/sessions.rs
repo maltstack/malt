@@ -120,7 +120,9 @@ pub async fn events(
 /// Render one event as an SSE frame: `id` is the resume position, `event` is
 /// the type, `data` is the JSON payload.
 fn to_sse_event(dto: &LifecycleEventDto) -> Event {
-    let event = Event::default().id(dto.sequence.to_string()).event(&dto.kind);
+    let event = Event::default()
+        .id(dto.sequence.to_string())
+        .event(&dto.kind);
     match serde_json::to_string(dto) {
         Ok(json) => event.data(json),
         // Serialization of a plain data struct should not fail; if it

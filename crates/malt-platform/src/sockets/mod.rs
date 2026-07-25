@@ -49,19 +49,24 @@ impl Transport {
     /// Parse from MALT_SOCKET env var.
     pub fn from_env_string(s: &str) -> Result<Self, TransportError> {
         if s.starts_with("tcp://") {
-            let addr: SocketAddr = s[6..].parse()
+            let addr: SocketAddr = s[6..]
+                .parse()
                 .map_err(|e| TransportError::InvalidAddress(format!("{e}")))?;
             return Ok(Transport::Tcp(addr));
         }
 
         #[cfg(unix)]
-        { Ok(Transport::UnixSocket(PathBuf::from(s))) }
+        {
+            Ok(Transport::UnixSocket(PathBuf::from(s)))
+        }
         #[cfg(windows)]
         {
             if s.starts_with(r"\\") {
                 Ok(Transport::NamedPipe(s.to_string()))
             } else {
-                Err(TransportError::InvalidAddress(format!("not a named pipe path: {s}")))
+                Err(TransportError::InvalidAddress(format!(
+                    "not a named pipe path: {s}"
+                )))
             }
         }
     }

@@ -107,8 +107,16 @@ impl ExecutionIngress {
 
     pub fn submit(&self, command: String, reply: ExecutionReply) -> Result<(), DaemonError> {
         match self.state.state.load(Ordering::Acquire) {
-            CLOSING => return Err(DaemonError::SessionShuttingDown(self.state.session_id.clone())),
-            UNAVAILABLE => return Err(DaemonError::ExecutionUnavailable(self.state.session_id.clone())),
+            CLOSING => {
+                return Err(DaemonError::SessionShuttingDown(
+                    self.state.session_id.clone(),
+                ))
+            }
+            UNAVAILABLE => {
+                return Err(DaemonError::ExecutionUnavailable(
+                    self.state.session_id.clone(),
+                ))
+            }
             _ => {}
         }
 
@@ -130,14 +138,16 @@ impl ExecutionIngress {
             Err(mpsc::TrySendError::Full(_)) => {
                 self.state.pending.fetch_sub(1, Ordering::AcqRel);
                 Err(DaemonError::ExecutionQueueFull {
-                session_id: self.state.session_id.clone(),
-                capacity: self.state.capacity,
+                    session_id: self.state.session_id.clone(),
+                    capacity: self.state.capacity,
                 })
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
                 self.state.pending.fetch_sub(1, Ordering::AcqRel);
                 self.mark_unavailable();
-                Err(DaemonError::ExecutionUnavailable(self.state.session_id.clone()))
+                Err(DaemonError::ExecutionUnavailable(
+                    self.state.session_id.clone(),
+                ))
             }
         }
     }
@@ -201,7 +211,9 @@ pub fn spawn_command_worker(
             while let Ok(request) = requests.recv() {
                 ingress.worker_received();
                 if ingress.is_closing() {
-                    let _ = request.reply.send(Err(DaemonError::SessionShuttingDown(session_id.clone())));
+                    let _ = request
+                        .reply
+                        .send(Err(DaemonError::SessionShuttingDown(session_id.clone())));
                     continue;
                 }
                 ingress.set_active(true);
@@ -323,8 +335,13 @@ mod tests {
         let (first, _first_result) = mpsc::channel();
         ingress.submit("echo first".to_string(), first).unwrap();
         let (second, _second_result) = mpsc::channel();
-        let error = ingress.submit("echo second".to_string(), second).unwrap_err();
-        assert!(matches!(error, DaemonError::ExecutionQueueFull { capacity: 1, .. }));
+        let error = ingress
+            .submit("echo second".to_string(), second)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DaemonError::ExecutionQueueFull { capacity: 1, .. }
+        ));
     }
 
     #[test]
@@ -375,9 +392,14 @@ mod tests {
         let (active_reply, active_result) = mpsc::channel();
         let (pending_reply, pending_result) = mpsc::channel();
         ingress
-            .submit("__malt_test_injected_worker_panic".to_string(), active_reply)
+            .submit(
+                "__malt_test_injected_worker_panic".to_string(),
+                active_reply,
+            )
             .unwrap();
-        ingress.submit("echo must-not-run".to_string(), pending_reply).unwrap();
+        ingress
+            .submit("echo must-not-run".to_string(), pending_reply)
+            .unwrap();
 
         // The start is announced before the command runs, so even a command
         // that panics the worker leaves a recorded execution behind rather
@@ -390,8 +412,13 @@ mod tests {
         let SessionCommand::ExecutionCompleted(completion) = control_rx.recv().unwrap() else {
             panic!("worker must report a completion to the control actor");
         };
-        assert!(matches!(completion.result, Err(DaemonError::ExecutionUnavailable(_))));
-        let _ = completion.reply.send(Err(DaemonError::ExecutionUnavailable(session_id.clone())));
+        assert!(matches!(
+            completion.result,
+            Err(DaemonError::ExecutionUnavailable(_))
+        ));
+        let _ = completion
+            .reply
+            .send(Err(DaemonError::ExecutionUnavailable(session_id.clone())));
         completion.finalized.send(()).unwrap();
         assert!(matches!(
             active_result.recv().unwrap(),

@@ -396,7 +396,9 @@ fn vnp_attach_during_execution_returns_initial_state_promptly() {
     std::thread::sleep(Duration::from_millis(50));
     let addr = start_test_listener(coordinator);
     let stream = TcpStream::connect(&addr).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
     let write_stream = stream.try_clone().unwrap();
     let mut writer = FrameWriter::new(write_stream);
     let mut reader = FrameReader::new(BufReader::new(stream));
@@ -420,7 +422,10 @@ fn vnp_attach_during_execution_returns_initial_state_promptly() {
             payload: encode_message(&env, &bits.finish()).unwrap(),
         })
         .unwrap();
-    assert!(receiver.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+    assert!(receiver
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .is_ok());
 }
 
 #[test]
@@ -438,7 +443,9 @@ fn one_hundred_vnp_attaches_remain_bounded_while_execution_is_busy() {
 
     for _ in 0..100 {
         let stream = TcpStream::connect(&addr).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
         let write_stream = stream.try_clone().unwrap();
         let mut writer = FrameWriter::new(write_stream);
         let mut reader = FrameReader::new(BufReader::new(stream));
@@ -449,5 +456,8 @@ fn one_hundred_vnp_attaches_remain_bounded_while_execution_is_busy() {
         assert!(started.elapsed() < Duration::from_secs(1));
         assert_eq!(initial.frame_seq, 0);
     }
-    assert!(receiver.recv_timeout(Duration::from_secs(5)).unwrap().is_ok());
+    assert!(receiver
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .is_ok());
 }

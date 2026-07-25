@@ -27,11 +27,7 @@ impl NonceAuth {
             )));
         }
 
-        let nonce = u64::from_le_bytes(
-            bytes
-                .try_into()
-                .expect("length checked above"),
-        );
+        let nonce = u64::from_le_bytes(bytes.try_into().expect("length checked above"));
 
         Ok(Self { nonce })
     }

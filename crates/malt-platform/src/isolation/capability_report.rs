@@ -91,7 +91,10 @@ impl CapabilityReport {
 
     /// Usable for isolation purposes — `Supported` or `Degraded`, not `Unsupported`.
     pub fn is_usable(&self) -> bool {
-        matches!(self.status, CapabilityStatus::Supported | CapabilityStatus::Degraded)
+        matches!(
+            self.status,
+            CapabilityStatus::Supported | CapabilityStatus::Degraded
+        )
     }
 }
 

@@ -143,7 +143,10 @@ impl MaltClient {
     }
 
     /// Attach the bearer token, if we have one, to an outgoing request.
-    fn authed(&self, builder: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+    fn authed(
+        &self,
+        builder: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
         match &self.token {
             Some(token) => builder.bearer_auth(token),
             None => builder,
@@ -216,7 +219,10 @@ impl MaltClient {
     /// `malt-tui`/`maltty` consume.
     pub fn get_output_text(&self, id: u32) -> Result<OutputTextData> {
         let resp = self
-            .authed(self.http.get(self.url(&format!("/sessions/{id}/output/text"))))
+            .authed(
+                self.http
+                    .get(self.url(&format!("/sessions/{id}/output/text"))),
+            )
             .send()
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<OutputTextData> =

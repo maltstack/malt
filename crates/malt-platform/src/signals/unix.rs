@@ -9,11 +9,11 @@ use super::{SignalError, SignalKind};
 fn to_nix(signal: SignalKind) -> Result<nix::sys::signal::Signal, SignalError> {
     use nix::sys::signal::Signal as NixSignal;
     match signal {
-        SignalKind::Int  => Ok(NixSignal::SIGINT),
+        SignalKind::Int => Ok(NixSignal::SIGINT),
         SignalKind::Tstp => Ok(NixSignal::SIGTSTP),
         SignalKind::Quit => Ok(NixSignal::SIGQUIT),
         SignalKind::Term => Ok(NixSignal::SIGTERM),
-        SignalKind::Hup  => Ok(NixSignal::SIGHUP),
+        SignalKind::Hup => Ok(NixSignal::SIGHUP),
         SignalKind::Usr1 => Ok(NixSignal::SIGUSR1),
         SignalKind::Usr2 => Ok(NixSignal::SIGUSR2),
         other => Err(SignalError::Unsupported { signal: other }),
@@ -74,12 +74,18 @@ impl UnixSignalBroker {
         use tokio::signal::unix::{signal, SignalKind as TokioSignalKind};
 
         let signals = [
-            (TokioSignalKind::interrupt(),     SignalKind::Int),
-            (TokioSignalKind::terminate(),     SignalKind::Term),
-            (TokioSignalKind::hangup(),        SignalKind::Hup),
-            (TokioSignalKind::quit(),          SignalKind::Quit),
-            (TokioSignalKind::from_raw(nix::sys::signal::Signal::SIGUSR1 as i32), SignalKind::Usr1),
-            (TokioSignalKind::from_raw(nix::sys::signal::Signal::SIGUSR2 as i32), SignalKind::Usr2),
+            (TokioSignalKind::interrupt(), SignalKind::Int),
+            (TokioSignalKind::terminate(), SignalKind::Term),
+            (TokioSignalKind::hangup(), SignalKind::Hup),
+            (TokioSignalKind::quit(), SignalKind::Quit),
+            (
+                TokioSignalKind::from_raw(nix::sys::signal::Signal::SIGUSR1 as i32),
+                SignalKind::Usr1,
+            ),
+            (
+                TokioSignalKind::from_raw(nix::sys::signal::Signal::SIGUSR2 as i32),
+                SignalKind::Usr2,
+            ),
         ];
 
         for (kind, mapped) in signals {

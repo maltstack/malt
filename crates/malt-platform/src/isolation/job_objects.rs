@@ -387,8 +387,8 @@ mod tests {
                 .expect("spawn ping (must be present on any Windows host)")
         }
 
-        let job = create_job_object("test-query-active-processes", 0, 0)
-            .expect("create job object");
+        let job =
+            create_job_object("test-query-active-processes", 0, 0).expect("create job object");
 
         assert_eq!(
             query_active_processes(&job).expect("query before assignment"),

@@ -191,7 +191,10 @@ impl IsolationCapabilities {
             .into_iter()
             .filter(|(_, report)| !report.is_usable())
             .map(|(name, report)| {
-                let detail = report.reason_detail.as_deref().unwrap_or("no reason detail provided");
+                let detail = report
+                    .reason_detail
+                    .as_deref()
+                    .unwrap_or("no reason detail provided");
                 format!("{name} ({}): {detail}", report.reason_code)
             })
             .collect();
@@ -199,7 +202,10 @@ impl IsolationCapabilities {
         if failed.is_empty() {
             None
         } else {
-            Some(format!("{tier:?} requirements not met: {}", failed.join("; ")))
+            Some(format!(
+                "{tier:?} requirements not met: {}",
+                failed.join("; ")
+            ))
         }
     }
 }
@@ -212,7 +218,10 @@ fn linux_namespaces_report() -> CapabilityReport {
 }
 #[cfg(not(target_os = "linux"))]
 fn linux_namespaces_report() -> CapabilityReport {
-    CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "not running on Linux")
+    CapabilityReport::unsupported(
+        CapabilityReasonCode::UnsupportedPlatform,
+        "not running on Linux",
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -220,12 +229,18 @@ fn linux_cgroups_report() -> CapabilityReport {
     if std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
         CapabilityReport::supported()
     } else {
-        CapabilityReport::unsupported(CapabilityReasonCode::MissingKernelFeature, "cgroup v2 not mounted")
+        CapabilityReport::unsupported(
+            CapabilityReasonCode::MissingKernelFeature,
+            "cgroup v2 not mounted",
+        )
     }
 }
 #[cfg(not(target_os = "linux"))]
 fn linux_cgroups_report() -> CapabilityReport {
-    CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "not running on Linux")
+    CapabilityReport::unsupported(
+        CapabilityReasonCode::UnsupportedPlatform,
+        "not running on Linux",
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -244,7 +259,10 @@ fn linux_overlayfs_report() -> CapabilityReport {
 }
 #[cfg(not(target_os = "linux"))]
 fn linux_overlayfs_report() -> CapabilityReport {
-    CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "not running on Linux")
+    CapabilityReport::unsupported(
+        CapabilityReasonCode::UnsupportedPlatform,
+        "not running on Linux",
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -263,7 +281,10 @@ fn linux_seccomp_report() -> CapabilityReport {
 }
 #[cfg(not(target_os = "linux"))]
 fn linux_seccomp_report() -> CapabilityReport {
-    CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "not running on Linux")
+    CapabilityReport::unsupported(
+        CapabilityReasonCode::UnsupportedPlatform,
+        "not running on Linux",
+    )
 }
 
 // Windows report builders
@@ -276,7 +297,10 @@ fn windows_job_objects_report() -> CapabilityReport {
 }
 #[cfg(not(target_os = "windows"))]
 fn windows_job_objects_report() -> CapabilityReport {
-    CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "not running on Windows")
+    CapabilityReport::unsupported(
+        CapabilityReasonCode::UnsupportedPlatform,
+        "not running on Windows",
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -285,7 +309,10 @@ fn windows_restricted_tokens_report() -> CapabilityReport {
 }
 #[cfg(not(target_os = "windows"))]
 fn windows_restricted_tokens_report() -> CapabilityReport {
-    CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "not running on Windows")
+    CapabilityReport::unsupported(
+        CapabilityReasonCode::UnsupportedPlatform,
+        "not running on Windows",
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -301,7 +328,10 @@ fn windows_hcs_report() -> CapabilityReport {
 }
 #[cfg(not(target_os = "windows"))]
 fn windows_hcs_report() -> CapabilityReport {
-    CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "not running on Windows")
+    CapabilityReport::unsupported(
+        CapabilityReasonCode::UnsupportedPlatform,
+        "not running on Windows",
+    )
 }
 
 // macOS report builders
@@ -312,7 +342,10 @@ fn macos_sandbox_report() -> CapabilityReport {
 }
 #[cfg(not(target_os = "macos"))]
 fn macos_sandbox_report() -> CapabilityReport {
-    CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "not running on macOS")
+    CapabilityReport::unsupported(
+        CapabilityReasonCode::UnsupportedPlatform,
+        "not running on macOS",
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -321,7 +354,10 @@ fn macos_rlimit_report() -> CapabilityReport {
 }
 #[cfg(not(target_os = "macos"))]
 fn macos_rlimit_report() -> CapabilityReport {
-    CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "not running on macOS")
+    CapabilityReport::unsupported(
+        CapabilityReasonCode::UnsupportedPlatform,
+        "not running on macOS",
+    )
 }
 
 #[cfg(test)]
@@ -453,9 +489,8 @@ mod tests {
 
     #[test]
     fn empty_capabilities_supports_nothing() {
-        let unsupported = || {
-            CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "test")
-        };
+        let unsupported =
+            || CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "test");
         let caps = IsolationCapabilities {
             linux_namespaces: unsupported(),
             linux_cgroups: unsupported(),

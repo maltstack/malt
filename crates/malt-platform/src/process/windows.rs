@@ -13,15 +13,15 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::Path;
 use std::process::Stdio;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, DuplicateHandle, GetLastError, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
-    SetHandleInformation, WAIT_OBJECT_0,
+    CloseHandle, DuplicateHandle, GetLastError, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
+    INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, GetCurrentProcess, GetExitCodeProcess, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
-    STARTUPINFOW, WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT,
-    INFINITE,
+    CreateProcessW, GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject,
+    CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, INFINITE, PROCESS_INFORMATION,
+    STARTF_USESTDHANDLES, STARTUPINFOW,
 };
 
 pub(super) fn parent_pid() -> Option<u32> {
@@ -127,7 +127,9 @@ pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
 
-    let mut child = cmd.spawn().map_err(|e| map_spawn_error(e, &config.program))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| map_spawn_error(e, &config.program))?;
 
     let pid = child.id();
     let stdin = child.stdin.take();
@@ -150,7 +152,10 @@ pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
 
 fn spawn_with_create_process(config: SpawnConfig) -> Result<Child, SpawnError> {
     let mut env_block = build_env_block(&config)?;
-    let current_dir = config.cwd.as_ref().map(|cwd| os_to_wide_null(cwd.as_os_str()));
+    let current_dir = config
+        .cwd
+        .as_ref()
+        .map(|cwd| os_to_wide_null(cwd.as_os_str()));
     let app_name = os_to_wide_null(config.program.as_os_str());
     let argv0 = config
         .argv0

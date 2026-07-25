@@ -540,7 +540,10 @@ async fn events_route_streams_sse() {
         .to_bytes();
     let text = String::from_utf8_lossy(&body);
     assert!(text.contains("event: command_started"), "frames: {text}");
-    assert!(text.contains("id: 1"), "frames must carry a resume id: {text}");
+    assert!(
+        text.contains("id: 1"),
+        "frames must carry a resume id: {text}"
+    );
     assert!(text.contains("echo hello"), "frames: {text}");
 }
 
@@ -568,7 +571,10 @@ async fn events_route_passes_last_event_id_to_the_backend() {
         .unwrap()
         .to_bytes();
     let text = String::from_utf8_lossy(&body);
-    assert!(text.contains("id: 43"), "resume position not forwarded: {text}");
+    assert!(
+        text.contains("id: 43"),
+        "resume position not forwarded: {text}"
+    );
 }
 
 #[tokio::test]
@@ -816,12 +822,19 @@ async fn execution_admission_errors_have_stable_statuses_and_codes() {
             StatusCode::CONFLICT,
             "session_shutting_down",
         ),
-        (GatewayError::RateLimited, StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+        (
+            GatewayError::RateLimited,
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+        ),
     ];
     for (error, status, code) in cases {
         let response = error.into_response();
         assert_eq!(response.status(), status);
-        let body = BodyExt::collect(response.into_body()).await.unwrap().to_bytes();
+        let body = BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], code);
     }

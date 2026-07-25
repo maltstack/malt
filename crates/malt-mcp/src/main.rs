@@ -390,7 +390,10 @@ mod tests {
             .find(|t| t["name"] == "get_command_history")
             .expect("get_command_history must be advertised to agents");
 
-        assert_eq!(tool["inputSchema"]["properties"]["session_id"]["type"], "integer");
+        assert_eq!(
+            tool["inputSchema"]["properties"]["session_id"]["type"],
+            "integer"
+        );
         assert_eq!(
             tool["inputSchema"]["required"],
             json!(["session_id"]),

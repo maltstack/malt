@@ -66,7 +66,11 @@ fn get_command_history_reflects_executions_on_the_session_thread() {
         .unwrap();
     let history = hist_rx.recv().expect("history query should reply");
 
-    assert_eq!(history.len(), 1, "the execution must be recorded: {history:?}");
+    assert_eq!(
+        history.len(),
+        1,
+        "the execution must be recorded: {history:?}"
+    );
     let block = &history[0];
     assert_eq!(block.cmd, "echo thread-level");
     assert_eq!(
@@ -300,7 +304,9 @@ fn run_command_triggers_render_to_attached_client() {
             reply: reply_tx,
         })
         .unwrap();
-    let _ = reply_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let _ = reply_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
 
     let batch = render_rx
         .recv_timeout(std::time::Duration::from_secs(5))
@@ -374,7 +380,11 @@ fn control_observation_and_snapshot_remain_prompt_during_a_long_command() {
     let (styled_reply, styled) = std::sync::mpsc::channel();
     let (plain_reply, plain) = std::sync::mpsc::channel();
     let (snapshot_reply, snapshot) = std::sync::mpsc::channel();
-    cmd_tx.send(SessionCommand::GetOutput { reply: styled_reply }).unwrap();
+    cmd_tx
+        .send(SessionCommand::GetOutput {
+            reply: styled_reply,
+        })
+        .unwrap();
     cmd_tx
         .send(SessionCommand::GetOutputText { reply: plain_reply })
         .unwrap();
@@ -399,7 +409,11 @@ fn control_observation_and_snapshot_remain_prompt_during_a_long_command() {
         })
         .unwrap();
     drop(dropped_result);
-    assert!(result.recv_timeout(Duration::from_secs(2)).unwrap().output.contains("complete"));
+    assert!(result
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .output
+        .contains("complete"));
     cmd_tx.send(SessionCommand::Shutdown).unwrap();
     handle.join().unwrap();
 }

@@ -10,9 +10,13 @@ pub fn current_dir() -> Result<PathBuf, std::io::Error> {
 /// User's home directory.
 pub fn home_dir() -> Option<PathBuf> {
     #[cfg(unix)]
-    { std::env::var_os("HOME").map(PathBuf::from) }
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
     #[cfg(windows)]
-    { std::env::var_os("USERPROFILE").map(PathBuf::from) }
+    {
+        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    }
 }
 
 /// Whether stdin is connected to an interactive terminal.

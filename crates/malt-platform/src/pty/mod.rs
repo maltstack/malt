@@ -1,10 +1,10 @@
 //! PTY abstraction — open, read/write, resize.
 
+pub mod spawn;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
 mod windows;
-pub mod spawn;
 
 use std::sync::Arc;
 

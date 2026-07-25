@@ -53,26 +53,63 @@ fn nonce_from_file_zero() {
 fn all_stubs_return_success() {
     let requests: Vec<(u32, ElevateRequest)> = vec![
         (0, ElevateRequest::CreateNamespace { pid: 100, tier: 2 }),
-        (1, ElevateRequest::MountOverlay {
-            lower: "/a".into(),
-            upper: "/b".into(),
-            merged: "/c".into(),
-        }),
-        (2, ElevateRequest::SetCgroup { pid: 100, memory_mb: 1024, cpu_pct: 80 }),
-        (3, ElevateRequest::SetupNetns {
-            pid: 100,
-            bridge: "br0".into(),
-            veth_host: "vh0".into(),
-            veth_ns: "vn0".into(),
-        }),
-        (4, ElevateRequest::ApplySeccomp { pid: 100, policy: vec![1, 2, 3] }),
-        (5, ElevateRequest::CreateRestrictedToken { pid: 100, tier: 1 }),
-        (6, ElevateRequest::ManageHcsContainer {
-            operation: "start".into(),
-            config: vec![],
-        }),
-        (7, ElevateRequest::ApplySeatbelt { pid: 100, profile: "sandbox".into() }),
-        (8, ElevateRequest::BindPort { port: 443, socket_path: "/tmp/s".into() }),
+        (
+            1,
+            ElevateRequest::MountOverlay {
+                lower: "/a".into(),
+                upper: "/b".into(),
+                merged: "/c".into(),
+            },
+        ),
+        (
+            2,
+            ElevateRequest::SetCgroup {
+                pid: 100,
+                memory_mb: 1024,
+                cpu_pct: 80,
+            },
+        ),
+        (
+            3,
+            ElevateRequest::SetupNetns {
+                pid: 100,
+                bridge: "br0".into(),
+                veth_host: "vh0".into(),
+                veth_ns: "vn0".into(),
+            },
+        ),
+        (
+            4,
+            ElevateRequest::ApplySeccomp {
+                pid: 100,
+                policy: vec![1, 2, 3],
+            },
+        ),
+        (
+            5,
+            ElevateRequest::CreateRestrictedToken { pid: 100, tier: 1 },
+        ),
+        (
+            6,
+            ElevateRequest::ManageHcsContainer {
+                operation: "start".into(),
+                config: vec![],
+            },
+        ),
+        (
+            7,
+            ElevateRequest::ApplySeatbelt {
+                pid: 100,
+                profile: "sandbox".into(),
+            },
+        ),
+        (
+            8,
+            ElevateRequest::BindPort {
+                port: 443,
+                socket_path: "/tmp/s".into(),
+            },
+        ),
     ];
 
     for (id, req) in &requests {

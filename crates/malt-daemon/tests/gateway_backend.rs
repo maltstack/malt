@@ -1,7 +1,7 @@
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
-use malt_daemon::gateway_backend::DaemonBackend;
 use malt_daemon::executor::session_thread::SessionCommand;
+use malt_daemon::gateway_backend::DaemonBackend;
 use malt_daemon::store::{DebouncedStore, SessionStore};
 use malt_gateway::backend::GatewayBackend;
 use malt_gateway::error::GatewayError;
@@ -27,7 +27,9 @@ fn make_backend_with_config(config: PoolConfig) -> DaemonBackend {
     // a test-only race unrelated to execution ordering.
     let path = dir.keep();
     let store = DebouncedStore::new(SessionStore::new(path));
-    DaemonBackend::new(Arc::new(Mutex::new(Coordinator::try_new(config, store).unwrap())) )
+    DaemonBackend::new(Arc::new(Mutex::new(
+        Coordinator::try_new(config, store).unwrap(),
+    )))
 }
 
 fn test_caps() -> malt_protocol::common::ClientCapabilities {
@@ -94,7 +96,9 @@ fn exec_reports_real_exit_code_for_success() {
 fn exec_reports_real_exit_code_for_failure() {
     let backend = make_backend();
     let created = backend.create_session(None, None).unwrap();
-    let result = backend.exec_command(created.id, "false".to_string()).unwrap();
+    let result = backend
+        .exec_command(created.id, "false".to_string())
+        .unwrap();
     assert_eq!(
         result.exit_code,
         Some(1),
@@ -175,7 +179,10 @@ fn exec_reports_a_real_monotonic_command_id() {
         .exec_command(created.id, "echo three".to_string())
         .unwrap();
 
-    assert_ne!(first.command_id, 0, "command_id must not be the old hardcoded 0");
+    assert_ne!(
+        first.command_id, 0,
+        "command_id must not be the old hardcoded 0"
+    );
     assert!(
         second.command_id > first.command_id,
         "command_id must increase across successive commands on the same session: {} then {}",
@@ -230,10 +237,16 @@ fn command_history_records_each_execution_with_real_status() {
     backend
         .exec_command(session.id, "echo history-one".to_string())
         .unwrap();
-    backend.exec_command(session.id, "false".to_string()).unwrap();
+    backend
+        .exec_command(session.id, "false".to_string())
+        .unwrap();
 
     let history = backend.get_command_history(session.id).unwrap();
-    assert_eq!(history.len(), 2, "both executions must be recorded: {history:?}");
+    assert_eq!(
+        history.len(),
+        2,
+        "both executions must be recorded: {history:?}"
+    );
 
     assert_eq!(history[0].cmd, "echo history-one");
     assert_eq!(history[0].exit_code, Some(0));
@@ -274,7 +287,11 @@ fn command_history_records_a_parse_error_as_a_failed_execution() {
         .unwrap();
 
     let history = backend.get_command_history(session.id).unwrap();
-    assert_eq!(history.len(), 1, "a parse error is still an execution: {history:?}");
+    assert_eq!(
+        history.len(),
+        1,
+        "a parse error is still an execution: {history:?}"
+    );
     assert_eq!(history[0].cmd, "echo 'unterminated");
     assert_eq!(
         history[0].exit_code,
@@ -312,7 +329,9 @@ fn command_history_survives_dormant_restore_and_ids_stay_monotonic() {
         backend
             .exec_command(session_id, "echo before-restart-one".to_string())
             .unwrap();
-        backend.exec_command(session_id, "false".to_string()).unwrap();
+        backend
+            .exec_command(session_id, "false".to_string())
+            .unwrap();
 
         before = backend.get_command_history(session_id).unwrap();
         assert_eq!(before.len(), 2);
@@ -325,7 +344,9 @@ fn command_history_survives_dormant_restore_and_ids_stay_monotonic() {
         coord
             .register_vnp_client(SessionId(session_id), 1, test_caps(), render_tx)
             .unwrap();
-        coord.unregister_vnp_client(SessionId(session_id), 1).unwrap();
+        coord
+            .unregister_vnp_client(SessionId(session_id), 1)
+            .unwrap();
     }
 
     // Fresh Coordinator over the same on-disk store == daemon restart.
@@ -365,7 +386,10 @@ fn command_history_survives_dormant_restore_and_ids_stay_monotonic() {
     let mut sorted = ids.clone();
     sorted.sort_unstable();
     sorted.dedup();
-    assert_eq!(ids, sorted, "command ids must stay unique and ascending: {ids:?}");
+    assert_eq!(
+        ids, sorted,
+        "command ids must stay unique and ascending: {ids:?}"
+    );
 }
 
 #[test]
@@ -388,11 +412,13 @@ fn a_stalled_event_subscriber_does_not_slow_execution_or_starve_others() {
     let coord = backend.coordinator().clone();
     let stalled = {
         let c = coord.lock().unwrap();
-        c.begin_subscribe_events(SessionId(session.id), None).unwrap()
+        c.begin_subscribe_events(SessionId(session.id), None)
+            .unwrap()
     };
     let mut healthy = {
         let c = coord.lock().unwrap();
-        c.begin_subscribe_events(SessionId(session.id), None).unwrap()
+        c.begin_subscribe_events(SessionId(session.id), None)
+            .unwrap()
     };
 
     // Overrun the stalled subscriber's buffer several times over.
@@ -448,7 +474,9 @@ fn a_dormant_session_reports_a_conflict_not_an_internal_error() {
         coord
             .register_vnp_client(SessionId(session_id), 1, test_caps(), render_tx)
             .unwrap();
-        coord.unregister_vnp_client(SessionId(session_id), 1).unwrap();
+        coord
+            .unregister_vnp_client(SessionId(session_id), 1)
+            .unwrap();
     }
 
     // Fresh coordinator over the same store: the session is known but dormant.
@@ -471,7 +499,9 @@ fn a_dormant_session_reports_a_conflict_not_an_internal_error() {
     );
 
     // Still distinct from a session that does not exist at all.
-    let missing = backend.exec_command(9999, "echo nope".to_string()).unwrap_err();
+    let missing = backend
+        .exec_command(9999, "echo nope".to_string())
+        .unwrap_err();
     assert!(matches!(missing, GatewayError::SessionNotFound(9999)));
 
     // History deliberately still succeeds on a dormant session -- it answers
@@ -513,7 +543,9 @@ fn shell_env_state_survives_dormant_restore_via_env_snapshot() {
         coord
             .register_vnp_client(SessionId(session_id), 1, test_caps(), render_tx)
             .unwrap();
-        coord.unregister_vnp_client(SessionId(session_id), 1).unwrap();
+        coord
+            .unregister_vnp_client(SessionId(session_id), 1)
+            .unwrap();
     }
 
     // Simulate a daemon restart: fresh Coordinator/DaemonBackend reading the
@@ -610,7 +642,11 @@ fn a_running_command_is_visible_in_history_before_it_finishes() {
         "an unrelated session must not be delayed or polluted by the busy one"
     );
 
-    assert_eq!(during.len(), 1, "the in-flight command must already be recorded");
+    assert_eq!(
+        during.len(),
+        1,
+        "the in-flight command must already be recorded"
+    );
     let entry = &during[0];
     assert_eq!(entry.cmd, "sleep 1; echo done");
     assert!(
@@ -633,14 +669,20 @@ fn capacity_one_keeps_one_active_and_one_pending_in_fifo_order() {
     use std::sync::Arc;
     use std::time::Duration;
 
-    let config = PoolConfig { session_channel_size: 1, ..PoolConfig::default() };
+    let config = PoolConfig {
+        session_channel_size: 1,
+        ..PoolConfig::default()
+    };
     let backend = Arc::new(make_backend_with_config(config));
     let session = backend.create_session(None, None).unwrap();
 
     let first_backend = Arc::clone(&backend);
     let first_id = session.id;
     let first = std::thread::spawn(move || {
-        first_backend.exec_command(first_id, "export MALT_FIFO=ready; sleep 1; echo first".to_string())
+        first_backend.exec_command(
+            first_id,
+            "export MALT_FIFO=ready; sleep 1; echo first".to_string(),
+        )
     });
     std::thread::sleep(Duration::from_millis(50));
 
@@ -654,7 +696,12 @@ fn capacity_one_keeps_one_active_and_one_pending_in_fifo_order() {
     let overflow = backend.exec_command(session.id, "echo overflow".to_string());
     assert!(matches!(overflow, Err(GatewayError::ExecutionQueueFull(_))));
     assert!(first.join().unwrap().unwrap().output.contains("first"));
-    assert!(second.join().unwrap().unwrap().output.contains("second-ready"));
+    assert!(second
+        .join()
+        .unwrap()
+        .unwrap()
+        .output
+        .contains("second-ready"));
 }
 
 #[test]
@@ -694,7 +741,11 @@ fn snapshot_during_execution_uses_the_last_finalized_env_snapshot() {
     }
     let persisted = snapshot.recv_timeout(Duration::from_secs(1)).unwrap();
     let pane = persisted.panes.values().next().unwrap();
-    let PersistedPaneType::Shell { env_snapshot: Some(env), .. } = &pane.pane_type else {
+    let PersistedPaneType::Shell {
+        env_snapshot: Some(env),
+        ..
+    } = &pane.pane_type
+    else {
         panic!("snapshot must retain the shell environment");
     };
     let value = env.variables.get("MALT_BOUNDARY").unwrap();
@@ -702,7 +753,10 @@ fn snapshot_during_execution_uses_the_last_finalized_env_snapshot() {
         value.value,
         malt_protocol::persist::session::PersistedVarValue::Str { ref value } if value == "old"
     ));
-    assert!(receiver.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+    assert!(receiver
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .is_ok());
 }
 
 #[test]

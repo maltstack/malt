@@ -316,7 +316,11 @@ mod tests {
             ],
         );
 
-        assert_eq!(events.len(), 2, "the stream must continue past an unknown type");
+        assert_eq!(
+            events.len(),
+            2,
+            "the stream must continue past an unknown type"
+        );
         assert_eq!(events[0].kind, "something_new");
         assert_eq!(events[1].kind, "command_finished");
     }
@@ -338,7 +342,11 @@ mod tests {
             ],
         );
 
-        assert_eq!(events.len(), 2, "one bad frame must not end the subscription");
+        assert_eq!(
+            events.len(),
+            2,
+            "one bad frame must not end the subscription"
+        );
         assert_eq!(events[0].payload, EventPayload::default());
         assert_eq!(events[1].payload.exit_code, Some(0));
     }
@@ -387,7 +395,12 @@ mod tests {
         let mut parser = FrameParser::new();
         let events = feed_crlf(
             &mut parser,
-            &["id: 15", "event: command_started", "data: {\"command_id\":7}", ""],
+            &[
+                "id: 15",
+                "event: command_started",
+                "data: {\"command_id\":7}",
+                "",
+            ],
         );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].sequence, 15);

@@ -22,7 +22,10 @@ pub fn run_daemon(port: u16) -> Result<()> {
         let data_dir = paths::data_dir();
         std::fs::create_dir_all(&data_dir)?;
         let store = DebouncedStore::new(SessionStore::new(data_dir));
-        let coordinator = Arc::new(Mutex::new(Coordinator::try_new(PoolConfig::default(), store)?));
+        let coordinator = Arc::new(Mutex::new(Coordinator::try_new(
+            PoolConfig::default(),
+            store,
+        )?));
 
         // Start VNP socket listener on port+1 (e.g. 7701 when HTTP is 7700)
         let vnp_coord = coordinator.clone();

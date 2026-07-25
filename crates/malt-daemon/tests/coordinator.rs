@@ -729,7 +729,10 @@ fn restore_compat_pane_relaunches_process_and_forwards_real_output() {
     // approach.
     let sid = malt_protocol::common::SessionId(77);
     let pane = PersistedPane {
-        cwd: std::env::current_dir().unwrap().to_string_lossy().to_string(),
+        cwd: std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
         title: None,
         pane_type: PersistedPaneType::Compat {
             #[cfg(unix)]
@@ -832,7 +835,10 @@ fn error_variants_are_distinct() {
 fn zero_execution_capacity_is_rejected_by_checked_construction() {
     let dir = tempfile::tempdir().unwrap();
     let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
-    let config = PoolConfig { session_channel_size: 0, ..PoolConfig::default() };
+    let config = PoolConfig {
+        session_channel_size: 0,
+        ..PoolConfig::default()
+    };
     assert!(Coordinator::try_new(config, store).is_err());
 }
 
@@ -850,7 +856,9 @@ fn last_detach_while_execution_is_busy_keeps_the_session_active() {
     let dir = tempfile::tempdir().unwrap();
     let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
     let mut coord = Coordinator::new(PoolConfig::default(), store);
-    let id = coord.create_session(None, IsolationTier::Bare, None).unwrap();
+    let id = coord
+        .create_session(None, IsolationTier::Bare, None)
+        .unwrap();
     let capabilities = ClientCapabilities {
         color_depth: ColorDepth::TrueColor,
         unicode: UnicodeLevel::Full,
@@ -861,14 +869,22 @@ fn last_detach_while_execution_is_busy_keeps_the_session_active() {
         _unknown: Vec::new(),
     };
     let (render_tx, _render_rx) = mpsc::sync_channel(4);
-    coord.register_vnp_client(id.clone(), 1, capabilities, render_tx).unwrap();
-    let receiver = coord.submit_execution(id.clone(), "sleep 1; echo retained".to_string()).unwrap();
+    coord
+        .register_vnp_client(id.clone(), 1, capabilities, render_tx)
+        .unwrap();
+    let receiver = coord
+        .submit_execution(id.clone(), "sleep 1; echo retained".to_string())
+        .unwrap();
     std::thread::sleep(Duration::from_millis(50));
     coord.unregister_vnp_client(id.clone(), 1).unwrap();
-    assert!(coord.list_sessions().iter().any(|session| {
-        session.session_id == id && session.state == SessionState::Active
-    }));
-    assert!(receiver.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+    assert!(coord
+        .list_sessions()
+        .iter()
+        .any(|session| { session.session_id == id && session.state == SessionState::Active }));
+    assert!(receiver
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .is_ok());
     let _ = SessionCommand::Shutdown;
 }
 
@@ -924,15 +940,32 @@ fn destroy_closes_intake_promptly_but_finalizes_active_work_once() {
 
     let dir = tempfile::tempdir().unwrap();
     let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
-    let mut coord = Coordinator::new(PoolConfig { session_channel_size: 1, ..PoolConfig::default() }, store);
-    let id = coord.create_session(None, IsolationTier::Bare, None).unwrap();
-    let active = coord.submit_execution(id.clone(), "sleep 1; echo active".to_string()).unwrap();
+    let mut coord = Coordinator::new(
+        PoolConfig {
+            session_channel_size: 1,
+            ..PoolConfig::default()
+        },
+        store,
+    );
+    let id = coord
+        .create_session(None, IsolationTier::Bare, None)
+        .unwrap();
+    let active = coord
+        .submit_execution(id.clone(), "sleep 1; echo active".to_string())
+        .unwrap();
     std::thread::sleep(Duration::from_millis(50));
-    let pending = coord.submit_execution(id.clone(), "echo pending".to_string()).unwrap();
+    let pending = coord
+        .submit_execution(id.clone(), "echo pending".to_string())
+        .unwrap();
     let started = Instant::now();
     coord.destroy_session(id);
     assert!(started.elapsed() < Duration::from_secs(1));
-    assert!(active.recv_timeout(Duration::from_secs(2)).unwrap().unwrap().output.contains("active"));
+    assert!(active
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap()
+        .output
+        .contains("active"));
     assert!(matches!(
         pending.recv_timeout(Duration::from_secs(2)).unwrap(),
         Err(malt_daemon::DaemonError::SessionShuttingDown(_))

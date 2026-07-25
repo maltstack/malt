@@ -25,7 +25,8 @@ impl Pty for UnixPty {
         // obtained from openpty. TIOCSWINSZ is the correct ioctl for setting
         // terminal window size, and &ws points to a valid, properly initialized
         // Winsize struct that outlives the ioctl call.
-        let ret = unsafe { nix::libc::ioctl(self.master_fd.as_raw_fd(), nix::libc::TIOCSWINSZ, &ws) };
+        let ret =
+            unsafe { nix::libc::ioctl(self.master_fd.as_raw_fd(), nix::libc::TIOCSWINSZ, &ws) };
         if ret == -1 {
             Err(PtyError::Resize(std::io::Error::last_os_error()))
         } else {

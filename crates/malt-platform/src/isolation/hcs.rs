@@ -303,7 +303,10 @@ mod fake {
             .lock()
             .expect("compute registry lock poisoned")
             .insert(config.id.clone(), handle);
-        HcsComputeSystem { handle, id: config.id.clone() }
+        HcsComputeSystem {
+            handle,
+            id: config.id.clone(),
+        }
     }
 
     pub fn open_compute_system(id: &str) -> Result<HcsComputeSystem, IsolationError> {
@@ -315,11 +318,16 @@ mod fake {
             .ok_or_else(|| {
                 IsolationError::HcsError(format!("unknown fake compute system id `{id}`"))
             })?;
-        Ok(HcsComputeSystem { handle, id: id.to_string() })
+        Ok(HcsComputeSystem {
+            handle,
+            id: id.to_string(),
+        })
     }
 
     pub fn terminate_compute_system(handle: isize) -> Result<(), IsolationError> {
-        let mut registry = compute_registry().lock().expect("compute registry lock poisoned");
+        let mut registry = compute_registry()
+            .lock()
+            .expect("compute registry lock poisoned");
         let maybe_id = registry
             .iter()
             .find_map(|(id, value)| (*value == handle).then(|| id.clone()));
@@ -376,12 +384,16 @@ mod fake {
     }
 
     pub fn close_process_handle(handle: isize) -> Result<(), IsolationError> {
-        let removed =
-            process_registry().lock().expect("process registry lock poisoned").remove(&handle);
+        let removed = process_registry()
+            .lock()
+            .expect("process registry lock poisoned")
+            .remove(&handle);
         if removed.is_some() {
             Ok(())
         } else {
-            Err(IsolationError::HcsError(format!("unknown fake process handle `{handle}`")))
+            Err(IsolationError::HcsError(format!(
+                "unknown fake process handle `{handle}`"
+            )))
         }
     }
 }
@@ -401,7 +413,10 @@ mod native {
     };
 
     fn to_wide(value: &str) -> Vec<u16> {
-        std::ffi::OsStr::new(value).encode_wide().chain(Some(0)).collect()
+        std::ffi::OsStr::new(value)
+            .encode_wide()
+            .chain(Some(0))
+            .collect()
     }
 
     pub fn create_compute_system(config: &HcsConfig) -> Result<HcsComputeSystem, IsolationError> {
@@ -413,7 +428,9 @@ mod native {
         // operation result immediately below instead of via callback.
         let operation = unsafe { HcsCreateOperation(std::ptr::null(), None) };
         if operation.is_null() {
-            return Err(IsolationError::HcsError("HcsCreateOperation returned null".to_string()));
+            return Err(IsolationError::HcsError(
+                "HcsCreateOperation returned null".to_string(),
+            ));
         }
 
         let mut handle: HCS_SYSTEM = std::ptr::null_mut();
@@ -446,7 +463,11 @@ mod native {
         // call above. Passing a null operation/options here matches the
         // synchronous-start pattern used throughout this module.
         let hr = unsafe {
-            HcsStartComputeSystem(handle, std::ptr::null_mut() as HCS_OPERATION, std::ptr::null())
+            HcsStartComputeSystem(
+                handle,
+                std::ptr::null_mut() as HCS_OPERATION,
+                std::ptr::null(),
+            )
         };
         if hr != 0 {
             let _ = terminate_compute_system(handle as isize);
@@ -455,7 +476,10 @@ mod native {
             )));
         }
 
-        Ok(HcsComputeSystem { handle: handle as isize, id: config.id.clone() })
+        Ok(HcsComputeSystem {
+            handle: handle as isize,
+            id: config.id.clone(),
+        })
     }
 
     pub fn open_compute_system(id: &str) -> Result<HcsComputeSystem, IsolationError> {
@@ -470,7 +494,10 @@ mod native {
                 "HcsOpenComputeSystem HRESULT={hr:#010x}"
             )));
         }
-        Ok(HcsComputeSystem { handle: handle as isize, id: id.to_string() })
+        Ok(HcsComputeSystem {
+            handle: handle as isize,
+            id: id.to_string(),
+        })
     }
 
     pub fn terminate_compute_system(handle: isize) -> Result<(), IsolationError> {
@@ -514,7 +541,9 @@ mod native {
         // SAFETY: same synchronous-operation pattern as create_compute_system.
         let operation = unsafe { HcsCreateOperation(std::ptr::null(), None) };
         if operation.is_null() {
-            return Err(IsolationError::HcsError("HcsCreateOperation returned null".to_string()));
+            return Err(IsolationError::HcsError(
+                "HcsCreateOperation returned null".to_string(),
+            ));
         }
 
         let mut process_handle: HCS_PROCESS = std::ptr::null_mut();
@@ -569,7 +598,10 @@ mod native {
         unsafe { HcsCloseOperation(operation) };
 
         Ok(HcsProcessLaunch {
-            process: HcsProcess { handle: process_handle as isize, process_id: process_info.ProcessId },
+            process: HcsProcess {
+                handle: process_handle as isize,
+                process_id: process_info.ProcessId,
+            },
             stdin_handle: (!process_info.StdInput.is_null())
                 .then_some(process_info.StdInput as isize),
             stdout_handle: (!process_info.StdOutput.is_null())
@@ -633,7 +665,11 @@ mod native {
             return String::new();
         }
         let value = widestr_to_string(result);
-        if value.is_empty() { String::new() } else { format!(" result={value}") }
+        if value.is_empty() {
+            String::new()
+        } else {
+            format!(" result={value}")
+        }
     }
 }
 
@@ -663,7 +699,9 @@ mod raw {
                 // SAFETY: GetLastError reads thread-local state set by the
                 // failed call above; always safe to call.
                 let error = unsafe { GetLastError() };
-                return Err(format!("failed to load computecore.dll (GetLastError={error})"));
+                return Err(format!(
+                    "failed to load computecore.dll (GetLastError={error})"
+                ));
             }
             Ok(Self { module })
         }
@@ -719,20 +757,27 @@ mod tests {
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]
     fn create_compute_system_rejects_empty_id() {
-        let config = HcsConfig { id: "   ".to_string(), config_json: "{}".to_string() };
+        let config = HcsConfig {
+            id: "   ".to_string(),
+            config_json: "{}".to_string(),
+        };
         let error = create_compute_system(&config).expect_err("must fail");
         assert!(matches!(error, IsolationError::HcsError(_)));
     }
 
     #[test]
     fn create_compute_system_rejects_invalid_json_config() {
-        let config =
-            HcsConfig { id: "cs-invalid-json".to_string(), config_json: "{not-json".to_string() };
+        let config = HcsConfig {
+            id: "cs-invalid-json".to_string(),
+            config_json: "{not-json".to_string(),
+        };
         let error = create_compute_system(&config).expect_err("must fail");
         match error {
             IsolationError::HcsError(message) => assert!(message.contains("valid JSON")),
@@ -742,8 +787,10 @@ mod tests {
 
     #[test]
     fn create_process_rejects_empty_command_line() {
-        let params =
-            HcsProcessParameters { command_line: " ".to_string(), ..HcsProcessParameters::default() };
+        let params = HcsProcessParameters {
+            command_line: " ".to_string(),
+            ..HcsProcessParameters::default()
+        };
         let error = create_process(0, &params).expect_err("must fail");
         assert!(matches!(error, IsolationError::HcsError(_)));
     }
@@ -778,7 +825,10 @@ mod tests {
             std::env::set_var("MALT_HCS_FAKE", "1");
         }
 
-        let config = HcsConfig { id: "cs-manage-fake".to_string(), config_json: "{}".to_string() };
+        let config = HcsConfig {
+            id: "cs-manage-fake".to_string(),
+            config_json: "{}".to_string(),
+        };
 
         manage_hcs_container(&config).expect("fake manage_hcs_container should succeed");
 

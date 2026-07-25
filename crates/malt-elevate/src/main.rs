@@ -30,14 +30,18 @@ fn parse_args() -> Result<Args, ElevateError> {
             Some("--nonce-file") => {
                 nonce_file = Some(
                     args.next()
-                        .ok_or_else(|| ElevateError::InvalidArg("--nonce-file requires a value".into()))?
+                        .ok_or_else(|| {
+                            ElevateError::InvalidArg("--nonce-file requires a value".into())
+                        })?
                         .into(),
                 );
             }
             Some("--socket") => {
                 socket_path = Some(
                     args.next()
-                        .ok_or_else(|| ElevateError::InvalidArg("--socket requires a value".into()))?
+                        .ok_or_else(|| {
+                            ElevateError::InvalidArg("--socket requires a value".into())
+                        })?
                         .into(),
                 );
             }
@@ -54,12 +58,15 @@ fn parse_args() -> Result<Args, ElevateError> {
         }
     }
 
-    let nonce_file = nonce_file
-        .ok_or_else(|| ElevateError::InvalidArg("--nonce-file is required".into()))?;
-    let socket_path = socket_path
-        .ok_or_else(|| ElevateError::InvalidArg("--socket is required".into()))?;
+    let nonce_file =
+        nonce_file.ok_or_else(|| ElevateError::InvalidArg("--nonce-file is required".into()))?;
+    let socket_path =
+        socket_path.ok_or_else(|| ElevateError::InvalidArg("--socket is required".into()))?;
 
-    Ok(Args { nonce_file, socket_path })
+    Ok(Args {
+        nonce_file,
+        socket_path,
+    })
 }
 
 fn print_usage() {

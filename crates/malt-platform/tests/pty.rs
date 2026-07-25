@@ -25,7 +25,11 @@ fn open_multiple_ptys() {
     }
     // Resize each one.
     for (pty, _, _) in &handles {
-        pty.resize(WinSize { cols: 100, rows: 30 }).unwrap();
+        pty.resize(WinSize {
+            cols: 100,
+            rows: 30,
+        })
+        .unwrap();
     }
     // Drop all — exercises cleanup paths.
     drop(handles);

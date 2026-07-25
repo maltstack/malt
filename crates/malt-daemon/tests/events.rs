@@ -35,7 +35,10 @@ fn subscribe(
 
 /// Drain what is currently queued, waiting briefly for at least `want`
 /// events so a test is not racing the control actor.
-fn collect(rx: &mut tokio::sync::mpsc::Receiver<LifecycleEvent>, want: usize) -> Vec<LifecycleEvent> {
+fn collect(
+    rx: &mut tokio::sync::mpsc::Receiver<LifecycleEvent>,
+    want: usize,
+) -> Vec<LifecycleEvent> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut out = Vec::new();
     while out.len() < want && Instant::now() < deadline {
@@ -61,7 +64,11 @@ fn a_command_produces_a_start_then_a_finish_with_the_same_id() {
         .unwrap();
 
     let events = collect(&mut rx, 2);
-    assert_eq!(events.len(), 2, "expected exactly a start and a finish: {events:?}");
+    assert_eq!(
+        events.len(),
+        2,
+        "expected exactly a start and a finish: {events:?}"
+    );
 
     let (start_id, cmd) = match &events[0].kind {
         LifecycleEventKind::CommandStarted {
@@ -95,7 +102,9 @@ fn a_failing_command_reports_its_real_exit_code() {
     let session = backend.create_session(None, None).unwrap();
     let mut rx = subscribe(&coord, session.id, None);
 
-    backend.exec_command(session.id, "false".to_string()).unwrap();
+    backend
+        .exec_command(session.id, "false".to_string())
+        .unwrap();
 
     let events = collect(&mut rx, 2);
     let finished = events
@@ -131,7 +140,11 @@ fn events_from_one_session_never_reach_another_sessions_subscriber() {
             );
         }
     }
-    assert_eq!(events.len(), 2, "exactly this session's start and finish: {events:?}");
+    assert_eq!(
+        events.len(),
+        2,
+        "exactly this session's start and finish: {events:?}"
+    );
 }
 
 #[test]
@@ -368,7 +381,9 @@ fn a_stalled_subscriber_is_told_it_lagged_and_is_dropped() {
 
     let gap = received.iter().rev().find_map(|e| match &e.kind {
         LifecycleEventKind::Gap {
-            reason, missed_from, ..
+            reason,
+            missed_from,
+            ..
         } => Some((*reason, *missed_from)),
         _ => None,
     });
@@ -416,7 +431,10 @@ fn subscribing_to_an_unknown_session_is_refused() {
     let (backend, _coord) = make_backend();
     let err = backend.subscribe_events(9999, None).unwrap_err();
     assert!(
-        matches!(err, malt_gateway::error::GatewayError::SessionNotFound(9999)),
+        matches!(
+            err,
+            malt_gateway::error::GatewayError::SessionNotFound(9999)
+        ),
         "an unknown session must be refused before any stream exists: {err:?}"
     );
 }

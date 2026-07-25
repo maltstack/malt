@@ -12,19 +12,53 @@
 #[non_exhaustive]
 pub enum ElevateRequest {
     // Linux
-    CreateNamespace { pid: u32, tier: u8 },
-    MountOverlay { lower: String, upper: String, merged: String },
-    SetCgroup { pid: u32, memory_mb: u32, cpu_pct: u16 },
-    SetupNetns { pid: u32, bridge: String, veth_host: String, veth_ns: String },
-    ApplySeccomp { pid: u32, policy: Vec<u8> },
+    CreateNamespace {
+        pid: u32,
+        tier: u8,
+    },
+    MountOverlay {
+        lower: String,
+        upper: String,
+        merged: String,
+    },
+    SetCgroup {
+        pid: u32,
+        memory_mb: u32,
+        cpu_pct: u16,
+    },
+    SetupNetns {
+        pid: u32,
+        bridge: String,
+        veth_host: String,
+        veth_ns: String,
+    },
+    ApplySeccomp {
+        pid: u32,
+        policy: Vec<u8>,
+    },
     // Windows
-    CreateSymlink { target: String, link: String },
-    CreateRestrictedToken { pid: u32, tier: u8 },
-    ManageHcsContainer { operation: String, config: Vec<u8> },
+    CreateSymlink {
+        target: String,
+        link: String,
+    },
+    CreateRestrictedToken {
+        pid: u32,
+        tier: u8,
+    },
+    ManageHcsContainer {
+        operation: String,
+        config: Vec<u8>,
+    },
     // macOS
-    ApplySeatbelt { pid: u32, profile: String },
+    ApplySeatbelt {
+        pid: u32,
+        profile: String,
+    },
     // Cross-platform
-    BindPort { port: u16, socket_path: String },
+    BindPort {
+        port: u16,
+        socket_path: String,
+    },
 }
 
 /// Result of dispatching an `ElevateRequest`.
@@ -60,7 +94,10 @@ pub fn dispatch_request(request_id: u32, request: &ElevateRequest) -> ElevateRes
 
 /// Stub handler: logs the operation and returns success with an empty payload.
 fn stub_success(op: &str) -> Result<Vec<u8>, String> {
-    tracing::info!(operation = op, "stub: operation not yet implemented, returning success");
+    tracing::info!(
+        operation = op,
+        "stub: operation not yet implemented, returning success"
+    );
     Ok(Vec::new())
 }
 
@@ -121,21 +158,34 @@ mod tests {
                 upper: "/upper".into(),
                 merged: "/merged".into(),
             },
-            ElevateRequest::SetCgroup { pid: 1, memory_mb: 512, cpu_pct: 50 },
+            ElevateRequest::SetCgroup {
+                pid: 1,
+                memory_mb: 512,
+                cpu_pct: 50,
+            },
             ElevateRequest::SetupNetns {
                 pid: 1,
                 bridge: "br0".into(),
                 veth_host: "veth0".into(),
                 veth_ns: "veth1".into(),
             },
-            ElevateRequest::ApplySeccomp { pid: 1, policy: vec![0, 1, 2] },
+            ElevateRequest::ApplySeccomp {
+                pid: 1,
+                policy: vec![0, 1, 2],
+            },
             ElevateRequest::CreateRestrictedToken { pid: 1, tier: 1 },
             ElevateRequest::ManageHcsContainer {
                 operation: "create".into(),
                 config: vec![],
             },
-            ElevateRequest::ApplySeatbelt { pid: 1, profile: "default".into() },
-            ElevateRequest::BindPort { port: 8080, socket_path: "/tmp/sock".into() },
+            ElevateRequest::ApplySeatbelt {
+                pid: 1,
+                profile: "default".into(),
+            },
+            ElevateRequest::BindPort {
+                port: 8080,
+                socket_path: "/tmp/sock".into(),
+            },
         ];
 
         for (i, req) in stubs.iter().enumerate() {
@@ -152,7 +202,10 @@ mod tests {
 
     #[test]
     fn response_carries_request_id() {
-        let req = ElevateRequest::BindPort { port: 443, socket_path: "/s".into() };
+        let req = ElevateRequest::BindPort {
+            port: 443,
+            socket_path: "/s".into(),
+        };
         let resp = dispatch_request(42, &req);
         assert_eq!(resp.request_id, 42);
     }
