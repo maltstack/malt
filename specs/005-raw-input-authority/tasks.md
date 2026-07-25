@@ -66,53 +66,46 @@
 
 ### Implementation for User Story 2
 
-> **Status 2026-07-25 — the hang is fixed; the builtin path works; external
-> processes do not yet receive client input.**
+> **Status 2026-07-25 — US2 met. One narrow gap remains, in in-process tools.**
 >
-> **Fixed.** Registering the session pipe at fd 0 hung every in-process tool.
-> In-process tools take a pre-read `&[u8]`, so their dispatch slurps fd 0 to
-> EOF -- and the session pipe never EOFs, because the daemon holds the write
-> end for the session's lifetime. `Env::register_endless_fd` marks that
-> descriptor and `Env::open_fd_read_unless_endless` refuses it, which every
-> slurp site now calls.
+> **The hang.** Registering the session pipe at fd 0 hung every in-process
+> tool: tools take a pre-read `&[u8]`, so their dispatch reads fd 0 to EOF,
+> and the session pipe never EOFs because the daemon holds the write end for
+> the session's lifetime. `Env::register_endless_fd` marks that descriptor and
+> `Env::open_fd_read_unless_endless` refuses it.
 >
-> The rule lives in `Env`, not at the call sites, for a specific reason:
-> there are **three** tool-dispatch sites in `executor.rs`, and guarding them
-> one at a time is how the second and third were missed. The first attempt
-> guarded only `executor.rs:1214` and the hang persisted, which cost far more
-> time than the fix.
+> The rule lives in `Env`, not at the call sites, because there are **three**
+> tool-dispatch sites in `executor.rs`. The first attempt guarded one and the
+> hang persisted; that cost far more than the fix.
 >
-> The regression test (`crates/mash/tests/endless_stdin.rs`) times real
-> commands with and without an endless fd 0 rather than inspecting the flag.
-> That is deliberate: the bug is a hang, and a flag-inspecting test passes
-> while two of three sites are still broken -- which is exactly what happened.
-> `echo` is kept in it as the control, because `echo` is a builtin and passed
-> throughout, including while every tool site was broken.
+> **Verified.** `crates/mash/tests/endless_stdin.rs` times real commands rather
+> than inspecting the flag — the bug is a hang, and a flag-inspecting test
+> passes while two of three sites are broken.
+> `crates/mash/tests/external_stdin.rs` covers delivery to an external process,
+> to the `read` builtin, and through a pipeline, plus the known tool gap.
+> Live against a real daemon: an **external** program's password prompt was
+> answered by a client (`external-got=[s3cret-from-client]`), a line-reading
+> loop received input, `café` arrived intact as 4 characters, a bare newline
+> answered a prompt, input was captured as data rather than executed, and the
+> answer never reached command history.
 >
-> **Verified live** against a real daemon on port 7920: `read -r X` receives
-> client bytes, a bare newline answers a prompt, `IFS= read -r U` with `café`
-> reports `len=4` (multi-byte intact), input is captured as data rather than
-> executed, and the answer does not appear in command history.
+> **Remaining gap:** in-process tools (`cat`, `grep`, `wc`, `head`) see an
+> empty buffer rather than client input, because `ToolFn` takes a finished
+> buffer and cannot represent a stream. Not a regression — fd 0 was
+> unregistered before, so they got empty stdin then too. Backlogged as a
+> streaming-tool-signature item, asserted by a test so it cannot drift.
 >
-> **Known limitation, deliberately not fixed here (Principle IX).** Only the
-> `read` builtin receives session input. Neither in-process tools (`cat`,
-> `grep`, `wc`) nor **external processes** do -- verified: `cat`,
-> `/usr/bin/cat`, and `/usr/bin/head -n1` all return empty. So an external
-> program's password prompt still cannot be answered, which is a motivating
-> case in this spec.
+> **Correction to an earlier note here:** this previously said external
+> processes were also broken and suspected Windows handle inheritance. Both
+> were wrong. mash dispatches by **basename**, so `cat`, `/usr/bin/cat`, and
+> `/usr/bin/head` resolve to in-process tools and never spawn — three rounds
+> of "external is broken" were measuring the tool path. Pick a program with no
+> `malt-tools` entry when testing external behaviour.
 >
-> This is not a regression: before this feature fd 0 was unregistered, so
-> those commands got empty stdin then too. It is an unmet requirement, and
-> US2 stays open until it is met. Two distinct causes:
-> - **In-process tools** cannot stream by construction --
->   `ToolFn = fn(&[String], &[u8])` takes a fully-read buffer, so a tool can
->   never consume a stream that has not ended. Needs a streaming tool
->   signature; backlog item.
-> - **External processes** already resolve stdin from a registered fd 0 at
->   the spawn sites (`executor.rs:1129`, `:5410`), yet the child still reads
->   EOF. The likely cause is Windows handle inheritance -- the duplicated
->   handle is probably not marked inheritable -- but that is unconfirmed and
->   is the first thing to check when US2 resumes.
+> **One unexplained observation, not reproduced:** a single `/exec` returned
+> HTTP 500 during live verification, with nothing logged daemon-side. Three
+> subsequent isolated runs of the same command all succeeded. Recorded rather
+> than dismissed; if it recurs, start with the gateway's error mapping.
 
 ## Phase 5: User Story 3 — Exactly one client can type at a time (Priority: P2)
 

@@ -1008,62 +1008,40 @@ then credentials/rate limiting, then process termination and raw input.
   Gateway, and `CommandBlock` never actually constructed anywhere outside
   tests.
 
-### In-process tools and external processes cannot read session stdin (from 005/US2)
+### In-process tools cannot read session stdin (from 005/US2)
 
-Found 2026-07-25 while implementing raw input. Only the `read` builtin
-receives bytes a client sends; `cat`, `grep`, `wc`, and external programs
-all see EOF. Verified live: `cat`, `/usr/bin/cat`, `/usr/bin/head -n1` each
-return empty when input is sent. Not a regression — fd 0 was unregistered
-before — but it leaves a motivating case of 005 unmet: an external
-program's password prompt still cannot be answered.
+Found 2026-07-25 while implementing raw input; **narrowed and partly retracted
+the same day** — see the correction note below before acting on this.
 
-Two separate causes, fixable independently:
+`ToolFn` is `fn(&[String], &[u8])` across all 17 in-process tools: a
+fully-read buffer, so a tool can never consume a stream that has not ended.
+Registering the session pipe at fd 0 made this visible by hanging every tool
+(the pipe never EOFs). The fix (`Env::open_fd_read_unless_endless`) makes
+them see an empty buffer instead of hanging, which is correct-but-inert:
+`cat`, `grep`, `wc`, and `head` cannot read what a client types.
 
-1. **In-process tools cannot stream by construction.** `ToolFn` is
-   `fn(&[String], &[u8])` across all 17 tools — a fully-read buffer, so a
-   tool can never consume a stream that has not ended. Registering the
-   session pipe made this visible by hanging every tool; the current fix
-   (`Env::open_fd_read_unless_endless`) makes them see empty stdin instead,
-   which is correct-but-inert. A real fix needs a streaming tool signature.
+Not a regression — before this feature fd 0 was unregistered, so those tools
+got empty stdin then too. A real fix needs a streaming tool signature.
 
-2. **External processes get EOF despite all four spawn sites being wired.**
-   Narrowed 2026-07-25 at the lowest layer (`crates/mash/tests/external_stdin.rs`,
-   ignored by default, no daemon involved). Run it with:
+Covered by `crates/mash/tests/external_stdin.rs`, which asserts the gap
+explicitly so it cannot change silently. When streaming tools land, invert
+`an_in_process_tool_currently_sees_empty_session_stdin` rather than deleting
+it.
 
-   ```
-   cargo test -p mash --test external_stdin -- --ignored --nocapture
-   ```
+**Correction: external processes are NOT affected.** An earlier version of
+this entry claimed external processes also read EOF, and proposed Windows
+handle inheritance as the cause. Both were wrong. A genuinely external
+program reads a registered fd 0 correctly — verified at the lowest layer and
+live through the daemon, where an external password prompt was answered by a
+client.
 
-   Bisection, all three in the same process with the same `Env`:
-
-   | case | result |
-   |---|---|
-   | `echo piped-in \| /usr/bin/head -n1` (pipeline pipe -> external) | **works** |
-   | `read -r X` (registered fd 0 -> builtin) | **works** |
-   | `/usr/bin/head -n1` (registered fd 0 -> external) | **empty** |
-
-   So `Io::File` carrying a pipe read end does reach a child correctly, and
-   `open_fd_read(0)` does return a usable handle -- each is proven by one of
-   the working cases. Only the combination fails.
-
-   All four `config.stdin` sites (`executor.rs:1287`, `:1660`, `:5686`,
-   `:5905`) already contain the fd-0 fallback, so this is *not* missing
-   wiring. Instrumenting two of them showed neither is reached for a simple
-   external command, so the live path is `:1660` or `:5905` — confirm which
-   before changing anything.
-
-   **Handle inheritance was my hypothesis and it is NOT confirmed** — both
-   Windows paths look right (`Io::File(f) => f.into()`, and
-   `dup_handle(.., inheritable = true)`). The next place to look, and the only
-   remaining difference between the working and failing cases, is
-   `FdRegistry::open` in `crates/malt-platform/src/vfs/fd.rs:255` — what
-   `open_read` actually hands back for a *registered pipe* as opposed to a
-   file, since its non-Unix branch falls through to a generic `open()` plus a
-   `metadata()` probe. That function has not been read yet.
-
-Note for whoever picks this up: the endless-fd guard must stay on the three
-*slurp* sites only. External spawn sites must NOT get it — an external
-process reading an endless stdin is exactly the desired behaviour.
+The error was in the test commands, not the code: **mash dispatches by
+basename**, so `cat`, `/usr/bin/cat`, and `/usr/bin/head` never spawn
+anything — they resolve to in-process tools. Three rounds of "external
+processes are broken" were all measuring the tool path. When testing external
+behaviour here, pick a program with no entry in `malt-tools`
+(`crates/malt-tools/src/custom/`); the test above uses an interpreter for
+exactly this reason.
 
 ### `read` treats an explicitly-empty `IFS=` as "use the default" (mash, POSIX)
 
