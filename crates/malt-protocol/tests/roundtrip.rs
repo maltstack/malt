@@ -89,6 +89,8 @@ fn shell_output_chunk_with_tag_roundtrip() {
     let msg = malt_protocol::shell::OutputChunk {
         data: vec![0xDE, 0xAD, 0xBE, 0xEF],
         command_tag: Some("cargo test".to_string()),
+        sequence: 42,
+        stream: malt_protocol::shell::OutputStream::Stderr,
         _unknown: Vec::new(),
     };
 
@@ -100,4 +102,6 @@ fn shell_output_chunk_with_tag_roundtrip() {
     let decoded = malt_protocol::shell::OutputChunk::unpack(&mut r).unwrap();
     assert_eq!(msg.data, decoded.data);
     assert_eq!(msg.command_tag, decoded.command_tag);
+    assert_eq!(msg.sequence, decoded.sequence);
+    assert_eq!(msg.stream, decoded.stream);
 }

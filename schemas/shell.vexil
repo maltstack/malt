@@ -33,8 +33,19 @@ message PromptReady {
 @doc("command_tag is present when output originates from a known command")
 @doc("(MASH sets it at emission time); absent for startup output, background")
 @doc("jobs with no command association, or raw PTY output from compat panes.")
-@domain(Shell) @type(0x04) @revision(1)
+@doc("sequence is the session-wide monotonic resumption point; stream")
+@doc("distinguishes stdout from stderr so ordering between them is preserved.")
+@domain(Shell) @type(0x04) @revision(2)
 message OutputChunk {
     data        @0 : bytes
     command_tag @1 : optional<string>
+    sequence    @2 : u64
+    stream      @3 : OutputStream
+}
+
+@non_exhaustive
+@doc("Which of a command's output streams a chunk belongs to.")
+enum OutputStream {
+    Stdout @0
+    Stderr @1
 }

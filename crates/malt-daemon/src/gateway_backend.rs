@@ -199,6 +199,8 @@ impl GatewayBackend for DaemonBackend {
             output: result.output,
             stderr: result.stderr,
             exit_code: Some(result.exit_code),
+            truncated: result.truncated,
+            omitted_bytes: result.omitted_bytes,
         })
     }
 

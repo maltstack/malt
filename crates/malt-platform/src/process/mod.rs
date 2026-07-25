@@ -302,6 +302,97 @@ impl std::fmt::Debug for SpawnConfig {
     }
 }
 
+// ── Stdio handle types ─────────────────────────────────────────────────
+//
+// On Windows there are two distinct pipe-creation paths with different I/O
+// modes: the plain `std::process::Command` path creates genuinely
+// overlapped-mode handles (which `std::process::Child{Stdin,Stdout,Stderr}`'s
+// `Read`/`Write` impls expect), while the `argv0`-override path
+// (`CreateProcessW` + raw `CreatePipe`, used for every `mash`
+// external-command spawn) creates synchronous handles. Wrapping a
+// synchronous handle as `ChildStdin`/`ChildStdout` and reading or writing it
+// more than once hangs indefinitely -- found by actually reading a
+// multi-write child's output incrementally, not by inspection. Each variant
+// below carries the handle in the concrete type whose I/O mode actually
+// matches how it was created, so `Read`/`Write` always dispatch correctly.
+// On Unix there is no such split -- a fd is a fd -- so these are plain type
+// aliases and every existing call site is unaffected.
+
+#[cfg(windows)]
+pub enum ChildStdoutHandle {
+    Overlapped(std::process::ChildStdout),
+    Sync(std::fs::File),
+}
+#[cfg(windows)]
+pub enum ChildStderrHandle {
+    Overlapped(std::process::ChildStderr),
+    Sync(std::fs::File),
+}
+#[cfg(windows)]
+pub enum ChildStdinHandle {
+    Overlapped(std::process::ChildStdin),
+    Sync(std::fs::File),
+}
+
+#[cfg(windows)]
+impl std::io::Read for ChildStdoutHandle {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Overlapped(h) => h.read(buf),
+            Self::Sync(h) => h.read(buf),
+        }
+    }
+}
+#[cfg(windows)]
+impl std::io::Read for ChildStderrHandle {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Overlapped(h) => h.read(buf),
+            Self::Sync(h) => h.read(buf),
+        }
+    }
+}
+#[cfg(windows)]
+impl std::io::Write for ChildStdinHandle {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Overlapped(h) => h.write(buf),
+            Self::Sync(h) => h.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Overlapped(h) => h.flush(),
+            Self::Sync(h) => h.flush(),
+        }
+    }
+}
+#[cfg(windows)]
+impl std::os::windows::io::IntoRawHandle for ChildStdoutHandle {
+    fn into_raw_handle(self) -> std::os::windows::io::RawHandle {
+        match self {
+            Self::Overlapped(h) => h.into_raw_handle(),
+            Self::Sync(h) => h.into_raw_handle(),
+        }
+    }
+}
+#[cfg(windows)]
+impl std::os::windows::io::IntoRawHandle for ChildStdinHandle {
+    fn into_raw_handle(self) -> std::os::windows::io::RawHandle {
+        match self {
+            Self::Overlapped(h) => h.into_raw_handle(),
+            Self::Sync(h) => h.into_raw_handle(),
+        }
+    }
+}
+
+#[cfg(unix)]
+pub type ChildStdoutHandle = std::process::ChildStdout;
+#[cfg(unix)]
+pub type ChildStderrHandle = std::process::ChildStderr;
+#[cfg(unix)]
+pub type ChildStdinHandle = std::process::ChildStdin;
+
 // ── Child ───────────────────────────────────────────────────────────────
 
 /// A running child process.
@@ -313,11 +404,11 @@ pub struct Child {
     pid: u32,
     inner: ChildInner,
     /// Pipe connected to the child's stdin (write end), if `Io::Pipe` was used.
-    pub stdin: Option<std::process::ChildStdin>,
+    pub stdin: Option<ChildStdinHandle>,
     /// Pipe connected to the child's stdout (read end), if `Io::Pipe` was used.
-    pub stdout: Option<std::process::ChildStdout>,
+    pub stdout: Option<ChildStdoutHandle>,
     /// Pipe connected to the child's stderr (read end), if `Io::Pipe` was used.
-    pub stderr: Option<std::process::ChildStderr>,
+    pub stderr: Option<ChildStderrHandle>,
 }
 
 impl std::fmt::Debug for Child {
@@ -434,17 +525,17 @@ impl Child {
     }
 
     /// Take ownership of the child's stdin pipe, if one was created.
-    pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+    pub fn take_stdin(&mut self) -> Option<ChildStdinHandle> {
         self.stdin.take()
     }
 
     /// Take ownership of the child's stdout pipe, if one was created.
-    pub fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+    pub fn take_stdout(&mut self) -> Option<ChildStdoutHandle> {
         self.stdout.take()
     }
 
     /// Take ownership of the child's stderr pipe, if one was created.
-    pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+    pub fn take_stderr(&mut self) -> Option<ChildStderrHandle> {
         self.stderr.take()
     }
 }

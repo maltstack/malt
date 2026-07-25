@@ -74,6 +74,72 @@ impl ExecResult {
     }
 }
 
+/// Forward a leaf command's unredirected output to the installed sink, if
+/// any, immediately before returning `result` to the caller.
+///
+/// "Leaf" matters: this must only be called where `result` is output this
+/// call produced itself (a builtin's buffer, a tool's buffer, a spawned
+/// child's captured bytes) -- never on a value that already aggregates a
+/// nested `execute_simple` call's own result, or the same bytes would reach
+/// the sink twice. By the time `result` reaches here it has already had
+/// `apply_output_redirects`/`apply_builtin_output_redirects` applied, so a
+/// redirected stream is already empty and naturally forwards nothing.
+fn forward_to_sink(env: &Env, result: &ExecResult) {
+    let Some(sink) = env.output_sink() else {
+        return;
+    };
+    if !result.stdout.is_empty() {
+        sink.write_stdout(&result.stdout);
+    }
+    if !result.stderr.is_empty() {
+        sink.write_stderr(&result.stderr);
+    }
+}
+
+/// Read a child's output stream to completion, forwarding each chunk to the
+/// sink (if any) as it is read, while still accumulating the same bytes into
+/// `dest` for the caller's `ExecResult`.
+///
+/// Replaces a single blocking `read_to_end`: that call could only report
+/// output after the child had already produced all of it, which is exactly
+/// the behaviour this feature exists to change (research R1). A caller with
+/// no sink installed sees byte-identical accumulation to the old
+/// `read_to_end` call -- this only changes *when* bytes become visible
+/// elsewhere, never what ends up in `dest`.
+/// Read a child's output stream to completion on a dedicated thread,
+/// forwarding each chunk to `forward` (typically the sink) as it is read,
+/// and returning the same bytes accumulated for the caller's `ExecResult`.
+///
+/// Runs on its own thread rather than inline for two reasons: reading stdout
+/// and stderr sequentially on one thread risks the classic dual-pipe
+/// deadlock (the child blocks writing to whichever stream we have not
+/// reached yet), and joining two threads reading concurrently avoids it the
+/// same way `std::process::Command::output()` does internally.
+///
+/// A caller with no sink installed accumulates byte-identical output to the
+/// old single blocking `read_to_end` call -- this only changes *when* bytes
+/// become visible elsewhere, never what ends up in the returned `Vec<u8>`.
+fn read_stream_incrementally(
+    mut reader: impl IoRead + Send + 'static,
+    mut forward: impl FnMut(&[u8]) + Send + 'static,
+) -> std::thread::JoinHandle<(Vec<u8>, std::io::Result<()>)> {
+    std::thread::spawn(move || {
+        let mut dest = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => return (dest, Ok(())),
+                Ok(n) => {
+                    forward(&buf[..n]);
+                    dest.extend_from_slice(&buf[..n]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return (dest, Err(e)),
+            }
+        }
+    })
+}
+
 fn noninteractive_shell_error(env: &mut Env, msg: impl Into<String>) -> ExecResult {
     noninteractive_shell_failure(env, 1, msg)
 }
@@ -433,6 +499,10 @@ pub fn capture_command(
     let mut sub_env = env.clone();
     let _ = sub_env.close_fd(1);
     sub_env.clear_noninherited_traps();
+    // Command substitution captures stdout as a value. An inherited sink
+    // would both stream it into the session and corrupt the substitution
+    // result -- see the `output_sink` field doc on `Env`.
+    sub_env.take_output_sink();
     let result = execute_list(&cmds, cmd_str, &mut sub_env);
     env.set_exit_code(result.exit_code);
     env.set_last_command_substitution_status(Some(result.exit_code));
@@ -480,7 +550,16 @@ fn execute_inner(cmd: &Spanned<Command>, source: &str, env: &mut Env) -> ExecRes
         }
 
         Command::Pipeline { commands, negated } => {
-            execute_pipeline(commands, *negated, source, env)
+            let result = execute_pipeline(commands, *negated, source, env);
+            // Pipeline stages themselves never touch the sink (their own
+            // `env.clone()` clears it -- see `execute_pipeline`), so a
+            // top-level pipeline's aggregate result is forwarded once here
+            // instead of once per stage. A nested or captured pipeline
+            // (inside `$(...)`, inside another pipeline stage) already runs
+            // with the sink cleared through that same clone chain, so this
+            // is a no-op there.
+            forward_to_sink(env, &result);
+            result
         }
 
         Command::Background(inner) => {
@@ -867,6 +946,15 @@ fn execute_pipeline(
     for i in 0..n {
         let mut stage_env = env.clone();
         stage_env.inherit_traps_for_subshell();
+        // A pipeline stage's stdout belongs to the next stage (or, for the
+        // last stage, to this pipeline's own caller), never directly to the
+        // session. `Command::Simple`/`Redirected{Simple}` stages dispatch
+        // through `execute_simple_with_io`, which never consults the sink,
+        // but a stage that is itself control flow (`if ... | cat`) recurses
+        // through the plain `execute()`/`execute_simple()` path for its
+        // body -- clearing here is what stops a command nested that way
+        // from streaming pipeline-internal data straight to the session.
+        stage_env.take_output_sink();
         stage_env.set_bg_pid_reporting_enabled(i == n - 1);
         let stage_source = source.to_string();
         let stage_cmd = commands[i].clone();
@@ -1489,6 +1577,7 @@ fn execute_simple(
                     restore_fd_state(env, fd, state);
                 }
             }
+            forward_to_sink(env, &result);
             return result;
         }
         for (fd, state) in saved_nonstdio_states {
@@ -1579,6 +1668,7 @@ fn execute_simple(
     if dispatch_name == "sleep" && env.current_job_id().is_some() {
         let mut result = execute_interruptible_sleep(&argv, env);
         apply_output_redirects(&mut result, resolved_io);
+        forward_to_sink(env, &result);
         return result;
     }
     if tools_registry.contains(dispatch_name) {
@@ -1597,6 +1687,7 @@ fn execute_simple(
             stderr: tool_result.stderr,
         };
         apply_output_redirects(&mut result, resolved_io);
+        forward_to_sink(env, &result);
         return result;
     }
 
@@ -1607,6 +1698,7 @@ fn execute_simple(
             let msg = format!("mash: {cmd_name}: command not found\n");
             let mut result = ExecResult::failure(127, msg);
             apply_output_redirects(&mut result, resolved_io);
+            forward_to_sink(env, &result);
             return result;
         }
     };
@@ -1684,18 +1776,55 @@ fn execute_simple(
     env.report_bg_pid(child.pid());
     assign_child_to_session_job(env, &child);
 
-    // Read stdout and stderr (only populated when fd is Pipe, not File).
+    // Read stdout and stderr incrementally (only populated when fd is Pipe,
+    // not File), forwarding each chunk to the sink as it arrives so a
+    // long-running command's output is observable before it exits. Each
+    // stream is drained on its own thread and joined below: reading them
+    // sequentially on this thread would risk the classic dual-pipe
+    // deadlock (the child blocks writing to the stream we have not gotten
+    // to yet, so the stream we are blocked reading never reaches EOF).
+    let sink = env.output_sink().cloned();
+    let stdout_handle = child.take_stdout().map(|out| {
+        let sink = sink.clone();
+        read_stream_incrementally(out, move |chunk| {
+            if let Some(sink) = &sink {
+                sink.write_stdout(chunk);
+            }
+        })
+    });
+    let stderr_handle = child.take_stderr().map(|err| {
+        let sink = sink.clone();
+        read_stream_incrementally(err, move |chunk| {
+            if let Some(sink) = &sink {
+                sink.write_stderr(chunk);
+            }
+        })
+    });
     let mut stdout_bytes = Vec::new();
     let mut stderr_bytes = Vec::new();
-    if let Some(mut out) = child.take_stdout() {
-        if let Err(e) = out.read_to_end(&mut stdout_bytes) {
+    if let Some(handle) = stdout_handle {
+        let (bytes, result) = handle.join().unwrap_or_else(|_| {
+            (
+                Vec::new(),
+                Err(std::io::Error::other("stdout reader thread panicked")),
+            )
+        });
+        stdout_bytes = bytes;
+        if let Err(e) = result {
             stderr_bytes.extend_from_slice(
                 format!("mash: {cmd_name}: stdout read failed: {e}\n").as_bytes(),
             );
         }
     }
-    if let Some(mut err) = child.take_stderr() {
-        if let Err(e) = err.read_to_end(&mut stderr_bytes) {
+    if let Some(handle) = stderr_handle {
+        let (bytes, result) = handle.join().unwrap_or_else(|_| {
+            (
+                Vec::new(),
+                Err(std::io::Error::other("stderr reader thread panicked")),
+            )
+        });
+        stderr_bytes.extend_from_slice(&bytes);
+        if let Err(e) = result {
             stderr_bytes.extend_from_slice(
                 format!("mash: {cmd_name}: stderr read failed: {e}\n").as_bytes(),
             );

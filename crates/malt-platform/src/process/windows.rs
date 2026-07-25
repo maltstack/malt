@@ -37,9 +37,18 @@ enum StdioSpec {
 }
 
 struct ParentPipes {
-    stdin: Option<std::process::ChildStdin>,
-    stdout: Option<std::process::ChildStdout>,
-    stderr: Option<std::process::ChildStderr>,
+    // `std::fs::File`, not `std::process::Child{Stdin,Stdout,Stderr}`: these
+    // handles come from a plain (non-overlapped) `CreatePipe`, and `File`'s
+    // `Read`/`Write` impls issue plain synchronous `ReadFile`/`WriteFile`
+    // calls that match that. The `ChildStd*` types assume the overlapped
+    // I/O mode that `std::process::Command`'s own pipe creation uses --
+    // wrapping a synchronous handle in one of them works for a single
+    // `read_to_end`-style call (there happens to be no genuine wait
+    // involved) but hangs indefinitely on a second read that must actually
+    // block for more data. See the doc comment on `process::Child::stdin`.
+    stdin: Option<std::fs::File>,
+    stdout: Option<std::fs::File>,
+    stderr: Option<std::fs::File>,
 }
 
 impl ParentPipes {
@@ -132,9 +141,15 @@ pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
         .map_err(|e| map_spawn_error(e, &config.program))?;
 
     let pid = child.id();
-    let stdin = child.stdin.take();
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    let stdin = child.stdin.take().map(super::ChildStdinHandle::Overlapped);
+    let stdout = child
+        .stdout
+        .take()
+        .map(super::ChildStdoutHandle::Overlapped);
+    let stderr = child
+        .stderr
+        .take()
+        .map(super::ChildStderrHandle::Overlapped);
     let handle = child.as_raw_handle() as HANDLE;
     let owned_handle = dup_handle(handle, false)?;
     std::mem::forget(child);
@@ -223,9 +238,9 @@ fn spawn_with_create_process(config: SpawnConfig) -> Result<Child, SpawnError> {
         inner: ChildInner {
             handle: process_info.hProcess,
         },
-        stdin: parent_pipes.stdin,
-        stdout: parent_pipes.stdout,
-        stderr: parent_pipes.stderr,
+        stdin: parent_pipes.stdin.map(super::ChildStdinHandle::Sync),
+        stdout: parent_pipes.stdout.map(super::ChildStdoutHandle::Sync),
+        stderr: parent_pipes.stderr.map(super::ChildStderrHandle::Sync),
     })
 }
 
@@ -302,19 +317,19 @@ fn set_non_inheritable(handle: HANDLE) -> Result<(), SpawnError> {
     Ok(())
 }
 
-fn child_stdin_from_handle(handle: HANDLE) -> std::process::ChildStdin {
+fn child_stdin_from_handle(handle: HANDLE) -> std::fs::File {
     // SAFETY: handle is a valid owned write-end of a pipe.
     let owned = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
     owned.into()
 }
 
-fn child_stdout_from_handle(handle: HANDLE) -> std::process::ChildStdout {
+fn child_stdout_from_handle(handle: HANDLE) -> std::fs::File {
     // SAFETY: handle is a valid owned read-end of a pipe.
     let owned = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
     owned.into()
 }
 
-fn child_stderr_from_handle(handle: HANDLE) -> std::process::ChildStderr {
+fn child_stderr_from_handle(handle: HANDLE) -> std::fs::File {
     // SAFETY: handle is a valid owned read-end of a pipe.
     let owned = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
     owned.into()

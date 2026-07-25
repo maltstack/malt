@@ -2,6 +2,7 @@ pub mod command_worker;
 pub mod coordinator;
 pub mod events;
 pub mod input;
+pub mod output_log;
 pub mod pools;
 pub mod session_thread;
 

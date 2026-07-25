@@ -71,6 +71,12 @@ pub struct ExecResultData {
     #[serde(default)]
     pub stderr: String,
     pub exit_code: Option<i32>,
+    /// `#[serde(default)]` so this client keeps working against an older
+    /// daemon that predates truncation reporting.
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default)]
+    pub omitted_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]

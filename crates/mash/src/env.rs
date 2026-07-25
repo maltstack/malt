@@ -266,6 +266,24 @@ pub enum EnvError {
     ReadonlyVariable(String),
 }
 
+// ── Output sink ──
+
+/// Where a running command's real-time stdout/stderr goes, if anyone is
+/// listening.
+///
+/// `mash` owns this trait but never implements it: the daemon does, so that
+/// a byte written here can become a session's `OutputChunk` without `mash`
+/// having to know what a session is (layering Principle VII). Writes are
+/// `&[u8]` because command output is not text -- it may be invalid UTF-8,
+/// and a multi-byte character may be split across writes.
+///
+/// Object-safe and `Send + Sync` so the daemon can hold one across the
+/// worker thread that owns the `Env` this is installed on.
+pub trait OutputSink: Send + Sync {
+    fn write_stdout(&self, data: &[u8]);
+    fn write_stderr(&self, data: &[u8]);
+}
+
 // ── Env struct ──
 
 pub struct Env {
@@ -307,6 +325,16 @@ pub struct Env {
     bg_pid_reporting_enabled: bool,
     current_job_id: Option<u32>,
     last_command_substitution_status: Option<i32>,
+    /// Where this command's real-time output goes, if anyone is listening.
+    ///
+    /// Inherited by default across `Env::clone()` (a subshell's or background
+    /// job's output should still reach the same place its parent's would).
+    /// **Must not survive into a capturing context** -- command substitution
+    /// and pipeline stages explicitly clear it right after cloning, because
+    /// their output is a value or another command's input, not the session's
+    /// real output. An inherited sink there would both stream a value the
+    /// caller never asked to see and corrupt the value itself.
+    output_sink: Option<Arc<dyn OutputSink>>,
 }
 
 impl Clone for Env {
@@ -350,6 +378,7 @@ impl Clone for Env {
             bg_pid_reporting_enabled: self.bg_pid_reporting_enabled,
             current_job_id: self.current_job_id,
             last_command_substitution_status: self.last_command_substitution_status,
+            output_sink: self.output_sink.clone(),
         }
     }
 }
@@ -388,6 +417,7 @@ impl Env {
             bg_pid_reporting_enabled: false,
             current_job_id: None,
             last_command_substitution_status: None,
+            output_sink: None,
         };
         env.special
             .insert("$".to_string(), std::process::id().to_string());
@@ -1226,6 +1256,28 @@ impl Env {
                 },
             );
         }
+    }
+
+    // ── Output sink ──
+
+    /// Install the sink a top-level command's unredirected stdout/stderr
+    /// should be written to as it is produced.
+    pub fn set_output_sink(&mut self, sink: Arc<dyn OutputSink>) {
+        self.output_sink = Some(sink);
+    }
+
+    /// Remove and return the output sink, if any.
+    ///
+    /// Callers that are about to execute in a capturing context (command
+    /// substitution, a pipeline stage) must call this on their cloned `Env`
+    /// before running anything -- see the field doc on `output_sink`.
+    pub fn take_output_sink(&mut self) -> Option<Arc<dyn OutputSink>> {
+        self.output_sink.take()
+    }
+
+    /// Borrow the output sink, if one is installed.
+    pub fn output_sink(&self) -> Option<&Arc<dyn OutputSink>> {
+        self.output_sink.as_ref()
     }
 
     // ── Isolation context ──

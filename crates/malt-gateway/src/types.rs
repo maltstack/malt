@@ -52,6 +52,13 @@ pub struct ExecResult {
     pub output: String,
     pub stderr: String,
     pub exit_code: Option<i32>,
+    /// `output`/`stderr` were cut short of the command's real output
+    /// because it exceeded the daemon's one-shot reply cap (research R3).
+    /// A caller that ignores this still sees output; one that checks it
+    /// knows to use `GET /sessions/{id}/output/stream` for the rest.
+    pub truncated: bool,
+    /// How many bytes were left out when `truncated` is true; 0 otherwise.
+    pub omitted_bytes: u64,
 }
 
 /// One command execution record returned by the history API.

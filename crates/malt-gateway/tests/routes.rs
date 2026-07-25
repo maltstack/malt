@@ -79,6 +79,8 @@ impl GatewayBackend for MockBackend {
             output: format!("ran: {command}"),
             stderr: String::new(),
             exit_code: Some(0),
+            truncated: false,
+            omitted_bytes: 0,
         })
     }
 

@@ -236,6 +236,12 @@ fn handle_exec(client: &MaltClient, session_id: u32, command: &str) -> Result<()
     if !result.stderr.is_empty() {
         eprint!("{}", result.stderr);
     }
+    if result.truncated {
+        eprintln!(
+            "malt: output truncated ({} bytes omitted); use `malt watch {session_id} --output` for the full stream",
+            result.omitted_bytes
+        );
+    }
     if let Some(code) = result.exit_code {
         if code != 0 {
             std::process::exit(code);

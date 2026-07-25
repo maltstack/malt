@@ -24,7 +24,7 @@ use tracing::{info, warn};
 
 enum SessionLifecycle {
     Active {
-        cmd_tx: mpsc::Sender<SessionCommand>,
+        cmd_tx: mpsc::SyncSender<SessionCommand>,
         ingress: ExecutionIngress,
         control_thread: Option<std::thread::JoinHandle<()>>,
         worker_thread: Option<std::thread::JoinHandle<()>>,
@@ -1142,7 +1142,7 @@ fn spawn_session_reaper(
 }
 
 fn spawn_session_reaper_after_worker(
-    control_tx: mpsc::Sender<SessionCommand>,
+    control_tx: mpsc::SyncSender<SessionCommand>,
     control_thread: Option<std::thread::JoinHandle<()>>,
     worker_thread: Option<std::thread::JoinHandle<()>>,
 ) {
@@ -1170,7 +1170,7 @@ fn spawn_session_reaper_after_worker(
 fn spawn_pty_reader(
     pane_id: PaneId,
     mut reader: std::fs::File,
-    cmd_tx: mpsc::Sender<SessionCommand>,
+    cmd_tx: mpsc::SyncSender<SessionCommand>,
 ) {
     use std::io::Read;
     let result = std::thread::Builder::new()

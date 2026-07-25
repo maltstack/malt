@@ -8,13 +8,56 @@
 use super::session_thread::{now_epoch_ms, CommandOutput, SessionCommand};
 use crate::DaemonError;
 use malt_protocol::common::SessionId;
-use mash::env::Env;
+use malt_protocol::shell::OutputStream;
+use mash::env::{Env, OutputSink};
 use mash::executor::execute_list;
 use mash::parser;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
+
+/// Forwards a running command's output to the session's control actor as
+/// `SessionCommand::OutputChunk`, over the same channel as
+/// `ExecutionStarted`/`ExecutionCompleted` (research R4) so ordering between
+/// output and completion is never in question. `mash` calls this through
+/// the `OutputSink` trait and never learns it is talking to a session
+/// (Principle VII) -- this type is the daemon-side half of that seam.
+struct ChunkForwardingSink {
+    command_id: u32,
+    control_tx: mpsc::SyncSender<SessionCommand>,
+}
+
+impl ChunkForwardingSink {
+    fn forward(&self, stream: OutputStream, data: &[u8]) {
+        if data.is_empty() {
+            // A zero-byte write is not an event (data-model.md invariant).
+            return;
+        }
+        // Blocks when the control channel is full -- the correct backpressure
+        // here, since the sole consumer is this session's own control actor,
+        // which is guaranteed to drain (see `SESSION_CONTROL_CHANNEL_CAPACITY`).
+        // A send failure means the control actor is gone (session shutting
+        // down); there is nothing useful to do with that here, so it is
+        // silently dropped rather than panicking the command in flight.
+        let _ = self.control_tx.send(SessionCommand::OutputChunk {
+            command_id: self.command_id,
+            stream,
+            data: data.to_vec(),
+            produced_at: now_epoch_ms(),
+        });
+    }
+}
+
+impl OutputSink for ChunkForwardingSink {
+    fn write_stdout(&self, data: &[u8]) {
+        self.forward(OutputStream::Stdout, data);
+    }
+
+    fn write_stderr(&self, data: &[u8]) {
+        self.forward(OutputStream::Stderr, data);
+    }
+}
 
 const ACCEPTING: u8 = 0;
 const CLOSING: u8 = 1;
@@ -243,7 +286,7 @@ pub fn spawn_command_worker(
     session_id: SessionId,
     mut env: Env,
     requests: mpsc::Receiver<ExecutionRequest>,
-    control_tx: mpsc::Sender<SessionCommand>,
+    control_tx: mpsc::SyncSender<SessionCommand>,
     ingress: ExecutionIngress,
     start_command_id: u32,
 ) -> Result<JoinHandle<()>, DaemonError> {
@@ -277,6 +320,14 @@ pub fn spawn_command_worker(
                     ingress.mark_unavailable();
                     break;
                 }
+                // Installed only for this command's duration and removed
+                // immediately after, so it cannot outlive the command it
+                // belongs to -- a sink that leaked into the next request
+                // would tag that request's output with this one's id.
+                env.set_output_sink(Arc::new(ChunkForwardingSink {
+                    command_id: next_command_id,
+                    control_tx: control_tx.clone(),
+                }));
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     run_command(&mut env, &request.command, next_command_id)
                 }))
@@ -286,6 +337,7 @@ pub fn spawn_command_worker(
                     env_snapshot: env.to_snapshot(),
                 })
                 .map_err(|_| DaemonError::ExecutionUnavailable(session_id.clone()));
+                env.take_output_sink();
 
                 let worker_failed = result.is_err();
                 if worker_failed {
@@ -335,6 +387,8 @@ fn run_command(env: &mut Env, input: &str, command_id: u32) -> CommandOutput {
                 output: format!("mash: parse error: {error}\n"),
                 stderr: String::new(),
                 exit_code: 1,
+                truncated: false,
+                omitted_bytes: 0,
             }
         }
     };
@@ -344,6 +398,8 @@ fn run_command(env: &mut Env, input: &str, command_id: u32) -> CommandOutput {
             output: String::new(),
             stderr: String::new(),
             exit_code: 0,
+            truncated: false,
+            omitted_bytes: 0,
         };
     }
     let result = execute_list(&commands, input, env);
@@ -352,6 +408,12 @@ fn run_command(env: &mut Env, input: &str, command_id: u32) -> CommandOutput {
         output: String::from_utf8_lossy(&result.stdout).to_string(),
         stderr: String::from_utf8_lossy(&result.stderr).to_string(),
         exit_code: result.exit_code,
+        // Truncation for the `/exec` reply is applied once, at the point
+        // the control actor builds that reply (session_thread.rs) -- not
+        // here, where this value still feeds the compat translator and bus,
+        // both of which must see the command's real, complete output.
+        truncated: false,
+        omitted_bytes: 0,
     }
 }
 
@@ -422,7 +484,7 @@ mod tests {
     fn worker_panic_fails_active_and_pending_work_then_closes_admission() {
         let session_id = SessionId(10);
         let (ingress, requests) = ExecutionIngress::new(session_id.clone(), 2).unwrap();
-        let (control_tx, control_rx) = mpsc::channel();
+        let (control_tx, control_rx) = mpsc::sync_channel(16);
         let worker = spawn_command_worker(
             session_id.clone(),
             Env::from_os(),

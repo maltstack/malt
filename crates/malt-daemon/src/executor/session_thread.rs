@@ -7,6 +7,7 @@ use crate::executor::events::{
     DeliveryOutcome, EventLog, GapReason, LifecycleEvent, LifecycleEventKind, SubscriberSink,
 };
 use crate::executor::input::{InputError, SessionInputChannel};
+use crate::executor::output_log;
 use crate::DaemonError;
 use malt_compat::CompatTranslator;
 use malt_layout::resolve::compute_resolved_panes;
@@ -127,19 +128,91 @@ pub struct CommandOutput {
     pub output: String,
     pub stderr: String,
     pub exit_code: i32,
+    /// Whether `output` and/or `stderr` were cut short of the command's
+    /// real output because they exceeded `EXEC_REPLY_CAP_BYTES` (research
+    /// R3). Never left for the caller to infer -- a truncated reply that
+    /// looks complete is exactly the failure this field exists to prevent.
+    pub truncated: bool,
+    /// How many bytes were left out of `output`/`stderr` combined when
+    /// `truncated` is true; 0 otherwise.
+    pub omitted_bytes: u64,
 }
 
 /// The control and worker handles created for an active session.  Keeping
 /// these separate makes ownership explicit: the control thread owns UI,
 /// persistence, and lifecycle state; the worker alone owns MASH state.
 pub struct SessionSpawn {
-    pub control_tx: mpsc::Sender<SessionCommand>,
+    pub control_tx: mpsc::SyncSender<SessionCommand>,
     pub ingress: ExecutionIngress,
     pub control_thread: JoinHandle<()>,
     pub worker_thread: JoinHandle<()>,
 }
 
 const FINALIZATION_SLICE_BYTES: usize = 128 * 1024;
+
+/// Bound on the session's control channel (`SessionCommand`, all variants).
+///
+/// Sized generously above ordinary control traffic so it is never the
+/// binding constraint for anything except a command producing output far
+/// faster than this actor can drain it -- that is precisely the case
+/// `OutputChunk` (research R4) needs a bound for: the worker must block
+/// rather than let an unbounded backlog of undelivered output grow the
+/// daemon's memory without limit. Blocking the worker here is safe and
+/// intentional -- the control actor is this session's own thread, always
+/// draining, never the untrusted party a subscriber bound (`SUBSCRIBER_BUFFER`
+/// in `events.rs`) exists to protect against.
+const SESSION_CONTROL_CHANNEL_CAPACITY: usize = 1024;
+
+/// Cap on `output`/`stderr` returned by the one-shot `/exec` reply
+/// (`CommandOutput`, research R3).
+///
+/// A command's real output can be unbounded (SC-004's 100 MB case), but the
+/// daemon must not accumulate an unbounded amount of it just to answer one
+/// synchronous request. 1 MiB comfortably covers ordinary command output
+/// (build logs, directory listings) without approaching a memory concern
+/// per in-flight `/exec` call. Beyond the cap, the reply states that it was
+/// truncated (`CommandOutput::truncated`/`omitted_bytes`) rather than
+/// silently answering with an incomplete picture, and directs the caller to
+/// the output stream for the rest.
+const EXEC_REPLY_CAP_BYTES: usize = 1024 * 1024;
+
+/// Truncate `output`/`stderr` to `cap` bytes each if they exceed it,
+/// recording how much was cut. Truncates at a UTF-8 char boundary so the
+/// result is never invalid, which is also why each stream is capped
+/// independently rather than the pair sharing one combined budget -- there
+/// is no single boundary that is valid for both strings at once.
+fn cap_command_output(mut output: CommandOutput, cap: usize) -> CommandOutput {
+    let mut omitted: u64 = 0;
+    if output.output.len() > cap {
+        let boundary = floor_char_boundary(&output.output, cap);
+        omitted += (output.output.len() - boundary) as u64;
+        output.output.truncate(boundary);
+    }
+    if output.stderr.len() > cap {
+        let boundary = floor_char_boundary(&output.stderr, cap);
+        omitted += (output.stderr.len() - boundary) as u64;
+        output.stderr.truncate(boundary);
+    }
+    if omitted > 0 {
+        output.truncated = true;
+        output.omitted_bytes = omitted;
+    }
+    output
+}
+
+/// The largest byte index `<= index` that lands on a UTF-8 char boundary in
+/// `s`. Stable `str::floor_char_boundary` is still nightly-only; this is the
+/// same walk-back-at-most-3-bytes algorithm.
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut boundary = index;
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
 
 struct Finalization {
     sequence: u64,
@@ -219,6 +292,19 @@ pub enum SessionCommand {
     /// A result sent by the sole MASH owner. It is committed on this actor
     /// before the worker may take another request.
     ExecutionCompleted(ExecutionCompletion),
+    /// A piece of a running command's stdout/stderr, as it was produced.
+    ///
+    /// Sent on this same channel as `ExecutionStarted`/`ExecutionCompleted`
+    /// -- not a separate channel -- so a command can never report finishing
+    /// before its last chunk is delivered (research R4). The control actor
+    /// assigns the session-wide sequence number on receipt; the worker does
+    /// not know it.
+    OutputChunk {
+        command_id: u32,
+        stream: malt_protocol::shell::OutputStream,
+        data: Vec<u8>,
+        produced_at: u64,
+    },
     /// Write input to PTY stdin.
     WriteInput { data: Vec<u8> },
     /// Deliver raw bytes to whatever is reading this session's input.
@@ -256,6 +342,14 @@ pub enum SessionCommand {
     SubscribeEvents {
         resume_from: Option<u64>,
         reply: mpsc::Sender<tokio::sync::mpsc::Receiver<LifecycleEvent>>,
+    },
+    /// Subscribe to this session's streamed command output. Same resume
+    /// semantics as `SubscribeEvents`, over the separate byte-retention
+    /// window in `output_log` (data-model.md: the log is not the terminal
+    /// grid).
+    SubscribeOutput {
+        resume_from: Option<u64>,
+        reply: mpsc::Sender<tokio::sync::mpsc::Receiver<output_log::OutputEvent>>,
     },
     /// Report which client holds input authority, if any (FR-015).
     GetInputAuthority { reply: mpsc::Sender<Option<u64>> },
@@ -333,6 +427,17 @@ impl std::fmt::Debug for SessionCommand {
                 .field("command_id", command_id)
                 .finish(),
             Self::ExecutionCompleted(_) => f.debug_struct("ExecutionCompleted").finish(),
+            Self::OutputChunk {
+                command_id,
+                stream,
+                data,
+                ..
+            } => f
+                .debug_struct("OutputChunk")
+                .field("command_id", command_id)
+                .field("stream", stream)
+                .field("len", &data.len())
+                .finish(),
             Self::RawInput { data, .. } => f
                 .debug_struct("RawInput")
                 .field("bytes", &data.len())
@@ -346,6 +451,10 @@ impl std::fmt::Debug for SessionCommand {
             Self::GetOutputText { .. } => f.debug_struct("GetOutputText").finish(),
             Self::SubscribeEvents { resume_from, .. } => f
                 .debug_struct("SubscribeEvents")
+                .field("resume_from", resume_from)
+                .finish(),
+            Self::SubscribeOutput { resume_from, .. } => f
+                .debug_struct("SubscribeOutput")
                 .field("resume_from", resume_from)
                 .finish(),
             Self::GetInputAuthority { .. } => f.debug_struct("GetInputAuthority").finish(),
@@ -415,6 +524,16 @@ pub struct SessionExecutor {
     /// none may block the others or this actor.
     event_sinks: Vec<SubscriberSink>,
     next_subscriber_id: u64,
+    /// Bounded-by-bytes catch-up window for this session's streamed command
+    /// output, and the authority on output sequence numbers. Not the
+    /// terminal grid -- the grid is a rendered screen with its own bounded
+    /// scrollback; this is the byte stream both it and output subscribers
+    /// are fed from (data-model.md).
+    output_log: output_log::OutputLog,
+    /// Live output subscribers. Same non-blocking, lag-reporting policy as
+    /// `event_sinks`, deliberately -- see `output_log`'s module doc.
+    output_sinks: Vec<output_log::OutputSubscriberSink>,
+    next_output_subscriber_id: u64,
 }
 
 impl SessionExecutor {
@@ -424,7 +543,7 @@ impl SessionExecutor {
         session_id: SessionId,
         first_pane: PaneId,
         isolation: IsolationTier,
-    ) -> Result<(mpsc::Sender<SessionCommand>, JoinHandle<()>), DaemonError> {
+    ) -> Result<(mpsc::SyncSender<SessionCommand>, JoinHandle<()>), DaemonError> {
         let spawned =
             Self::spawn_with_capacity(session_id, first_pane, isolation, 256, Vec::new())?;
         Ok((spawned.control_tx, spawned.control_thread))
@@ -449,6 +568,34 @@ impl SessionExecutor {
             capacity,
             env,
             command_blocks,
+            output_log::MAX_RETAINED_BYTES,
+        )
+    }
+
+    /// As [`SessionExecutor::spawn_with_capacity`], but also overrides the
+    /// output log's byte-retention bound. Test-support only: production
+    /// callers always want [`output_log::MAX_RETAINED_BYTES`], but a test
+    /// exercising retention eviction should not have to generate megabytes
+    /// of real output to do it (SC-004 "in miniature").
+    pub fn spawn_with_capacity_and_output_bound(
+        session_id: SessionId,
+        first_pane: PaneId,
+        isolation: IsolationTier,
+        capacity: usize,
+        output_log_capacity_bytes: usize,
+        command_blocks: Vec<CommandBlock>,
+    ) -> Result<SessionSpawn, DaemonError> {
+        let mut env = Env::from_os();
+        env.set_interactive(true);
+        apply_session_isolation(&mut env, session_id.clone(), isolation);
+        Self::spawn_with_env(
+            session_id,
+            first_pane,
+            isolation,
+            capacity,
+            env,
+            command_blocks,
+            output_log_capacity_bytes,
         )
     }
 
@@ -472,7 +619,7 @@ impl SessionExecutor {
         shell_path: Option<String>,
         env_snapshot: Option<mash::env::EnvSnapshot>,
         command_blocks: Vec<CommandBlock>,
-    ) -> Result<(mpsc::Sender<SessionCommand>, JoinHandle<()>), DaemonError> {
+    ) -> Result<(mpsc::SyncSender<SessionCommand>, JoinHandle<()>), DaemonError> {
         let spawned = Self::spawn_with_cwd_and_capacity(
             session_id,
             first_pane,
@@ -528,6 +675,7 @@ impl SessionExecutor {
             capacity,
             env,
             command_blocks,
+            output_log::MAX_RETAINED_BYTES,
         )
     }
 
@@ -542,6 +690,7 @@ impl SessionExecutor {
         capacity: usize,
         env: Env,
         command_blocks: Vec<CommandBlock>,
+        output_log_capacity_bytes: usize,
     ) -> Result<SessionSpawn, DaemonError> {
         let env = env;
         let snapshot = env.to_snapshot();
@@ -578,7 +727,7 @@ impl SessionExecutor {
             SessionInputChannel::new(session_id.0, env.fd_registry()).map_err(DaemonError::Io)?;
         env.register_fd(0, input_read);
 
-        let (control_tx, control_rx) = mpsc::channel();
+        let (control_tx, control_rx) = mpsc::sync_channel(SESSION_CONTROL_CHANNEL_CAPACITY);
         let (ingress, requests) = ExecutionIngress::new(session_id.clone(), capacity)?;
         let worker_thread = spawn_command_worker(
             session_id.clone(),
@@ -612,6 +761,9 @@ impl SessionExecutor {
                     event_log: EventLog::new(),
                     event_sinks: Vec::new(),
                     next_subscriber_id: 1,
+                    output_log: output_log::OutputLog::with_capacity(output_log_capacity_bytes),
+                    output_sinks: Vec::new(),
+                    next_output_subscriber_id: 1,
                 };
                 executor.run(control_rx);
             })
@@ -682,6 +834,19 @@ impl SessionExecutor {
                 Ok(SessionCommand::ExecutionCompleted(completion)) => {
                     self.begin_finalization(completion)
                 }
+                Ok(SessionCommand::OutputChunk {
+                    command_id,
+                    stream,
+                    data,
+                    produced_at,
+                }) => {
+                    self.publish_output(output_log::OutputEventKind::Chunk {
+                        command_id,
+                        stream,
+                        data,
+                        produced_at,
+                    });
+                }
                 Ok(SessionCommand::PtyOutput { data, .. }) => {
                     if let Some(compat) = &mut self.compat {
                         compat.feed(&data);
@@ -736,6 +901,10 @@ impl SessionExecutor {
                     let rx = self.subscribe_events(resume_from);
                     // If the requester vanished before we replied, the
                     // receiver drops and the sink is reaped on next publish.
+                    let _ = reply.send(rx);
+                }
+                Ok(SessionCommand::SubscribeOutput { resume_from, reply }) => {
+                    let rx = self.subscribe_output(resume_from);
                     let _ = reply.send(rx);
                 }
                 Ok(SessionCommand::GetCommandHistory { reply }) => {
@@ -970,6 +1139,67 @@ impl SessionExecutor {
         rx
     }
 
+    /// Record an output chunk (or, in principle, a gap -- callers never
+    /// pass one) and fan it out to every live output subscriber. Mirrors
+    /// `publish_lifecycle` exactly; see that method's doc.
+    fn publish_output(&mut self, kind: output_log::OutputEventKind) {
+        let event = self.output_log.publish(kind);
+        let latest = event.sequence;
+        let mut dropped: Vec<u64> = Vec::new();
+        for sink in &mut self.output_sinks {
+            match sink.try_deliver(&event) {
+                output_log::DeliveryOutcome::Delivered => {}
+                output_log::DeliveryOutcome::Lagged => {
+                    sink.try_notify_gap(latest, output_log::GapReason::SubscriberLagged);
+                    dropped.push(sink.id);
+                }
+                output_log::DeliveryOutcome::Closed => dropped.push(sink.id),
+            }
+        }
+        if !dropped.is_empty() {
+            self.output_sinks.retain(|s| !dropped.contains(&s.id));
+            for id in dropped {
+                info!(session = ?self.session.id(), subscriber = id, "output subscriber removed");
+            }
+        }
+    }
+
+    /// Register an output subscriber, replaying from `resume_from` if given.
+    /// Mirrors `subscribe_events` exactly; see that method's doc.
+    fn subscribe_output(
+        &mut self,
+        resume_from: Option<u64>,
+    ) -> tokio::sync::mpsc::Receiver<output_log::OutputEvent> {
+        let id = self.next_output_subscriber_id;
+        self.next_output_subscriber_id += 1;
+        let (mut sink, rx) = output_log::OutputSubscriberSink::new(id);
+
+        if let Some(from) = resume_from {
+            sink.set_position(from);
+            let (replay, lost) = self.output_log.replay_after(from);
+            if lost {
+                let through = self
+                    .output_log
+                    .oldest_sequence()
+                    .map(|o| o.saturating_sub(1))
+                    .unwrap_or(from);
+                sink.try_notify_gap(through, output_log::GapReason::RetentionExceeded);
+            }
+            for event in replay {
+                if sink.try_deliver(&event) != output_log::DeliveryOutcome::Delivered {
+                    sink.try_notify_gap(
+                        self.output_log.latest_sequence(),
+                        output_log::GapReason::SubscriberLagged,
+                    );
+                    break;
+                }
+            }
+        }
+
+        self.output_sinks.push(sink);
+        rx
+    }
+
     /// Dispatch a render frame to all registered VNP clients.
     /// Whether `origin` may send input right now, and why not if it may not.
     ///
@@ -1177,7 +1407,16 @@ impl SessionExecutor {
                 .unwrap_or(0),
         });
         self.dispatch_render();
-        let _ = finalization.reply.send(Ok(finalization.output));
+        // Capped here, at the reply -- everything above (bus, compat feed,
+        // history) already saw the command's real, complete output. Nothing
+        // accumulates unboundedly *before* this point either: the stream
+        // (`output_log`, capped separately) is where an agent following a
+        // large command should look; this reply exists for the common case
+        // of a short command, and states plainly when it is not that case.
+        let _ = finalization.reply.send(Ok(cap_command_output(
+            finalization.output,
+            EXEC_REPLY_CAP_BYTES,
+        )));
         // The acknowledgement is deliberately last: only a completely
         // materialized view and reply let the worker begin its next request.
         let _ = finalization.finalized.send(());
@@ -1521,6 +1760,8 @@ fn command_error_output(error: DaemonError) -> CommandOutput {
         output: String::new(),
         stderr: format!("malt: {error}\n"),
         exit_code: 1,
+        truncated: false,
+        omitted_bytes: 0,
     }
 }
 
