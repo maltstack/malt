@@ -10,6 +10,7 @@ description = "HTTP REST API gateway for MALT"
 malt-protocol = { path = "../malt-protocol" }
 axum = "0.8"
 tokio = { version = "1", features = ["rt", "net", "sync", "macros"] }
+tokio-stream = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower = { version = "0.5", features = ["util"] }
