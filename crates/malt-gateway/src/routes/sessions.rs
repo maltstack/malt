@@ -14,7 +14,7 @@ use crate::backend::GatewayBackend;
 use crate::error::GatewayError;
 use crate::types::{
     ApiResponse, CommandHistoryEntry, CreateSessionRequest, ExecRequest, LifecycleEventDto,
-    SendInputRequest,
+    OutputChunkDto, SendInputRequest,
 };
 
 /// Optional `?resume_from=` query parameter, an alternative to the
@@ -146,6 +146,43 @@ fn to_sse_event(dto: &LifecycleEventDto) -> Event {
         // Serialization of a plain data struct should not fail; if it
         // somehow does, say so in-band rather than dropping the frame
         // silently, which would create an unsignalled hole in the stream.
+        Err(error) => event.data(format!(
+            r#"{{"error":"failed to serialize event: {error}"}}"#
+        )),
+    }
+}
+
+/// Stream this session's command output as Server-Sent Events.
+///
+/// Resume position comes from `Last-Event-ID` or `?resume_from=`, exactly
+/// as `events` above. Absent, delivery starts from the next chunk produced
+/// rather than replaying the retained window -- a client wanting current
+/// state calls `output`/`output_text` first (contracts/output-stream-http.md).
+pub async fn output_stream(
+    State(backend): State<Arc<dyn GatewayBackend>>,
+    Path(id): Path<u32>,
+    Query(query): Query<EventsQuery>,
+    headers: HeaderMap,
+) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, GatewayError> {
+    let resume_from = query.resume_from.or_else(|| {
+        headers
+            .get("last-event-id")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+    });
+
+    let rx = backend.subscribe_output(id, resume_from)?;
+    let stream = ReceiverStream::new(rx).map(|dto| Ok(to_output_sse_event(&dto)));
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// Render one output frame as an SSE frame -- same shape as `to_sse_event`.
+fn to_output_sse_event(dto: &OutputChunkDto) -> Event {
+    let event = Event::default()
+        .id(dto.sequence.to_string())
+        .event(&dto.kind);
+    match serde_json::to_string(dto) {
+        Ok(json) => event.data(json),
         Err(error) => event.data(format!(
             r#"{{"error":"failed to serialize event: {error}"}}"#
         )),

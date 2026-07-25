@@ -2211,6 +2211,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "clap",
  "malt-config",
  "malt-daemon",
@@ -2248,6 +2249,7 @@ dependencies = [
 name = "malt-daemon"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "malt-compat",
  "malt-config",
  "malt-gateway",
@@ -2282,6 +2284,7 @@ name = "malt-gateway"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "futures-core",
  "getrandom 0.3.4",
  "http-body-util",

@@ -57,6 +57,9 @@ pub enum Command {
         /// Resume after this event sequence instead of starting from now
         #[arg(long)]
         resume_from: Option<u64>,
+        /// Stream command output instead of lifecycle events
+        #[arg(long)]
+        output: bool,
     },
 }
 

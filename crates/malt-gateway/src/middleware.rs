@@ -40,6 +40,7 @@ fn required_scope(method: &Method, path: &str) -> AuthScope {
         (&Method::GET, "/sessions/{id}/authority") => AuthScope::Read,
         (&Method::GET, "/sessions/{id}/output") => AuthScope::Read,
         (&Method::GET, "/sessions/{id}/output/text") => AuthScope::Read,
+        (&Method::GET, "/sessions/{id}/output/stream") => AuthScope::Read,
         // Same sensitivity class as output: command text can contain paths,
         // arguments, and secrets typed at the prompt. Not Monitor, which is
         // for liveness/inventory only.

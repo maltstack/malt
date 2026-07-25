@@ -438,6 +438,36 @@ impl Coordinator {
         }
     }
 
+    /// Begin an output-chunk subscription for a session. Mirrors
+    /// `begin_subscribe_events` exactly, including the dormant-session
+    /// refusal -- see that method's doc.
+    pub fn begin_subscribe_output(
+        &self,
+        session_id: SessionId,
+        resume_from: Option<u64>,
+    ) -> Result<tokio::sync::mpsc::Receiver<crate::executor::output_log::OutputEvent>, DaemonError>
+    {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                cmd_tx
+                    .send(SessionCommand::SubscribeOutput {
+                        resume_from,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
+                reply_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+            }
+            SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
+    }
+
     /// Begin reading a session's command execution history, oldest first.
     ///
     /// Returns the receiver rather than the result so the caller can release

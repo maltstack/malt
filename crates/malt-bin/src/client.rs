@@ -252,8 +252,18 @@ impl MaltClient {
     /// Returns the raw response for incremental reading — deliberately not
     /// `.json()`, which would block until the stream ended (i.e. forever).
     pub fn open_event_stream(&self, id: u32, from: Option<u64>) -> Result<EventStream> {
+        self.open_sse_stream(&format!("/sessions/{id}/events"), from)
+    }
+
+    /// Open the output-chunk stream, resuming after `from` when given. Same
+    /// shape and transport as `open_event_stream` -- see that method's doc.
+    pub fn open_output_stream(&self, id: u32, from: Option<u64>) -> Result<EventStream> {
+        self.open_sse_stream(&format!("/sessions/{id}/output/stream"), from)
+    }
+
+    fn open_sse_stream(&self, path: &str, from: Option<u64>) -> Result<EventStream> {
         let mut req = self
-            .authed(self.http.get(self.url(&format!("/sessions/{id}/events"))))
+            .authed(self.http.get(self.url(path)))
             .header("accept", "text/event-stream");
         if let Some(seq) = from {
             req = req.header("last-event-id", seq.to_string());

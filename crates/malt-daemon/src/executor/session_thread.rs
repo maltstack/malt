@@ -534,6 +534,11 @@ pub struct SessionExecutor {
     /// `event_sinks`, deliberately -- see `output_log`'s module doc.
     output_sinks: Vec<output_log::OutputSubscriberSink>,
     next_output_subscriber_id: u64,
+    /// Per-subscriber channel depth. Always `output_log::SUBSCRIBER_BUFFER`
+    /// in production; overridable only through
+    /// `spawn_with_capacity_and_output_bound` so a test can force a
+    /// subscriber to lag without publishing hundreds of real chunks.
+    output_subscriber_buffer: usize,
 }
 
 impl SessionExecutor {
@@ -569,20 +574,25 @@ impl SessionExecutor {
             env,
             command_blocks,
             output_log::MAX_RETAINED_BYTES,
+            output_log::SUBSCRIBER_BUFFER,
         )
     }
 
     /// As [`SessionExecutor::spawn_with_capacity`], but also overrides the
-    /// output log's byte-retention bound. Test-support only: production
-    /// callers always want [`output_log::MAX_RETAINED_BYTES`], but a test
-    /// exercising retention eviction should not have to generate megabytes
-    /// of real output to do it (SC-004 "in miniature").
+    /// output log's byte-retention bound and per-subscriber channel depth.
+    /// Test-support only: production callers always want
+    /// [`output_log::MAX_RETAINED_BYTES`]/[`output_log::SUBSCRIBER_BUFFER`],
+    /// but a test exercising retention eviction or subscriber lag should not
+    /// have to generate megabytes of real output or hundreds of real chunks
+    /// to do it (SC-004/SC-005 "in miniature").
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_capacity_and_output_bound(
         session_id: SessionId,
         first_pane: PaneId,
         isolation: IsolationTier,
         capacity: usize,
         output_log_capacity_bytes: usize,
+        output_subscriber_buffer: usize,
         command_blocks: Vec<CommandBlock>,
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
@@ -596,6 +606,7 @@ impl SessionExecutor {
             env,
             command_blocks,
             output_log_capacity_bytes,
+            output_subscriber_buffer,
         )
     }
 
@@ -676,6 +687,7 @@ impl SessionExecutor {
             env,
             command_blocks,
             output_log::MAX_RETAINED_BYTES,
+            output_log::SUBSCRIBER_BUFFER,
         )
     }
 
@@ -691,6 +703,7 @@ impl SessionExecutor {
         env: Env,
         command_blocks: Vec<CommandBlock>,
         output_log_capacity_bytes: usize,
+        output_subscriber_buffer: usize,
     ) -> Result<SessionSpawn, DaemonError> {
         let env = env;
         let snapshot = env.to_snapshot();
@@ -764,6 +777,7 @@ impl SessionExecutor {
                     output_log: output_log::OutputLog::with_capacity(output_log_capacity_bytes),
                     output_sinks: Vec::new(),
                     next_output_subscriber_id: 1,
+                    output_subscriber_buffer,
                 };
                 executor.run(control_rx);
             })
@@ -1172,7 +1186,8 @@ impl SessionExecutor {
     ) -> tokio::sync::mpsc::Receiver<output_log::OutputEvent> {
         let id = self.next_output_subscriber_id;
         self.next_output_subscriber_id += 1;
-        let (mut sink, rx) = output_log::OutputSubscriberSink::new(id);
+        let (mut sink, rx) =
+            output_log::OutputSubscriberSink::with_buffer(id, self.output_subscriber_buffer);
 
         if let Some(from) = resume_from {
             sink.set_position(from);

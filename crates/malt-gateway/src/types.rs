@@ -109,6 +109,35 @@ pub struct LifecycleEventDto {
     pub reason: Option<String>,
 }
 
+/// One output-stream frame as delivered to an SSE client.
+///
+/// `kind` names the frame (`output` or `gap`); the type-specific fields are
+/// flattened alongside it and omitted when not applicable, mirroring
+/// `LifecycleEventDto`. `data` is base64: output is arbitrary bytes, and a
+/// multi-byte character may be split across chunks, so lossy text decoding
+/// at the transport would be unrecoverable by the client (research R6).
+#[derive(Debug, Clone, Serialize)]
+pub struct OutputChunkDto {
+    #[serde(skip)]
+    pub sequence: u64,
+    #[serde(skip)]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub produced_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Request body for sending raw input.
 #[derive(Debug, Deserialize)]
 pub struct SendInputRequest {

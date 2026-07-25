@@ -39,7 +39,14 @@ fn main() -> Result<()> {
         Some(Command::Watch {
             session_id,
             resume_from,
-        }) => handle_watch(&client, session_id, resume_from),
+            output,
+        }) => {
+            if output {
+                handle_watch_output(&client, session_id, resume_from)
+            } else {
+                handle_watch(&client, session_id, resume_from)
+            }
+        }
     }
 }
 
@@ -344,6 +351,52 @@ fn handle_watch(client: &MaltClient, session_id: u32, resume_from: Option<u64>) 
                 event.payload.reason.as_deref().unwrap_or("unknown reason"),
             ),
             other => println!("{:>5}  {other}", event.sequence),
+        }
+        events::ControlFlow::Continue
+    })
+}
+
+/// As `handle_watch`, but for the output-chunk stream (`--output`).
+///
+/// Output bytes go to stdout exactly as received -- decoded from base64,
+/// never through a text formatter, since the command's output may not be
+/// valid UTF-8 (research R6). Status text (the startup banner, gap notices)
+/// goes to stderr so a caller piping stdout gets only the command's real
+/// output.
+fn handle_watch_output(
+    client: &MaltClient,
+    session_id: u32,
+    resume_from: Option<u64>,
+) -> Result<()> {
+    use base64::Engine;
+    use std::io::Write;
+
+    eprintln!("watching session {session_id} output (ctrl-c to stop)");
+    let mut stdout = std::io::stdout();
+    events::watch_output(client, session_id, resume_from, |event| {
+        match event.kind.as_str() {
+            "output" => {
+                if let Some(encoded) = &event.payload.data {
+                    match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                        Ok(bytes) => {
+                            let _ = stdout.write_all(&bytes);
+                            let _ = stdout.flush();
+                        }
+                        Err(error) => {
+                            eprintln!("malt: watch --output: undecodable chunk: {error}");
+                        }
+                    }
+                }
+            }
+            "gap" => {
+                eprintln!(
+                    "\n  !! GAP: missed output {}..={} ({}) -- this view is incomplete\n",
+                    event.payload.from.unwrap_or(0),
+                    event.payload.to.unwrap_or(0),
+                    event.payload.reason.as_deref().unwrap_or("unknown reason"),
+                );
+            }
+            _ => {}
         }
         events::ControlFlow::Continue
     })

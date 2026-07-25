@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::client::MaltClient;
+use crate::client::{EventStream, MaltClient};
 
 /// Longest gap between reconnection attempts.
 const MAX_BACKOFF_MS: u64 = 5_000;
@@ -31,6 +31,13 @@ pub struct StreamEvent {
 /// Payload fields, flattened as the Gateway sends them. Every field is
 /// optional because which ones appear depends on the event type; a client
 /// reads the ones its `kind` implies.
+///
+/// Shared between the lifecycle-event stream (`/events`) and the output
+/// stream (`/output/stream`), which is what makes reusing `FrameParser` for
+/// both a genuine reuse rather than a coincidence: SSE framing does not
+/// depend on payload shape, and an unrecognized field is ignored, so one
+/// stream's fields (`missed_from`/`missed_through`) simply sit unused when
+/// parsing the other's frames (`from`/`to`) and vice versa.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct EventPayload {
     pub command_id: Option<u32>,
@@ -42,6 +49,17 @@ pub struct EventPayload {
     pub missed_from: Option<u64>,
     pub missed_through: Option<u64>,
     pub reason: Option<String>,
+    /// Output-stream fields (`event: output`).
+    pub stream: Option<String>,
+    /// Base64-encoded output bytes (`event: output`). Named `data` to match
+    /// the wire field exactly.
+    pub data: Option<String>,
+    pub produced_at: Option<u64>,
+    /// Output-stream gap range (`event: gap`, `from`/`to` -- distinct field
+    /// names from the lifecycle stream's `missed_from`/`missed_through`
+    /// because both payload shapes share this one struct).
+    pub from: Option<u64>,
+    pub to: Option<u64>,
 }
 
 /// Accumulates SSE lines into frames.
@@ -138,18 +156,56 @@ pub fn watch_events<F>(
     client: &MaltClient,
     session_id: u32,
     resume_from: Option<u64>,
+    on_event: F,
+) -> Result<()>
+where
+    F: FnMut(&StreamEvent) -> ControlFlow,
+{
+    watch_stream(
+        session_id,
+        resume_from,
+        |id, from| client.open_event_stream(id, from),
+        on_event,
+    )
+}
+
+/// As [`watch_events`], but against the output-chunk stream
+/// (`/output/stream`) instead of lifecycle events. Reuses the same
+/// `FrameParser`/`StreamEvent` framing and the same reconnect-with-backoff
+/// loop -- SSE framing does not depend on payload shape (see the doc on
+/// `EventPayload`), so this genuinely is the same parser, not a copy of it.
+pub fn watch_output<F>(
+    client: &MaltClient,
+    session_id: u32,
+    resume_from: Option<u64>,
+    on_event: F,
+) -> Result<()>
+where
+    F: FnMut(&StreamEvent) -> ControlFlow,
+{
+    watch_stream(
+        session_id,
+        resume_from,
+        |id, from| client.open_output_stream(id, from),
+        on_event,
+    )
+}
+
+fn watch_stream<O, F>(
+    session_id: u32,
+    resume_from: Option<u64>,
+    mut open: O,
     mut on_event: F,
 ) -> Result<()>
 where
+    O: FnMut(u32, Option<u64>) -> Result<EventStream>,
     F: FnMut(&StreamEvent) -> ControlFlow,
 {
     let mut last_seen = resume_from;
     let mut backoff = BASE_BACKOFF_MS;
 
     loop {
-        let response = client
-            .open_event_stream(session_id, last_seen)
-            .context("failed to open the event stream")?;
+        let response = open(session_id, last_seen).context("failed to open the stream")?;
 
         // A refusal is terminal: reconnecting cannot make an unknown session
         // exist or a token gain scope.
@@ -157,7 +213,7 @@ where
             anyhow::bail!(message);
         }
         let Some(body) = response.body else {
-            anyhow::bail!("event stream returned no body");
+            anyhow::bail!("stream returned no body");
         };
 
         let mut parser = FrameParser::new();

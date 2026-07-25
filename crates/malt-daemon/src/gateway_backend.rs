@@ -1,12 +1,17 @@
 use crate::executor::coordinator::Coordinator;
 use crate::executor::events::{GapReason, LifecycleEvent, LifecycleEventKind};
+use crate::executor::output_log::{OutputEvent, OutputEventKind};
 use crate::DaemonError;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use malt_gateway::backend::GatewayBackend;
 use malt_gateway::error::GatewayError;
 use malt_gateway::types::{
-    CommandHistoryEntry, ExecResult, LifecycleEventDto, PaneResponse, SessionResponse,
+    CommandHistoryEntry, ExecResult, LifecycleEventDto, OutputChunkDto, PaneResponse,
+    SessionResponse,
 };
 use malt_protocol::common::{IsolationTier, SessionId};
+use malt_protocol::shell::OutputStream;
 use std::sync::{Arc, Mutex};
 
 /// Bridges the HTTP gateway to the real daemon Coordinator.
@@ -79,6 +84,67 @@ fn to_event_dto(event: LifecycleEvent) -> LifecycleEventDto {
                 match reason {
                     GapReason::RetentionExceeded => "retention_exceeded",
                     GapReason::SubscriberLagged => "subscriber_lagged",
+                }
+                .to_string(),
+            );
+        }
+    }
+    dto
+}
+
+/// Project a daemon output event onto the flat wire shape. `data` is
+/// base64: output is arbitrary bytes and a multi-byte character may be
+/// split across chunks, so lossy text decoding at the transport would be
+/// unrecoverable by the client (research R6).
+fn to_output_dto(event: OutputEvent) -> OutputChunkDto {
+    let mut dto = OutputChunkDto {
+        sequence: event.sequence,
+        kind: String::new(),
+        command_id: None,
+        stream: None,
+        data: None,
+        produced_at: None,
+        from: None,
+        to: None,
+        reason: None,
+    };
+    match event.kind {
+        OutputEventKind::Chunk {
+            command_id,
+            stream,
+            data,
+            produced_at,
+        } => {
+            dto.kind = "output".to_string();
+            dto.command_id = Some(command_id);
+            dto.stream = Some(
+                match stream {
+                    OutputStream::Stdout => "stdout",
+                    OutputStream::Stderr => "stderr",
+                    // The wire enum is #[non_exhaustive]; a future variant
+                    // this daemon build doesn't know about is reported
+                    // honestly rather than misreported as stdout.
+                    _ => "unknown",
+                }
+                .to_string(),
+            );
+            dto.data = Some(BASE64.encode(&data));
+            dto.produced_at = Some(produced_at);
+        }
+        OutputEventKind::Gap {
+            missed_from,
+            missed_through,
+            reason,
+        } => {
+            dto.kind = "gap".to_string();
+            dto.from = Some(missed_from);
+            dto.to = Some(missed_through);
+            dto.reason = Some(
+                match reason {
+                    crate::executor::output_log::GapReason::RetentionExceeded => {
+                        "retention_exceeded"
+                    }
+                    crate::executor::output_log::GapReason::SubscriberLagged => "subscriber_lagged",
                 }
                 .to_string(),
             );
@@ -332,6 +398,34 @@ impl GatewayBackend for DaemonBackend {
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 if out_tx.send(to_event_dto(event)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(out_rx)
+    }
+
+    fn subscribe_output(
+        &self,
+        session_id: u32,
+        resume_from: Option<u64>,
+    ) -> Result<tokio::sync::mpsc::Receiver<OutputChunkDto>, GatewayError> {
+        // Mirrors subscribe_events exactly -- see that method's doc.
+        let rx = {
+            let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+            if coord.session_first_pane(SessionId(session_id)).is_none() {
+                return Err(GatewayError::SessionNotFound(session_id));
+            }
+            coord
+                .begin_subscribe_output(SessionId(session_id), resume_from)
+                .map_err(map_execution_error)?
+        };
+
+        let (out_tx, out_rx) = tokio::sync::mpsc::channel(SUBSCRIBER_FORWARD_BUFFER);
+        let mut rx = rx;
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if out_tx.send(to_output_dto(event)).await.is_err() {
                     break;
                 }
             }

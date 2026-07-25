@@ -17,12 +17,16 @@ use std::time::{Duration, Instant};
 fn subscribe(
     cmd_tx: &mpsc::SyncSender<SessionCommand>,
 ) -> tokio::sync::mpsc::Receiver<malt_daemon::executor::output_log::OutputEvent> {
+    subscribe_from(cmd_tx, None)
+}
+
+fn subscribe_from(
+    cmd_tx: &mpsc::SyncSender<SessionCommand>,
+    resume_from: Option<u64>,
+) -> tokio::sync::mpsc::Receiver<malt_daemon::executor::output_log::OutputEvent> {
     let (reply, rx) = mpsc::channel();
     cmd_tx
-        .send(SessionCommand::SubscribeOutput {
-            resume_from: None,
-            reply,
-        })
+        .send(SessionCommand::SubscribeOutput { resume_from, reply })
         .unwrap();
     rx.recv().expect("subscribe should reply")
 }
@@ -128,6 +132,7 @@ fn a_command_producing_more_than_the_retained_bound_completes_and_the_log_stays_
         IsolationTier::Bare,
         256,
         TINY_BOUND,
+        malt_daemon::executor::output_log::SUBSCRIBER_BUFFER,
         Vec::new(),
     )
     .unwrap();
@@ -189,4 +194,222 @@ fn a_command_producing_more_than_the_retained_bound_completes_and_the_log_stays_
         .control_thread
         .join()
         .expect("session thread panicked");
+}
+
+/// T024 (US3): a subscriber disconnects mid-command and resumes from the
+/// last sequence it saw; the two runs' content, concatenated, must
+/// reproduce the command's full output exactly once each -- verified by
+/// content, not by count (SC-003).
+#[test]
+fn resuming_after_disconnect_reproduces_the_full_output_byte_for_byte() {
+    let (cmd_tx, handle) =
+        SessionExecutor::spawn(SessionId(4), PaneId(1), IsolationTier::Bare).unwrap();
+
+    let mut first_rx = subscribe(&cmd_tx);
+
+    let (run_reply, run_result) = mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RunCommand {
+            command: "echo one; sleep 1; echo two; sleep 1; echo three".to_string(),
+            reply: run_reply,
+        })
+        .unwrap();
+
+    // Read exactly one chunk, then simulate a disconnect by dropping the
+    // receiver while the command is still running.
+    let first_event = first_rx
+        .blocking_recv()
+        .expect("subscriber should receive the first chunk");
+    let mut received = match first_event.kind {
+        OutputEventKind::Chunk { data, .. } => data,
+        other => panic!("expected a Chunk, got {other:?}"),
+    };
+    let last_seen = first_event.sequence;
+    drop(first_rx);
+
+    // Resume from the last sequence the (now-gone) first subscriber saw.
+    // The daemon must not care that a different logical subscriber is
+    // asking -- resumption is keyed on the sequence, not on connection
+    // identity.
+    let mut resumed_rx = subscribe_from(&cmd_tx, Some(last_seen));
+
+    let output = run_result
+        .recv_timeout(Duration::from_secs(10))
+        .expect("command should eventually complete");
+    assert_eq!(output.exit_code, 0);
+
+    // Drain whatever the resumed subscriber has -- the command already
+    // finished, so everything after `last_seen` should already be queued.
+    while let Ok(event) = resumed_rx.try_recv() {
+        if let OutputEventKind::Chunk { data, .. } = event.kind {
+            received.extend_from_slice(&data);
+        }
+    }
+
+    assert_eq!(
+        received,
+        output.output.as_bytes(),
+        "concatenating both runs must reproduce the command's full output byte-for-byte"
+    );
+
+    cmd_tx.send(SessionCommand::Shutdown).unwrap();
+    handle.join().expect("session thread panicked");
+}
+
+/// T025 (US3): a subscriber that stops reading is told it lagged and is
+/// dropped -- the command's duration and other subscribers are unaffected
+/// (SC-005). A tiny subscriber buffer (not the real 256-deep default) so a
+/// handful of real chunks are enough to overflow it deterministically. The
+/// command paces itself with short sleeps between chunks -- enough real
+/// wall-clock time for a genuinely-draining reader thread to be scheduled
+/// and keep up under parallel test-suite load, which a back-to-back burst
+/// with a very tight buffer does not reliably leave room for.
+#[test]
+fn a_stalled_subscriber_is_told_it_lagged_and_dropped_without_affecting_others() {
+    let spawned = SessionExecutor::spawn_with_capacity_and_output_bound(
+        SessionId(5),
+        PaneId(1),
+        IsolationTier::Bare,
+        256,
+        malt_daemon::executor::output_log::MAX_RETAINED_BYTES,
+        4,
+        Vec::new(),
+    )
+    .unwrap();
+    let cmd_tx = spawned.control_tx;
+
+    // The stalled subscriber: never read from again after subscribing.
+    let mut stalled_rx = subscribe(&cmd_tx);
+    // A healthy subscriber that keeps draining throughout -- on its own
+    // thread, actively reading the whole time, so it cannot itself lag
+    // behind the same tiny buffer while this test waits for the command.
+    let mut healthy_rx = subscribe(&cmd_tx);
+    let healthy_handle = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        while let Some(event) = healthy_rx.blocking_recv() {
+            match event.kind {
+                OutputEventKind::Chunk { data, .. } => bytes.extend_from_slice(&data),
+                OutputEventKind::Gap { .. } => {
+                    panic!("the healthy subscriber must not lag behind a stalled one")
+                }
+                _ => {}
+            }
+            if bytes.ends_with(b"six\n") {
+                break;
+            }
+        }
+        bytes
+    });
+
+    let (run_reply, run_result) = mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RunCommand {
+            command: "echo one; sleep 0.1; echo two; sleep 0.1; echo three; sleep 0.1; \
+                      echo four; sleep 0.1; echo five; sleep 0.1; echo six"
+                .to_string(),
+            reply: run_reply,
+        })
+        .unwrap();
+
+    let output = run_result
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the command must complete at normal speed despite the stalled subscriber");
+    assert_eq!(output.exit_code, 0);
+
+    // The healthy subscriber must see everything, unaffected by the other
+    // subscriber's stall.
+    let healthy_bytes = healthy_handle
+        .join()
+        .expect("healthy-subscriber thread panicked");
+    assert_eq!(healthy_bytes, output.output.as_bytes());
+
+    // The stalled subscriber must have a gap queued -- its absence is
+    // exactly how this defect hid in feature 004.
+    let mut saw_gap = false;
+    while let Ok(event) = stalled_rx.try_recv() {
+        if matches!(event.kind, OutputEventKind::Gap { .. }) {
+            saw_gap = true;
+        }
+    }
+    assert!(
+        saw_gap,
+        "a stalled subscriber must be told it lagged, not dropped silently"
+    );
+
+    cmd_tx.send(SessionCommand::Shutdown).unwrap();
+    spawned
+        .control_thread
+        .join()
+        .expect("session thread panicked");
+}
+
+/// T026 (US3): invalid UTF-8 and a multi-byte character survive the round
+/// trip, including base64 (SC-006).
+///
+/// Uses a real file with deliberately unusual bytes and a real `cat`
+/// (malt-tools, dispatched through the same sink-forwarding path as any
+/// other command) rather than `printf` escapes: mash's own `\NNN` octal
+/// escape interpreter casts the byte value directly to `char` before
+/// pushing it into a `String`, so `printf '\377'` does not actually
+/// produce a raw 0xFF byte on the wire -- it produces the UTF-8 encoding
+/// of U+00FF. That is a pre-existing, separate quirk of `printf` (not
+/// touched by this feature), not something to route around by injecting
+/// bytes directly into the pipeline.
+#[test]
+fn invalid_utf8_and_a_split_multibyte_character_survive_the_round_trip_including_base64() {
+    use base64::Engine;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bytes.bin");
+    let mut original = Vec::new();
+    original.extend_from_slice("caf".as_bytes());
+    original.extend_from_slice(&[0xC3, 0xA9]); // 'é', split across the boundary below
+    original.extend_from_slice(b"\n");
+    original.extend_from_slice(&[0xFF, 0xFE]); // not valid UTF-8 in any encoding
+    original.extend_from_slice(b" binary\n");
+    std::fs::write(&file, &original).unwrap();
+
+    let (cmd_tx, handle) =
+        SessionExecutor::spawn(SessionId(6), PaneId(1), IsolationTier::Bare).unwrap();
+    let mut output_rx = subscribe(&cmd_tx);
+
+    let cmd = format!("cat '{}'", file.to_string_lossy());
+    let (run_reply, run_result) = mpsc::channel();
+    cmd_tx
+        .send(SessionCommand::RunCommand {
+            command: cmd,
+            reply: run_reply,
+        })
+        .unwrap();
+
+    let output = run_result
+        .recv_timeout(Duration::from_secs(10))
+        .expect("command should complete");
+    assert_eq!(output.exit_code, 0);
+
+    let mut received = Vec::new();
+    while let Ok(event) = output_rx.try_recv() {
+        if let OutputEventKind::Chunk { data, .. } = event.kind {
+            received.extend_from_slice(&data);
+        }
+    }
+
+    assert_eq!(
+        received, original,
+        "raw bytes must survive the sink/log/subscriber path exactly, invalid UTF-8 included"
+    );
+
+    // The HTTP transport encodes chunks as base64 (research R6) -- prove
+    // that step is lossless for this exact content too.
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&received);
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&encoded)
+        .expect("valid base64 must always decode");
+    assert_eq!(
+        decoded, original,
+        "base64 round-trip must reproduce the exact bytes, not a lossy text approximation"
+    );
+
+    cmd_tx.send(SessionCommand::Shutdown).unwrap();
+    handle.join().expect("session thread panicked");
 }

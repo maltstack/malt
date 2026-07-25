@@ -13,7 +13,8 @@ use malt_gateway::error::GatewayError;
 use malt_gateway::rate_limit::RateLimiter;
 use malt_gateway::server::build_router;
 use malt_gateway::types::{
-    CommandHistoryEntry, ExecResult, LifecycleEventDto, PaneResponse, SessionResponse,
+    CommandHistoryEntry, ExecResult, LifecycleEventDto, OutputChunkDto, PaneResponse,
+    SessionResponse,
 };
 use malt_gateway::with_auth;
 
@@ -178,6 +179,35 @@ impl GatewayBackend for MockBackend {
             event.sequence = from + 1;
         }
         let _ = tx.try_send(event);
+        Ok(rx)
+    }
+
+    fn subscribe_output(
+        &self,
+        session_id: u32,
+        resume_from: Option<u64>,
+    ) -> Result<tokio::sync::mpsc::Receiver<OutputChunkDto>, GatewayError> {
+        if !self.sessions.iter().any(|s| s.id == session_id) {
+            return Err(GatewayError::SessionNotFound(session_id));
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let mut chunk = OutputChunkDto {
+            sequence: 1,
+            kind: "output".to_string(),
+            command_id: Some(1),
+            stream: Some("stdout".to_string()),
+            data: Some("aGVsbG8=".to_string()),
+            produced_at: Some(1_784_070_000_123),
+            from: None,
+            to: None,
+            reason: None,
+        };
+        // Echo the resume position back through the sequence so a test can
+        // prove the header actually reached the backend.
+        if let Some(from) = resume_from {
+            chunk.sequence = from + 1;
+        }
+        let _ = tx.try_send(chunk);
         Ok(rx)
     }
 

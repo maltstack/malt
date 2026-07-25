@@ -1,6 +1,7 @@
 use crate::error::GatewayError;
 use crate::types::{
-    CommandHistoryEntry, ExecResult, LifecycleEventDto, PaneResponse, SessionResponse,
+    CommandHistoryEntry, ExecResult, LifecycleEventDto, OutputChunkDto, PaneResponse,
+    SessionResponse,
 };
 
 /// Trait abstracting the daemon operations that the gateway delegates to.
@@ -61,6 +62,14 @@ pub trait GatewayBackend: Send + Sync + 'static {
         session_id: u32,
         resume_from: Option<u64>,
     ) -> Result<tokio::sync::mpsc::Receiver<LifecycleEventDto>, GatewayError>;
+
+    /// Subscribe to a session's streamed command output. Same shape and
+    /// error timing as `subscribe_events` -- see that method's doc.
+    fn subscribe_output(
+        &self,
+        session_id: u32,
+        resume_from: Option<u64>,
+    ) -> Result<tokio::sync::mpsc::Receiver<OutputChunkDto>, GatewayError>;
 
     fn list_panes(&self, session_id: u32) -> Result<Vec<PaneResponse>, GatewayError>;
 
