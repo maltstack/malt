@@ -1035,3 +1035,35 @@ Two separate causes, fixable independently:
 Note for whoever picks this up: the endless-fd guard must stay on the three
 *slurp* sites only. External spawn sites must NOT get it — an external
 process reading an endless stdin is exactly the desired behaviour.
+
+### `read` treats an explicitly-empty `IFS=` as "use the default" (mash, POSIX)
+
+Found 2026-07-25 while live-verifying raw input delivery (spec 005). It is a
+pre-existing shell bug, not part of that feature — recorded here so it is not
+mistaken for one next time it shows up in an input test.
+
+`crates/mash/src/executor.rs:3648` reads:
+
+```rust
+let ifs = env.get_str("IFS");
+let ifs = if ifs.is_empty() { " \t\n" } else { ifs };
+```
+
+This conflates two distinct states POSIX keeps separate: **IFS unset** (use
+the default `<space><tab><newline>`) and **IFS set to the empty string** (no
+field splitting and no trimming at all). Because the empty case falls into
+the default branch, `IFS= read -r Z` still trims, so sending `"  padded  "`
+yields `padded`.
+
+Evidence: live against a real daemon, `IFS= read -r Z; echo "[$Z]"` with
+`"  padded  \n"` printed `[padded]`, expected `[  padded  ]`.
+
+Note this is **not** a delivery-path defect — the bytes arrive intact, which
+the `SessionInputChannel` unit tests prove independently at the channel level.
+The corruption happens afterwards, inside `read`.
+
+Fix requires distinguishing unset from empty (`env.get` returning
+`Option<&str>` rather than `get_str`'s flattened `&str`), then skipping both
+the `trim_matches` at :3651 and the split at :3653 when IFS is set-but-empty.
+Both call sites at :3691 and :3700 in `split_on_ifs` need the same treatment.
+Guard with a Smoosh run — field splitting is heavily covered there.
