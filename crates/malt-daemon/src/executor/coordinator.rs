@@ -15,7 +15,7 @@ use malt_protocol::common::{
 use malt_protocol::input::KeyEvent;
 use malt_protocol::persist::daemon::DaemonState;
 use malt_protocol::persist::session::PersistedSession;
-use malt_protocol::render::{InitialState, RenderBatch};
+use malt_protocol::render::InitialState;
 use malt_session::pane::CommandBlock;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
@@ -339,6 +339,43 @@ impl Coordinator {
         }
     }
 
+    /// Claim input authority for an attached client (FR-016).
+    ///
+    /// Returns the holder after the claim. Immediate and unconditional by
+    /// design: requiring the current holder's consent lets an unresponsive or
+    /// already-departed holder strand the session (FR-018).
+    pub fn claim_input_authority(
+        &self,
+        session_id: &SessionId,
+        client_id: u64,
+        authority: malt_protocol::common::InputAuthority,
+    ) -> Result<Option<u64>, DaemonError> {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or_else(|| DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                cmd_tx
+                    .send(SessionCommand::ClaimInputAuthority {
+                        client_id,
+                        authority,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
+                match reply_rx.recv_timeout(Duration::from_secs(2)) {
+                    Ok(Ok(holder)) => Ok(holder),
+                    Ok(Err(e)) => Err(DaemonError::InputNotAuthorized(e.to_string())),
+                    Err(_) => Err(DaemonError::SessionUnreachable(handle.id.clone())),
+                }
+            }
+            SessionLifecycle::Dormant { .. } => {
+                Err(DaemonError::SessionDormant(session_id.clone()))
+            }
+        }
+    }
+
     /// Which client, if any, currently holds input authority (FR-015).
     ///
     /// A dormant session has no attached clients and therefore no holder,
@@ -579,7 +616,7 @@ impl Coordinator {
         client_id: u64,
         authority: malt_protocol::common::InputAuthority,
         capabilities: ClientCapabilities,
-        render_tx: mpsc::SyncSender<RenderBatch>,
+        render_tx: mpsc::SyncSender<crate::executor::session_thread::ClientMessage>,
     ) -> Result<InitialState, DaemonError> {
         self.begin_register_vnp_client(session_id, client_id, authority, capabilities, render_tx)?
             .recv_timeout(Duration::from_secs(5))
@@ -594,7 +631,7 @@ impl Coordinator {
         client_id: u64,
         authority: malt_protocol::common::InputAuthority,
         capabilities: ClientCapabilities,
-        render_tx: mpsc::SyncSender<RenderBatch>,
+        render_tx: mpsc::SyncSender<crate::executor::session_thread::ClientMessage>,
     ) -> Result<mpsc::Receiver<InitialState>, DaemonError> {
         // Check whether the session is Dormant — if so, restore it first.
         // We do this with a short immutable borrow so that the subsequent

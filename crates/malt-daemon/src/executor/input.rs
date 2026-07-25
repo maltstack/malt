@@ -45,6 +45,9 @@ pub enum InputError {
     /// whether to claim it (FR-014, FR-015).
     #[error("client {client_id:?} does not hold input authority; client {holder} does")]
     NotAuthority { client_id: Option<u64>, holder: u64 },
+    /// A client tried to claim authority without being attached.
+    #[error("client {client_id} is not attached to this session")]
+    NotAttached { client_id: u64 },
 }
 
 /// One session's raw-input destination.

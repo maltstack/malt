@@ -236,10 +236,11 @@ fn a_session_still_accepts_input_after_end_of_input() {
 // tracker was always complete and always unit-tested; what was missing was
 // anything calling it. So none of these touch the tracker directly.
 
+use malt_daemon::executor::session_thread::ClientMessage;
 use malt_protocol::common::{InputAuthority, SessionId};
 
 fn attach(backend: &Arc<DaemonBackend>, session: u32, client_id: u64, authority: InputAuthority) {
-    let (render_tx, render_rx) = std::sync::mpsc::sync_channel(4);
+    let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     // Kept alive: dropping the receiver would make the session treat the
     // client as gone, which is a different scenario than the one under test.
     std::mem::forget(render_rx);
@@ -261,6 +262,34 @@ fn caps() -> malt_protocol::common::ClientCapabilities {
         max_fps: 60,
         _unknown: Vec::new(),
     }
+}
+
+/// Attach with a caller-supplied channel, so a test can watch what the client
+/// is told and can simulate an abrupt departure by dropping the receiver.
+fn attach_with(
+    backend: &Arc<DaemonBackend>,
+    session: u32,
+    client_id: u64,
+    authority: InputAuthority,
+    render_tx: std::sync::mpsc::SyncSender<ClientMessage>,
+) {
+    backend
+        .coordinator()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .register_vnp_client(SessionId(session), client_id, authority, caps(), render_tx)
+        .expect("client should attach");
+}
+
+/// Every authority change this client has been told about so far.
+fn drained_authority(rx: &std::sync::mpsc::Receiver<ClientMessage>) -> Vec<Option<u64>> {
+    let mut seen = Vec::new();
+    while let Ok(message) = rx.try_recv() {
+        if let ClientMessage::AuthorityChanged { holder } = message {
+            seen.push(holder);
+        }
+    }
+    seen
 }
 
 fn holder(backend: &Arc<DaemonBackend>, session: u32) -> Option<u64> {
@@ -377,4 +406,139 @@ fn input_is_unrestricted_while_nobody_holds_authority() {
         "still-fine\n",
     );
     assert!(out.contains("unheld=[still-fine]"), "got {out:?}");
+}
+
+// ── Authority handover (US4) ─────────────────────────────────────────────
+
+fn claim(backend: &Arc<DaemonBackend>, session: u32, client_id: u64) -> Option<u64> {
+    backend
+        .coordinator()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .claim_input_authority(&SessionId(session), client_id, InputAuthority::Exclusive)
+        .expect("claim should succeed for an attached client")
+}
+
+fn detach(backend: &Arc<DaemonBackend>, session: u32, client_id: u64) {
+    backend
+        .coordinator()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .unregister_vnp_client(SessionId(session), client_id)
+        .expect("detach should succeed");
+}
+
+/// B claims from A; input rights follow, and both are told (FR-016, FR-019).
+#[test]
+fn a_claim_moves_input_rights_and_informs_everyone() {
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap().id;
+    let (a_tx, a_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(8);
+    let (b_tx, b_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(8);
+    attach_with(&backend, session, 1, InputAuthority::Exclusive, a_tx);
+    attach_with(&backend, session, 2, InputAuthority::Observe, b_tx);
+    assert_eq!(holder(&backend, session), Some(1));
+
+    assert_eq!(claim(&backend, session, 2), Some(2), "B should now hold it");
+    assert_eq!(holder(&backend, session), Some(2));
+
+    // Both are informed -- including A, who must learn it can no longer type
+    // rather than discovering it by typing into a void.
+    assert!(
+        drained_authority(&a_rx).contains(&Some(2)),
+        "the previous holder must be told it lost authority (FR-019)"
+    );
+    assert!(
+        drained_authority(&b_rx).contains(&Some(2)),
+        "the claimant must be told it holds authority"
+    );
+}
+
+/// The scenario that turns arbitration from a feature into a hazard: the
+/// holder vanishes without a clean detach while a command waits at a prompt.
+#[test]
+fn an_abrupt_departure_does_not_strand_a_waiting_command() {
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap().id;
+
+    // A holds the keyboard, then its render channel is dropped -- the daemon's
+    // signal for "this connection is gone", with no DetachSession sent.
+    let (a_tx, a_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(8);
+    attach_with(&backend, session, 1, InputAuthority::Exclusive, a_tx);
+    let (b_tx, _b_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(8);
+    attach_with(&backend, session, 2, InputAuthority::Observe, b_tx);
+
+    // A command is now waiting for an answer nobody but A may give.
+    let exec_backend = Arc::clone(&backend);
+    let id = session;
+    let waiting = std::thread::spawn(move || {
+        exec_backend.exec_command(id, "read -r ANSWER; echo got=[$ANSWER]".to_string())
+    });
+    std::thread::sleep(Duration::from_millis(400));
+
+    // A disappears. No clean detach, no timeout, no grace period.
+    drop(a_rx);
+    detach(&backend, session, 1);
+
+    // B can take over immediately and answer.
+    assert_eq!(claim(&backend, session, 2), Some(2));
+    backend
+        .send_input(session, "rescued\n".to_string())
+        .expect_err("unattributed input is still refused while B holds it");
+    backend
+        .coordinator()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .write_session_input(
+            SessionId(session),
+            malt_daemon::executor::session_thread::InputOrigin::Client(2),
+            b"rescued\n".to_vec(),
+        )
+        .expect("the new holder's input must be accepted");
+
+    let result = waiting
+        .join()
+        .expect("exec thread panicked")
+        .expect("the command must complete once the new holder answers");
+    assert!(
+        result.output.contains("got=[rescued]"),
+        "the waiting command should have received the new holder's answer, got {:?}",
+        result.output
+    );
+}
+
+/// Re-claiming what you already hold changes nothing and tells nobody.
+#[test]
+fn claiming_authority_you_already_hold_is_a_no_op() {
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap().id;
+    let (a_tx, a_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(8);
+    let (b_tx, b_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(8);
+    attach_with(&backend, session, 1, InputAuthority::Exclusive, a_tx);
+    attach_with(&backend, session, 2, InputAuthority::Observe, b_tx);
+    let _ = drained_authority(&a_rx);
+    let _ = drained_authority(&b_rx);
+
+    assert_eq!(claim(&backend, session, 1), Some(1));
+    assert!(
+        drained_authority(&b_rx).is_empty(),
+        "a no-op claim must not notify other clients (FR-019 is about changes)"
+    );
+}
+
+/// A session nobody is attached to is claimable by whoever attaches next.
+#[test]
+fn a_session_with_no_clients_is_claimable_by_the_next_attacher() {
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap().id;
+    attach(&backend, session, 1, InputAuthority::Exclusive);
+    detach(&backend, session, 1);
+    assert_eq!(holder(&backend, session), None);
+
+    attach(&backend, session, 2, InputAuthority::Exclusive);
+    assert_eq!(
+        holder(&backend, session),
+        Some(2),
+        "a session must never become permanently unanswerable (FR-018)"
+    );
 }

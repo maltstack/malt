@@ -146,16 +146,46 @@
 
 ### Implementation for User Story 4
 
-- [ ] T036 [US4] Add claim and authority-changed messages to the schema (`schemas/input.vexil` or nearest fit) and recompile. `InputClaim`/`InputAuthorityChanged` have codec constants already but no handling.
-- [ ] T037 [US4] Handle claims in `crates/malt-daemon/src/vnp_listener.rs` and the session executor: a claim from an attached client succeeds immediately and the previous holder is notified. Consent is deliberately not required — a departed or unresponsive holder would otherwise strand the session (spec Assumptions, FR-018).
-- [ ] T038 [US4] Release authority on disconnect in `crates/malt-daemon/src/executor/coordinator.rs`: clean detach and abrupt disconnect both release, with no timeout or grace period, so the next attached client can claim at once.
-- [ ] T039 [US4] Notify all attached clients on change in `crates/malt-daemon/src/executor/session_thread.rs`, so no client believes it can type when it cannot.
-- [ ] T040 [US4] Surface authority changes in `crates/malt-tui/src/connection.rs` and the TUI, so a human whose input stopped being accepted learns why rather than typing into a void.
-- [ ] T041 [US4] Handover test in `crates/malt-daemon/tests/input.rs`: B claims from A; B's input is accepted, A's is refused, both are informed.
-- [ ] T042 [US4] **Abrupt-departure test** in `crates/malt-daemon/tests/input.rs`: with a command blocked at a prompt, drop the authority holder's connection without a clean detach; assert another attached client can claim and answer, and that the command proceeds. This is the scenario that turns arbitration from a feature into a hazard if it fails.
-- [ ] T043 [P] [US4] Edge-case tests: claiming authority already held is a no-op with no notification to others; a session with no clients is claimable by whoever attaches next.
+- [X] T036 [US4] Add claim and authority-changed messages to the schema (`schemas/input.vexil` or nearest fit) and recompile. `InputClaim`/`InputAuthorityChanged` have codec constants already but no handling.
+- [X] T037 [US4] Handle claims in `crates/malt-daemon/src/vnp_listener.rs` and the session executor: a claim from an attached client succeeds immediately and the previous holder is notified. Consent is deliberately not required — a departed or unresponsive holder would otherwise strand the session (spec Assumptions, FR-018).
+- [X] T038 [US4] Release authority on disconnect in `crates/malt-daemon/src/executor/coordinator.rs`: clean detach and abrupt disconnect both release, with no timeout or grace period, so the next attached client can claim at once.
+- [X] T039 [US4] Notify all attached clients on change in `crates/malt-daemon/src/executor/session_thread.rs`, so no client believes it can type when it cannot.
+- [X] T040 [US4] Surface authority changes in `crates/malt-tui/src/connection.rs` and the TUI, so a human whose input stopped being accepted learns why rather than typing into a void.
+- [X] T041 [US4] Handover test in `crates/malt-daemon/tests/input.rs`: B claims from A; B's input is accepted, A's is refused, both are informed.
+- [X] T042 [US4] **Abrupt-departure test** in `crates/malt-daemon/tests/input.rs`: with a command blocked at a prompt, drop the authority holder's connection without a clean detach; assert another attached client can claim and answer, and that the command proceeds. This is the scenario that turns arbitration from a feature into a hazard if it fails.
+- [X] T043 [P] [US4] Edge-case tests: claiming authority already held is a no-op with no notification to others; a session with no clients is claimable by whoever attaches next.
 
 **Checkpoint**: all four gates green; quickstart Scenario 4 verified, including the abrupt-kill case. Commit. **Merge to main.**
+
+> **US4 complete 2026-07-25.**
+>
+> T036 needed no schema work: `InputClaim` and `InputAuthorityChanged` were
+> already defined in `schemas/session.vexil` and already generated. What was
+> missing was handling, exactly as the task predicted.
+>
+> T038 was already satisfied by US3 — `cleanup()` runs
+> `unregister_vnp_client` on every disconnect path, and unregister releases
+> authority. It is now *proved* rather than assumed, by the abrupt-departure
+> test rather than by reading the code.
+>
+> **Per-client delivery became one ordered stream.** Authority changes travel
+> the same channel as frames (`ClientMessage`) rather than a second channel,
+> because a client must not learn it lost authority *after* rendering frames
+> that arrived later — and two channels cannot promise that ordering.
+>
+> A claim requires the claimant to be attached. Otherwise a departed client
+> could take the keyboard for a session it is no longer listening to, which
+> is the stranding FR-018 exists to prevent, arrived at from the other side.
+> Re-claiming what you already hold notifies nobody: FR-019 is about actual
+> changes.
+>
+> The TUI now draws a notice when authority moves. Without it the human
+> symptom of losing input is indistinguishable from a hung terminal.
+>
+> Gates: workspace 1415 passed / 0 failed, fmt and clippy clean. Smoosh not
+> re-run — `mash` is untouched by this story. Live: a session with nobody
+> attached reports no holder and accepts input, confirming an unattached
+> session stays answerable.
 
 ---
 

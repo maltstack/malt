@@ -1,4 +1,5 @@
 use malt_daemon::bus::BusMessage;
+use malt_daemon::executor::session_thread::ClientMessage;
 use malt_daemon::executor::session_thread::InputOrigin;
 use malt_daemon::executor::session_thread::{SessionCommand, SessionExecutor};
 use malt_protocol::common::{
@@ -7,7 +8,6 @@ use malt_protocol::common::{
 };
 use malt_protocol::input::{KeyEvent, KeyValue, NamedKey};
 use malt_protocol::priority::Priority;
-use malt_protocol::render::RenderBatch;
 
 fn default_capabilities() -> ClientCapabilities {
     ClientCapabilities {
@@ -164,7 +164,7 @@ fn session_executor_attach_detach() {
     let (cmd_tx, handle) =
         SessionExecutor::spawn(SessionId(1), PaneId(1), IsolationTier::Bare).unwrap();
     // Attach and detach now travel the same commands a real client uses.
-    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     let (initial_tx, initial_rx) = std::sync::mpsc::channel();
     cmd_tx
         .send(SessionCommand::RegisterVnpClient {
@@ -203,7 +203,7 @@ fn session_executor_resize() {
 fn register_vnp_client_returns_initial_state() {
     let (cmd_tx, handle) =
         SessionExecutor::spawn(SessionId(1), PaneId(1), IsolationTier::Bare).unwrap();
-    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     let (initial_tx, initial_rx) = std::sync::mpsc::channel();
     cmd_tx
         .send(SessionCommand::RegisterVnpClient {
@@ -248,7 +248,7 @@ fn key_input_char_does_not_crash() {
 fn key_input_enter_triggers_render_to_client() {
     let (cmd_tx, handle) =
         SessionExecutor::spawn(SessionId(1), PaneId(1), IsolationTier::Bare).unwrap();
-    let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     let (initial_tx, initial_rx) = std::sync::mpsc::channel();
     cmd_tx
         .send(SessionCommand::RegisterVnpClient {
@@ -293,6 +293,10 @@ fn key_input_enter_triggers_render_to_client() {
     let batch = render_rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .unwrap();
+    let batch = match batch {
+        ClientMessage::Render(b) => b,
+        other => panic!("expected a render batch, got {other:?}"),
+    };
     assert!(!batch.commands.is_empty());
     cmd_tx.send(SessionCommand::Shutdown).unwrap();
     handle.join().expect("session thread panicked");
@@ -308,7 +312,7 @@ fn key_input_enter_triggers_render_to_client() {
 fn run_command_triggers_render_to_attached_client() {
     let (cmd_tx, handle) =
         SessionExecutor::spawn(SessionId(1), PaneId(1), IsolationTier::Bare).unwrap();
-    let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     let (initial_tx, initial_rx) = std::sync::mpsc::channel();
     cmd_tx
         .send(SessionCommand::RegisterVnpClient {
@@ -341,6 +345,10 @@ fn run_command_triggers_render_to_attached_client() {
              gateway-driven RunCommand completes -- previously nothing \
              ever notified it",
         );
+    let batch = match batch {
+        ClientMessage::Render(b) => b,
+        other => panic!("expected a render batch, got {other:?}"),
+    };
     assert!(!batch.commands.is_empty());
 
     cmd_tx.send(SessionCommand::Shutdown).unwrap();
@@ -366,7 +374,7 @@ fn ack_frame_does_not_crash() {
 fn unregister_vnp_client_does_not_crash() {
     let (cmd_tx, handle) =
         SessionExecutor::spawn(SessionId(1), PaneId(1), IsolationTier::Bare).unwrap();
-    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     let (initial_tx, initial_rx) = std::sync::mpsc::channel();
     cmd_tx
         .send(SessionCommand::RegisterVnpClient {

@@ -1,6 +1,7 @@
 use malt_protocol::codec::{
     make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, MSG_ATTACH_SESSION, MSG_FRAME_ACK,
-    MSG_HELLO, MSG_HELLO_ACK, MSG_INITIAL_STATE, MSG_KEY_EVENT, MSG_RENDER_BATCH, MSG_RESIZE,
+    MSG_HELLO, MSG_HELLO_ACK, MSG_INITIAL_STATE, MSG_INPUT_AUTHORITY_CHANGED, MSG_KEY_EVENT,
+    MSG_RENDER_BATCH, MSG_RESIZE,
 };
 use malt_protocol::common::{InputAuthority, ResolvedStyle, SessionId};
 use malt_protocol::envelope::{decode_envelope, encode_message};
@@ -27,6 +28,20 @@ pub trait DaemonConnection {
 
     /// Notify the daemon that the client terminal was resized.
     fn send_resize(&mut self, cols: u16, rows: u16);
+
+    /// Take a pending input-authority change, if one arrived since the last
+    /// call.
+    ///
+    /// `Some(None)` means nobody holds input; `Some(Some(id))` names the
+    /// holder. A human whose keystrokes stopped being accepted has to be told,
+    /// or they type into a void and conclude the terminal is broken -- which
+    /// is indistinguishable from a hang.
+    ///
+    /// Defaults to `None` so connections without a notion of authority (the
+    /// mock, the HTTP fallback) need not implement it.
+    fn take_authority_change(&mut self) -> Option<Option<String>> {
+        None
+    }
 }
 
 // ── MockConnection ────────────────────────────────────────────────────────────
@@ -284,6 +299,8 @@ pub struct VnpConnection {
     session_id: u32,
     /// Commands buffered from the InitialState received during connect.
     pending_commands: Option<Vec<RenderCommand>>,
+    /// An authority change received but not yet reported to the UI.
+    pending_authority: Option<Option<String>>,
 }
 
 /// Path of the shared API token, resolved the same way `malt-bin` and
@@ -422,6 +439,7 @@ impl VnpConnection {
             reader: frame_reader,
             writer: frame_writer,
             session_id,
+            pending_authority: None,
             pending_commands: None,
         };
         conn.send_frame_ack(initial_seq);
@@ -468,6 +486,10 @@ impl VnpConnection {
 const DOMAIN_HANDSHAKE_U8: u8 = malt_protocol::codec::DOMAIN_HANDSHAKE;
 
 impl DaemonConnection for VnpConnection {
+    fn take_authority_change(&mut self) -> Option<Option<String>> {
+        self.pending_authority.take()
+    }
+
     fn poll_commands(&mut self) -> Option<Vec<RenderCommand>> {
         // Drain any commands buffered during connect() first.
         if let Some(cmds) = self.pending_commands.take() {
@@ -507,6 +529,16 @@ impl DaemonConnection for VnpConnection {
                         };
                         self.send_frame_ack(initial.frame_seq);
                         Some(initial.commands)
+                    }
+                    (d, t) if d == DOMAIN_SESSION && t == MSG_INPUT_AUTHORITY_CHANGED => {
+                        let mut r = BitReader::new(msg_bytes);
+                        match malt_protocol::session::InputAuthorityChanged::unpack(&mut r) {
+                            Ok(changed) => self.pending_authority = Some(changed.holder),
+                            Err(e) => {
+                                tracing::warn!("VNP InputAuthorityChanged unpack failed: {e}");
+                            }
+                        }
+                        None
                     }
                     _ => None,
                 }

@@ -152,6 +152,22 @@ struct Finalization {
     stderr_offset: usize,
 }
 
+/// Something the session pushes to one attached client.
+///
+/// A single ordered stream per client rather than a channel per message kind:
+/// a client must not learn it lost input authority *after* rendering frames
+/// that arrived later, and two channels cannot promise that ordering.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum ClientMessage {
+    /// A frame to render.
+    Render(RenderBatch),
+    /// Input authority changed hands. Sent to every attached client, not just
+    /// the two involved: a client that believes it can type when it cannot
+    /// types into a void (FR-019).
+    AuthorityChanged { holder: Option<u64> },
+}
+
 /// Who sent a piece of input.
 ///
 /// Input has to be attributable before authority can mean anything: the
@@ -243,6 +259,17 @@ pub enum SessionCommand {
     },
     /// Report which client holds input authority, if any (FR-015).
     GetInputAuthority { reply: mpsc::Sender<Option<u64>> },
+    /// Claim input authority for an attached client (FR-016).
+    ///
+    /// Succeeds immediately; the previous holder is told it no longer holds.
+    /// Consent is deliberately not required -- an unresponsive or departed
+    /// holder would otherwise strand the session, the exact failure FR-018
+    /// exists to prevent.
+    ClaimInputAuthority {
+        client_id: u64,
+        authority: malt_protocol::common::InputAuthority,
+        reply: mpsc::Sender<Result<Option<u64>, InputError>>,
+    },
     /// Get this session's command execution history, oldest first.
     GetCommandHistory {
         reply: mpsc::Sender<Vec<CommandBlock>>,
@@ -254,7 +281,7 @@ pub enum SessionCommand {
         /// the wire and discarded, which is why every client could type.
         authority: malt_protocol::common::InputAuthority,
         capabilities: ClientCapabilities,
-        render_tx: SyncSender<RenderBatch>,
+        render_tx: SyncSender<ClientMessage>,
         initial_reply: mpsc::Sender<InitialState>,
     },
     /// Remove a VNP client from this session's renderer.
@@ -322,6 +349,10 @@ impl std::fmt::Debug for SessionCommand {
                 .field("resume_from", resume_from)
                 .finish(),
             Self::GetInputAuthority { .. } => f.debug_struct("GetInputAuthority").finish(),
+            Self::ClaimInputAuthority { client_id, .. } => f
+                .debug_struct("ClaimInputAuthority")
+                .field("client_id", client_id)
+                .finish(),
             Self::GetCommandHistory { .. } => f.debug_struct("GetCommandHistory").finish(),
             Self::RegisterVnpClient { client_id, .. } => f
                 .debug_struct("RegisterVnpClient")
@@ -361,7 +392,7 @@ pub struct SessionExecutor {
     ingress: ExecutionIngress,
     renderer: RendererHost,
     editor: Editor,
-    render_pushers: HashMap<u64, SyncSender<RenderBatch>>,
+    render_pushers: HashMap<u64, SyncSender<ClientMessage>>,
     resolved_panes: Vec<ResolvedPane>,
     finalization: Option<Finalization>,
     expected_completion_sequence: u64,
@@ -715,6 +746,28 @@ impl SessionExecutor {
                 Ok(SessionCommand::GetInputAuthority { reply }) => {
                     let _ = reply.send(self.authority.holder());
                 }
+                Ok(SessionCommand::ClaimInputAuthority {
+                    client_id,
+                    authority,
+                    reply,
+                }) => {
+                    let previous = self.authority.holder();
+                    if !self.render_pushers.contains_key(&client_id) {
+                        // Only an attached client can hold the keyboard;
+                        // otherwise a departed one could take it and strand
+                        // the session it is no longer listening to.
+                        let _ = reply.send(Err(InputError::NotAttached { client_id }));
+                        continue;
+                    }
+                    self.authority.claim(client_id, authority);
+                    let now = self.authority.holder();
+                    let _ = reply.send(Ok(now));
+                    // Re-claiming what you already hold changes nothing, so
+                    // it notifies nobody (FR-019 is about actual changes).
+                    if now != previous {
+                        self.broadcast_authority();
+                    }
+                }
                 Ok(SessionCommand::RegisterVnpClient {
                     client_id,
                     authority,
@@ -752,10 +805,14 @@ impl SessionExecutor {
                 Ok(SessionCommand::UnregisterVnpClient { client_id }) => {
                     // Releases authority so a holder that vanished cannot
                     // strand the session (FR-017/FR-018).
+                    let previous = self.authority.holder();
                     self.authority.detach(client_id);
                     let _ = self.session.detach(client_id);
                     self.renderer.remove_client(client_id);
                     self.render_pushers.remove(&client_id);
+                    if self.authority.holder() != previous {
+                        self.broadcast_authority();
+                    }
                 }
                 Ok(SessionCommand::KeyInput { origin, key }) => {
                     if self.authority_error(origin).is_some() {
@@ -934,6 +991,20 @@ impl SessionExecutor {
         }
     }
 
+    /// Tell every attached client who holds input authority now (FR-019).
+    ///
+    /// Sent to all of them, not only the gaining and losing pair: a client
+    /// that still believes it holds the keyboard will type into a void, which
+    /// is the failure this exists to prevent.
+    fn broadcast_authority(&mut self) {
+        let holder = self.authority.holder();
+        for tx in self.render_pushers.values() {
+            // Non-blocking, consistent with frame delivery: a client too far
+            // behind to accept this is already being shed.
+            let _ = tx.try_send(ClientMessage::AuthorityChanged { holder });
+        }
+    }
+
     fn dispatch_render(&mut self) {
         let now_ms = now_epoch_ms();
         for stale_id in self.renderer.shed_stale_clients(now_ms) {
@@ -964,7 +1035,7 @@ impl SessionExecutor {
         for crb in batches {
             if let Some(tx) = self.render_pushers.get(&crb.client_id) {
                 // Non-blocking: drop if channel full (client lagging)
-                let _ = tx.try_send(crb.batch);
+                let _ = tx.try_send(ClientMessage::Render(crb.batch));
             }
         }
     }

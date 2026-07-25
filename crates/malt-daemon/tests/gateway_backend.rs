@@ -1,5 +1,6 @@
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
+use malt_daemon::executor::session_thread::ClientMessage;
 use malt_daemon::executor::session_thread::SessionCommand;
 use malt_daemon::executor::QueueState;
 use malt_daemon::gateway_backend::DaemonBackend;
@@ -372,7 +373,7 @@ fn command_history_survives_dormant_restore_and_ids_stay_monotonic() {
         // snapshots and persists it.
         let coord_arc = backend.coordinator().clone();
         let mut coord = coord_arc.lock().unwrap();
-        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
         coord
             .register_vnp_client(
                 SessionId(session_id),
@@ -392,7 +393,7 @@ fn command_history_survives_dormant_restore_and_ids_stay_monotonic() {
     {
         let coord_arc = backend2.coordinator().clone();
         let mut coord = coord_arc.lock().unwrap();
-        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
         coord
             .register_vnp_client(
                 SessionId(session_id),
@@ -514,7 +515,7 @@ fn a_dormant_session_reports_a_conflict_not_an_internal_error() {
 
         let coord_arc = backend.coordinator().clone();
         let mut coord = coord_arc.lock().unwrap();
-        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
         coord
             .register_vnp_client(
                 SessionId(session_id),
@@ -589,7 +590,7 @@ fn shell_env_state_survives_dormant_restore_via_env_snapshot() {
         // to_persisted_env_snapshot) and persists it to the store.
         let coord_arc = backend.coordinator().clone();
         let mut coord = coord_arc.lock().unwrap();
-        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
         coord
             .register_vnp_client(
                 SessionId(session_id),
@@ -612,7 +613,7 @@ fn shell_env_state_survives_dormant_restore_via_env_snapshot() {
     {
         let coord_arc = backend2.coordinator().clone();
         let mut coord = coord_arc.lock().unwrap();
-        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
         coord
             .register_vnp_client(
                 SessionId(session_id),

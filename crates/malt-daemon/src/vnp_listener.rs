@@ -9,14 +9,14 @@ use crate::executor::session_thread::SessionCommand;
 use malt_gateway::auth::TokenStore;
 use malt_protocol::codec::{
     make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, MSG_ATTACH_SESSION,
-    MSG_DETACH_SESSION, MSG_FRAME_ACK, MSG_INITIAL_STATE, MSG_KEY_EVENT, MSG_RENDER_BATCH,
-    MSG_RESIZE,
+    MSG_DETACH_SESSION, MSG_FRAME_ACK, MSG_INITIAL_STATE, MSG_INPUT_AUTHORITY_CHANGED,
+    MSG_INPUT_CLAIM, MSG_KEY_EVENT, MSG_RENDER_BATCH, MSG_RESIZE,
 };
 use malt_protocol::common::SessionId;
 use malt_protocol::envelope::{decode_envelope, encode_message};
 use malt_protocol::framing::{Frame, FrameError, FrameFlags, FrameReader, FrameWriter};
 use malt_protocol::input::{KeyEvent, Resize};
-use malt_protocol::render::{FrameAck, RenderBatch};
+use malt_protocol::render::FrameAck;
 use malt_protocol::session::{AttachSession, DetachSession};
 use std::io::BufReader;
 use std::net::{TcpListener, TcpStream};
@@ -217,7 +217,8 @@ fn handle_client(
     info!(peer = %peer, client_id, session_id = session_id_raw, "VNP client attached");
 
     // Create a bounded sync_channel for render batches.
-    let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, render_rx) =
+        std::sync::mpsc::sync_channel::<crate::executor::session_thread::ClientMessage>(4);
 
     // Register with the coordinator; obtain the InitialState snapshot.
     let initial_reply = match coordinator.lock() {
@@ -283,7 +284,7 @@ fn handle_client(
         // Drain all pending render batches without blocking.
         loop {
             match render_rx.try_recv() {
-                Ok(batch) => {
+                Ok(crate::executor::session_thread::ClientMessage::Render(batch)) => {
                     if let Err(e) = send_vnp_msg(
                         &mut frame_writer,
                         DOMAIN_RENDER,
@@ -292,6 +293,30 @@ fn handle_client(
                         &batch,
                     ) {
                         warn!(peer = %peer, error = %e, "VNP: failed to send RenderBatch; disconnecting");
+                        cleanup(&coordinator, session_id.clone(), client_id, &peer);
+                        return;
+                    }
+                }
+                Ok(crate::executor::session_thread::ClientMessage::AuthorityChanged { holder }) => {
+                    let changed = malt_protocol::session::InputAuthorityChanged {
+                        session_id: session_id.clone(),
+                        holder: holder.map(|h| h.to_string()),
+                        authority: if holder == Some(client_id) {
+                            malt_protocol::common::InputAuthority::Exclusive
+                        } else {
+                            malt_protocol::common::InputAuthority::Observe
+                        },
+                        _unknown: Vec::new(),
+                    };
+                    if let Err(e) = send_vnp_msg(
+                        &mut frame_writer,
+                        DOMAIN_SESSION,
+                        MSG_INPUT_AUTHORITY_CHANGED,
+                        session_id_raw,
+                        &changed,
+                    ) {
+                        warn!(peer = %peer, error = %e,
+                              "VNP: failed to send InputAuthorityChanged; disconnecting");
                         cleanup(&coordinator, session_id.clone(), client_id, &peer);
                         return;
                     }
@@ -511,6 +536,42 @@ fn dispatch_frame(
                 },
                 Err(e) => {
                     warn!(peer, error = %e, "VNP: FrameAck decode failed");
+                }
+            }
+        }
+        (DOMAIN_SESSION, MSG_INPUT_CLAIM) => {
+            let mut bit_reader = BitReader::new(msg_bytes);
+            match malt_protocol::session::InputClaim::unpack(&mut bit_reader) {
+                Ok(claim) => {
+                    if claim.session_id.0 != session_id {
+                        warn!(
+                            peer,
+                            client_id, "VNP: InputClaim for a different session; ignoring"
+                        );
+                        return DispatchResult::Continue;
+                    }
+                    match coordinator.lock() {
+                        Ok(coord) => {
+                            // The claim succeeds or fails here and now. Every
+                            // attached client is told by the session itself,
+                            // so there is no reply frame to send: the claimant
+                            // learns the outcome from the same
+                            // InputAuthorityChanged everyone else sees.
+                            if let Err(e) = coord.claim_input_authority(
+                                &SessionId(session_id),
+                                client_id,
+                                claim.authority,
+                            ) {
+                                warn!(peer, error = %e, "VNP: input claim refused");
+                            }
+                        }
+                        Err(e) => {
+                            warn!(peer, error = %e, "VNP: coordinator lock poisoned on claim");
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(peer, error = %e, "VNP: InputClaim decode failed");
                 }
             }
         }

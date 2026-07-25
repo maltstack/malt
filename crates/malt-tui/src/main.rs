@@ -98,6 +98,18 @@ fn run_loop(
             }
         }
 
+        // A human whose keystrokes stopped being accepted must be told why,
+        // rather than typing into a void and concluding the terminal hung.
+        if let Some(holder) = conn.take_authority_change() {
+            let notice = match holder {
+                Some(id) => format!(" input authority moved to client {id} -- you are observing "),
+                None => " input authority released -- nobody is typing ".to_string(),
+            };
+            terminal.draw(|frame| {
+                app.show_notice(&notice, frame.buffer_mut());
+            })?;
+        }
+
         // Poll for new output from daemon
         if let Some(commands) = conn.poll_commands() {
             terminal.draw(|frame| {

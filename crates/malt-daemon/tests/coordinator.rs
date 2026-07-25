@@ -1,5 +1,6 @@
 use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
+use malt_daemon::executor::session_thread::ClientMessage;
 use malt_daemon::store::{DebouncedStore, SessionStore};
 use malt_protocol::common::{IsolationTier, SessionId, SessionState};
 use std::sync::mpsc;
@@ -84,7 +85,6 @@ use malt_protocol::common::{
 };
 use malt_protocol::input::{KeyEvent, KeyValue};
 use malt_protocol::priority::Priority;
-use malt_protocol::render::RenderBatch;
 
 fn caps() -> ClientCapabilities {
     ClientCapabilities {
@@ -127,7 +127,7 @@ fn send_attach_command() {
     // the only command that told the authority tracker -- but nothing in
     // production ever sent it, so this test passed while attach and authority
     // were entirely disconnected. There is now one path.
-    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     coord
         .register_vnp_client(id.clone(), 42, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
@@ -168,7 +168,7 @@ fn register_vnp_client_returns_initial_state() {
     let sid = coord
         .create_session(None, IsolationTier::Bare, None)
         .unwrap();
-    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     let initial = coord
         .register_vnp_client(sid, 1, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
@@ -183,7 +183,7 @@ fn unregister_vnp_client_succeeds() {
     let sid = coord
         .create_session(None, IsolationTier::Bare, None)
         .unwrap();
-    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     let _ = coord
         .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
@@ -382,7 +382,6 @@ fn spawn_with_cwd_uses_provided_directory() {
 
 #[test]
 fn session_goes_dormant_on_last_client_detach() {
-    use malt_protocol::render::RenderBatch;
 
     let dir = tempfile::tempdir().unwrap();
     let store = make_store(&dir);
@@ -391,7 +390,7 @@ fn session_goes_dormant_on_last_client_detach() {
         .create_session(None, IsolationTier::Bare, None)
         .unwrap();
 
-    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     let _ = coord
         .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
@@ -426,7 +425,7 @@ fn dormant_session_visible_in_list_sessions() {
             .create_session(Some("alpha".to_string()), IsolationTier::Bare, None)
             .unwrap();
 
-        let (render_tx, _) = std::sync::mpsc::sync_channel(4);
+        let (render_tx, _) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
         coord
             .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
             .unwrap();
@@ -452,7 +451,6 @@ fn dormant_session_visible_in_list_sessions() {
 
 #[test]
 fn restore_shell_session_from_dormant() {
-    use malt_protocol::render::RenderBatch;
 
     let dir = tempfile::tempdir().unwrap();
 
@@ -462,7 +460,7 @@ fn restore_shell_session_from_dormant() {
         let sid = coord
             .create_session(Some("beta".to_string()), IsolationTier::Bare, None)
             .unwrap();
-        let (render_tx, _) = std::sync::mpsc::sync_channel(4);
+        let (render_tx, _) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
         coord
             .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
             .unwrap();
@@ -475,7 +473,7 @@ fn restore_shell_session_from_dormant() {
     let sessions = coord2.list_sessions();
     let sid = sessions[0].session_id.clone();
 
-    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     let initial = coord2
         .register_vnp_client(sid.clone(), 2, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
@@ -535,7 +533,7 @@ fn destroy_dormant_session_removes_from_store() {
         let sid = coord
             .create_session(None, IsolationTier::Bare, None)
             .unwrap();
-        let (render_tx, _) = std::sync::mpsc::sync_channel(4);
+        let (render_tx, _) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
         coord
             .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
             .unwrap();
@@ -567,13 +565,13 @@ fn second_daemon_sees_dormant_sessions() {
             .unwrap();
 
         // Detach both → dormant.
-        let (tx1, _) = std::sync::mpsc::sync_channel(4);
+        let (tx1, _) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
         coord
             .register_vnp_client(sid1.clone(), 1, InputAuthority::Exclusive, caps(), tx1)
             .unwrap();
         coord.unregister_vnp_client(sid1, 1).unwrap();
 
-        let (tx2, _) = std::sync::mpsc::sync_channel(4);
+        let (tx2, _) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
         coord
             .register_vnp_client(sid2.clone(), 2, InputAuthority::Exclusive, caps(), tx2)
             .unwrap();
@@ -593,7 +591,6 @@ fn second_daemon_sees_dormant_sessions() {
 
 #[test]
 fn restore_fails_cleanly_on_bad_cwd() {
-    use malt_protocol::render::RenderBatch;
 
     let dir = tempfile::tempdir().unwrap();
 
@@ -604,7 +601,7 @@ fn restore_fails_cleanly_on_bad_cwd() {
         let sid = coord
             .create_session(None, IsolationTier::Bare, None)
             .unwrap();
-        let (render_tx, _) = std::sync::mpsc::sync_channel(4);
+        let (render_tx, _) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
         coord
             .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
             .unwrap();
@@ -627,7 +624,7 @@ fn restore_fails_cleanly_on_bad_cwd() {
     // Restore should succeed (spawn_with_cwd falls back to OS cwd on bad path).
     let store2 = make_store(&dir);
     let mut coord2 = Coordinator::new(PoolConfig::default(), store2);
-    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     let result =
         coord2.register_vnp_client(sid.clone(), 2, InputAuthority::Exclusive, caps(), render_tx);
     assert!(
@@ -645,7 +642,6 @@ fn restore_fails_cleanly_on_bad_cwd() {
 fn app_restore_returns_error() {
     use malt_protocol::common::{LayoutNode, PaneId, SessionState};
     use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
-    use malt_protocol::render::RenderBatch;
     use std::collections::BTreeMap;
 
     let dir = tempfile::tempdir().unwrap();
@@ -700,7 +696,7 @@ fn app_restore_returns_error() {
     assert_eq!(s.state, SessionState::Dormant);
 
     // Attach should fail with AppRestoreNotSupported.
-    let (render_tx, _) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, _) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     let result =
         coord2.register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx);
     assert!(
@@ -726,7 +722,6 @@ fn app_restore_returns_error() {
 fn restore_compat_pane_relaunches_process_and_forwards_real_output() {
     use malt_protocol::common::{LayoutNode, PaneId, SessionState};
     use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
-    use malt_protocol::render::RenderBatch;
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 
@@ -797,7 +792,7 @@ fn restore_compat_pane_relaunches_process_and_forwards_real_output() {
     assert_eq!(s.state, SessionState::Dormant);
 
     // Attaching triggers restore_session, which spawns the real process.
-    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
     coord2
         .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
         .expect("compat pane restore should succeed, not return RestoreFailed");
@@ -879,7 +874,7 @@ fn last_detach_while_execution_is_busy_keeps_the_session_active() {
         max_fps: 60,
         _unknown: Vec::new(),
     };
-    let (render_tx, _render_rx) = mpsc::sync_channel(4);
+    let (render_tx, _render_rx) = mpsc::sync_channel::<ClientMessage>(4);
     coord
         .register_vnp_client(
             id.clone(),
@@ -915,7 +910,7 @@ fn last_detach_after_queued_write_input_keeps_session_active_and_runs_command() 
     let id = coord
         .create_session(None, IsolationTier::Bare, None)
         .unwrap();
-    let (render_tx, _render_rx) = mpsc::sync_channel(4);
+    let (render_tx, _render_rx) = mpsc::sync_channel::<ClientMessage>(4);
     coord
         .register_vnp_client(id.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
