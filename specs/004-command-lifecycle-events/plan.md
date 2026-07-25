@@ -11,7 +11,8 @@ Clients subscribe to a session and receive `CommandStarted`/`CommandFinished` ev
 Two decisions dominate and are settled in [research.md](research.md):
 
 1. **Transport: a Gateway SSE endpoint** (`GET /sessions/{id}/events`), not a VNP channel. ADR-0002 makes the Gateway canonical and the spec's P1 story is an agent. VNP forwarding for `malt-tui` is a deliberate follow-up, not a silent omission (R1).
-2. **Delivery does *not* go through the existing `Bus`.** The Bus's `Reliable` priority is documented and implemented to grow its ring buffer beyond capacity rather than evict — directly contradicting FR-009/FR-010, which require a stalled subscriber to cause no unbounded growth. Since `CommandStarted`/`CommandFinished` are specified as `Reliable`, routing them through the Bus would build the exact failure this spec exists to prevent. Delivery instead uses a bounded per-subscriber channel following the established `render_pushers` precedent (R2). **This changes the framing recorded in `docs/BACKLOG.md`** ("give the Bus its first real consumer") and is called out rather than quietly re-scoped.
+2. **A first-party consumer ships with the endpoint.** `malt-bin` gains `malt watch <ID>`, which does the real reconnect-with-`Last-Event-ID` loop. Without it the resume path would ship exercised only by `curl` and by tests driving the backend directly — the "built, unit-tested, never actually driven" pattern this project keeps repeating. The full `malt-gateway-sdk` crate is explicitly *not* built here; the decisive test was whether designing for it would change this contract, and it does not (R10).
+3. **Delivery does *not* go through the existing `Bus`.** The Bus's `Reliable` priority is documented and implemented to grow its ring buffer beyond capacity rather than evict — directly contradicting FR-009/FR-010, which require a stalled subscriber to cause no unbounded growth. Since `CommandStarted`/`CommandFinished` are specified as `Reliable`, routing them through the Bus would build the exact failure this spec exists to prevent. Delivery instead uses a bounded per-subscriber channel following the established `render_pushers` precedent (R2). **This changes the framing recorded in `docs/BACKLOG.md`** ("give the Bus its first real consumer") and is called out rather than quietly re-scoped.
 
 ## Technical Context
 
@@ -89,10 +90,16 @@ crates/
 │   ├── src/server.rs            # Route registration
 │   ├── src/middleware.rs        # required_scope entry (Read)
 │   └── tests/routes.rs          # Endpoint + auth-scope tests
+├── malt-bin/
+│   ├── src/events.rs            # NEW: SSE frame parser + reconnect/resume loop.
+│   │                            #   Deliberately free of CLI assumptions -- this is
+│   │                            #   the nucleus malt-gateway-sdk later extracts (R10)
+│   ├── src/cli.rs / main.rs     # `malt watch <ID>` subcommand
+│   └── src/client.rs            # Streaming request (reqwest blocking Response: Read)
 └── malt-mcp/                    # NOT touched — see research R8
 ```
 
-**Structure Decision**: One new module (`executor/events.rs`) holds the event log, subscriber sinks, and lag policy as a unit, because those three are only correct together — a bounded log without a lag policy is exactly the failure mode FR-010 describes. Everything else extends existing files along the path features 002/003 established (`SessionCommand` variant → `Coordinator` `begin_*` passthrough → `GatewayBackend` method → route → middleware scope entry).
+**Structure Decision**: Two new modules. `executor/events.rs` holds the event log, subscriber sinks, and lag policy as a unit, because those three are only correct together — a bounded log without a lag policy is exactly the failure mode FR-010 describes. `malt-bin/src/events.rs` holds the client-side frame parser and reconnect loop, kept free of CLI-specific assumptions so the SDK extraction later is a move rather than a rewrite. Everything else extends existing files along the path features 002/003 established (`SessionCommand` variant → `Coordinator` `begin_*` passthrough → `GatewayBackend` method → route → middleware scope entry).
 
 ## Complexity Tracking
 

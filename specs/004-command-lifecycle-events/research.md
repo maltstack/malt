@@ -90,3 +90,19 @@ The gap event is the load-bearing part and satisfies **FR-008** and **SC-007**. 
 **Rationale**: Those handlers are already the authoritative "a command started / a command finished" moments, already carry `command_id`, command text, start timestamp, and exit code, and are already ordered correctly relative to each other by 002's finalization barrier. Publishing there means events and history cannot disagree — they are derived from one source, at one point, rather than instrumented twice.
 
 One consequence worth stating: `ExecutionCompleted` is handled when the result is *committed* (after the finalization slices complete), not when the worker finishes. That is the correct moment — it is when the session's observable state actually includes the command's effects — and it means a finish event never arrives before the output that produced it is visible to a subsequent `get_output` call.
+
+## R10: A first-party consumer ships with the endpoint — `malt watch`, not the SDK
+
+**Decision**: `malt-bin` gains a `malt watch <SESSION_ID>` subcommand that consumes the SSE stream with real reconnect, `Last-Event-ID` resume, and gap reporting. The `malt-gateway-sdk` crate is **not** built here.
+
+**Rationale**: As originally planned, this feature would have shipped an event stream with no first-party client — `curl` in the quickstart, and tests driving the backend directly. That leaves the reconnect-with-resume loop, which is where all the fiddly behavior lives, written by nobody. This project's recurring failure mode is exactly that: mechanisms that are built, unit-tested, and never actually driven (`should_shed`, the rate limiter, `TokenStore`, `CommandBlock`). Feature 003 is the counter-example — its most important behavior only became real when driven through an actual client.
+
+A consumer also validates the contract in the one direction tests cannot: it proves the endpoint is *consumable*, not merely *servable*.
+
+**Why not the full SDK**: `docs/BACKLOG.md` already sequences it — "a typed SDK wrapping **already-correct shapes** … once the Gateway contract stabilizes," explicitly *after*, not instead of, the fixes it depends on. This feature is part of what stabilizes that contract. The decisive test was whether designing for an SDK would change the contract already written, and it does not: the resume token is standard SSE `Last-Event-ID` rather than a bespoke handshake, loss is an explicit `gap` event, errors are HTTP statuses returned before the stream opens, and field names already mirror the schema messages. Nothing here would be redesigned by an SDK, so building one now buys no design safety and would convert a delivery-path feature into a client-library feature mid-flight (Constitution IX).
+
+**Seeding, not deferring**: the reconnect/resume/gap loop in `malt watch` is written to be the nucleus the SDK later extracts — kept in a self-contained module in `malt-bin`, with no CLI-specific assumptions in the stream-handling logic. That is stated in tasks.md so the extraction is a move, not a rewrite.
+
+**Alternatives considered**: *`curl` and tests only* — rejected per above; it is how the resume path ships unexercised. *Build the SDK crate now* — rejected: larger surface (auth, every endpoint, error types, retries, versioning), no design safety gained, and it contradicts the backlog's own sequencing. *Put the consumer in `malt-tui`* — rejected: `malt-tui`'s HTTP mode is already recommended for freeze, and its VNP mode is the deferred path (R1); adding an HTTP consumer there would invest in a surface the audit says to stop investing in.
+
+**Consequence for `malt-bin`**: no new dependency. `reqwest`'s blocking `Response` implements `std::io::Read`, so SSE frame parsing is a `BufReader` line loop over the existing client.

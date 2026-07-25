@@ -67,3 +67,16 @@ data: {"missed_from":14,"missed_through":40,"reason":"retention_exceeded"}
 - **Session and pane lifecycle** (created, destroyed, dormant, restored). A natural extension of this stream, deliberately out of scope (spec Assumptions).
 - **A daemon-wide "all sessions" stream.** Subscriptions are per-session, matching the unit of access control.
 - **An MCP tool.** A long-lived stream does not fit MCP's request/response tool shape; agents consume this endpoint directly (research R8).
+
+## CLI (`malt-bin`)
+
+### `malt watch <SESSION_ID> [--resume-from <SEQUENCE>]`
+
+The reference consumer of this contract — it exists so the reconnect path is exercised by a real client, not only by `curl` and tests (research R10).
+
+- Reads the token from `~/.config/malt/api-token`, like every other subcommand.
+- Streams `GET /sessions/{id}/events`, printing one line per event: sequence, type, command id, and the type-specific detail (command text for a start; exit code and duration for a finish).
+- **Reconnects automatically** on transport failure, sending `Last-Event-ID` with the highest sequence it has seen, so a dropped connection resumes rather than restarting.
+- **Surfaces `gap` events prominently** rather than treating them as ordinary frames — a gap means this client's view is incomplete, which is exactly what the user needs told.
+- `--resume-from` overrides the starting position, for replaying from a known point.
+- Exits non-zero with the Gateway's message on 401/403/404/409; `Ctrl-C` exits cleanly.

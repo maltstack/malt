@@ -12,11 +12,13 @@ Runnable scenarios proving the feature end to end. Frame shapes are in [contract
 
 ## Scenario 1 — Live start and finish, no polling (User Story 1)
 
-Terminal A, subscribe first:
+Terminal A, subscribe first — with the first-party client:
 
 ```bash
-curl -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7700/sessions/1/events
+cargo run -p malt-bin -- watch 1
 ```
+
+(`curl -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7700/sessions/1/events` shows the raw frames if you want to inspect the wire format directly.)
 
 Terminal B, run something slow enough to see both halves:
 
@@ -28,7 +30,7 @@ cargo run -p malt-bin -- exec 1 "sleep 3; echo done"
 
 ## Scenario 2 — Resume after disconnect (User Story 2)
 
-With the Terminal A stream open, note the last `id` you saw, then kill it (Ctrl-C). Run two commands while disconnected:
+With `malt watch` running, note the last sequence you saw, then kill it (Ctrl-C). Run two commands while disconnected:
 
 ```bash
 cargo run -p malt-bin -- exec 1 "echo missed-one"
@@ -43,6 +45,8 @@ curl -N -H "Authorization: Bearer $TOKEN" -H "Last-Event-ID: <noted-id>" \
 ```
 
 **Expected**: the four missed frames (two starts, two finishes) replay in order before the stream goes live.
+
+Also verify the *automatic* reconnect, which is the path `--resume-from` does not exercise: with `malt watch 1` running, restart the daemon underneath it. The client must reconnect on its own, resume from its highest seen sequence, and report a gap if the restart lost events — rather than exiting or silently restarting from now.
 
 Then force the retention case — resume from a position far older than the retained window:
 
