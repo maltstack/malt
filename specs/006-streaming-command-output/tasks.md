@@ -1,0 +1,201 @@
+---
+description: "Task list for streaming command output"
+---
+
+# Tasks: Streaming Command Output
+
+**Feature**: `specs/006-streaming-command-output/`
+**Input**: [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md), [data-model.md](data-model.md), [contracts/](contracts/), [quickstart.md](quickstart.md)
+
+## Format: `[ID] [P?] [Story] Description`
+
+- **[P]** — parallelisable: different files, no dependency on an incomplete task
+- **[US1]/[US2]/[US3]/[US4]** — the user story the task serves
+
+## Path Conventions
+
+Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
+
+---
+
+> **Read before starting.** Two things from the plan govern this whole list.
+>
+> 1. **Output is buffered inside `mash`, not in the daemon** (research R1).
+>    `ExecResult` holds `Vec<u8>` and `execute_list` returns only when the
+>    command ends. Nothing downstream can be incremental until that changes,
+>    which is why the shell work comes first even though it shows nothing.
+> 2. **The known failure mode for this feature family is building a delivery
+>    path and proving it with tests that inject values into it directly**,
+>    while nothing real ever reaches it — Gateway auth, `AuthorityTracker`,
+>    and the tool stdin slurp all shipped that way. Every story's acceptance
+>    evidence must start from a command actually running.
+
+---
+
+## Phase 1: Setup (Shared Infrastructure)
+
+- [ ] T001 Confirm the workspace baseline is green before changing anything: `cargo test --workspace`, and `cargo build -p mash && MASH="$(pwd)/target/debug/mash.exe" cargo test -p mash --test smoosh_runner smoosh_conformance_tests -- --nocapture` (expect 183 passed / 3 skipped). Record the numbers; they are the comparison for every later gate.
+- [ ] T002 [P] Confirm the claims the plan rests on rather than trusting them: that `OutputChunk` exists at `schemas/shell.vexil:37` with `MSG_OUTPUT_CHUNK = 0x04` in `crates/malt-protocol/src/codec.rs`, and that `base64` is present in `Cargo.lock`. If either is false, stop and correct the plan before writing code.
+
+---
+
+## Phase 2: Foundational (Blocking Prerequisites)
+
+**Purpose**: the seam that makes any of this possible. Nothing in Phase 3+ is testable until `mash` can emit output before a command ends.
+
+- [ ] T003 Define the output sink trait in `crates/mash/src/env.rs`: a `&[u8]` writer that `mash` owns and the daemon implements. `mash` must not learn what a session is (Principle VII). Keep it object-safe and `Send + Sync` — the daemon will hold it across threads.
+- [ ] T004 Add the optional sink handle to `Env` in `crates/mash/src/env.rs`, with `Env::set_output_sink` / `take_output_sink`. **Document at the field that it must not survive into a capturing context.**
+- [ ] T005 Clear the sink on the `Env::clone()` paths used by command substitution and capturing subshells in `crates/mash/src/env.rs` and `crates/mash/src/executor.rs`. This is the single highest-risk invariant in the feature: an inherited sink streams `$(cmd)`'s output into the session *and* corrupts the substitution value. Find every clone site rather than the first one — three-copy and two-path bugs are this repo's recurring shape.
+- [ ] T006 Route the top-level command's stdout/stderr to the sink in `crates/mash/src/executor.rs`, only when not redirected and not part of a pipeline. External commands read incrementally instead of `read_to_end` (`executor.rs:1357`); if a non-blocking or chunked read primitive is needed it belongs in `malt-platform`, not here (Principle II).
+- [ ] T007 Unit tests in `crates/mash/tests/output_sink.rs`: a sink receives a command's output progressively; `$(echo hi)` still yields `hi` as a value **and sends nothing to the sink**; `echo a | cat` sends the pipeline's data once, not twice. Assert on sink *contents*, not on call counts — a count-based assertion passes when the wrong bytes arrive.
+- [ ] T008 **Smoosh gate.** `cargo build -p mash && MASH=... cargo test -p mash --test smoosh_runner smoosh_conformance_tests`. Expect 183 passed / 3 skipped. This is the check that catches a mistake in T005/T006; command substitution and pipelines are heavily covered there. Do not proceed past a regression.
+
+**Checkpoint**: `mash` emits output as it is produced, and POSIX conformance is intact. No user-visible change yet.
+
+---
+
+## Phase 3: User Story 1 - Output arrives while the command is still running (Priority: P1) 🎯 MVP
+
+**Goal**: a running command's output is observable before it ends.
+
+**Independent Test**: quickstart Scenario 1 — run `echo first; sleep 5; echo second`; `first` is observable, and the observing call returns, before the command exits.
+
+### Implementation for User Story 1
+
+- [ ] T009 [US1] Extend `OutputChunk` in `schemas/shell.vexil` with `sequence @2 : u64` and `stream @3 : OutputStream`, plus the `OutputStream` enum; bump `@revision`. **Extend the existing message — do not add a second one** (contracts/output-chunk-vnp.md). Keep existing field numbers so decoders stay compatible. Note the `vexilc` field-level `@doc` off-by-one recorded in `docs/BACKLOG.md`: put docs at message level.
+- [ ] T010 [US1] Add the worker-side sink implementation in `crates/malt-daemon/src/executor/command_worker.rs`: forward each write to the control actor as a new `SessionCommand::OutputChunk` over the existing `control_tx`, bounded, **blocking when full** (research R4). One ordered channel, so a command can never report completion before its last output.
+- [ ] T011 [US1] Install the sink on the worker's `Env` for the duration of each execution in `crates/malt-daemon/src/executor/command_worker.rs`, and remove it afterwards so it cannot outlive the command it belongs to.
+- [ ] T012 [US1] Create `crates/malt-daemon/src/executor/output_log.rs`: bounded retained ring **sized by total bytes, not chunk count** (a count bound does not bound memory when chunk sizes vary), monotonic sequence assignment, and subscriber sinks. Model on `crates/malt-daemon/src/executor/events.rs` and share code where the shapes are genuinely identical. **Carry over the reserved-slot detail**: allocate `buffer + 1` and reserve the last slot for the gap notification, or a lagged subscriber is dropped silently — the exact defect that occurred in 004.
+- [ ] T013 [US1] Handle `SessionCommand::OutputChunk` in `crates/malt-daemon/src/executor/session_thread.rs`: assign the sequence, append to the log, and publish to subscribers. The control actor is the single writer, so it alone defines order.
+- [ ] T014 [US1] Make the accumulated `/exec` reply bounded in `crates/malt-daemon/src/executor/session_thread.rs`, with `truncated` and `omitted_bytes` on `CommandOutput` (research R3). The cap is a named constant with its reasoning in a comment. **Truncation is stated, never silent.**
+- [ ] T015 [US1] Surface the new fields on the exec response in `crates/malt-gateway/src/routes/sessions.rs` and `crates/malt-gateway/src/types.rs`, keeping the existing shape additive so `malt exec` and the MCP `run_command` tool keep working.
+- [ ] T016 [US1] Integration test in `crates/malt-daemon/tests/output_stream.rs`: run a command that prints, sleeps, then prints; assert the first line is retrievable **while the command is still running**, and that the retrieval call returns promptly rather than blocking for the command's duration. Start from a real `exec_command`, not from injected chunks.
+- [ ] T017 [P] [US1] Test in `crates/malt-daemon/tests/output_stream.rs` that output produced before a failing command's exit is delivered and not replaced by the failure report (spec US1 scenario 3).
+- [ ] T018 [P] [US1] Test in `crates/malt-daemon/tests/output_stream.rs` that a command producing far more output than the retained bound completes successfully and the log stays within its byte bound (SC-004 in miniature; the 100 MB case is a quickstart scenario, not a unit test).
+
+**Checkpoint**: US1 is independently verifiable. All four gates green plus Smoosh. Commit. **Merge to main.**
+
+---
+
+## Phase 4: User Story 3 - An agent consumes and resumes the stream (Priority: P2)
+
+> Sequenced before US2 deliberately: it exercises the retained log and gap
+> semantics directly, so defects there surface against an exact byte stream
+> rather than through a rendered grid.
+
+**Goal**: a program consumes output as it appears and can resume without duplication or loss.
+
+**Independent Test**: quickstart Scenario 3 — consume the stream, disconnect mid-command, resume from the last sequence, and confirm by **content** that every chunk arrived exactly once.
+
+### Implementation for User Story 3
+
+- [ ] T019 [US3] Add subscribe/resume entry points on `Coordinator` in `crates/malt-daemon/src/executor/coordinator.rs`, following the existing `begin_*` pattern so the coordinator lock is not held while a subscriber waits.
+- [ ] T020 [US3] Add `GET /sessions/{id}/output/stream` in `crates/malt-gateway/src/routes/sessions.rs` as SSE, with `Last-Event-ID` resume, per contracts/output-stream-http.md. Payloads are **base64** — output may be invalid UTF-8 and a character may be split across chunks, and lossy decoding at a boundary is unrecoverable by the client (research R6).
+- [ ] T021 [US3] Register the route in `crates/malt-gateway/src/server.rs` and map it to **`Read`** scope in `crates/malt-gateway/src/middleware.rs`. Read, not Interact: observation, consistent with `/events` and `/history` (FR-017).
+- [ ] T022 [US3] Emit `gap` frames for both `retention_exceeded` and `subscriber_lagged` in the route handler and `output_log.rs`. A stream that closes without a gap leaves the consumer believing it saw everything; that is the failure the frame exists to prevent.
+- [ ] T023 [US3] Extend `malt watch` with `--output` and `--resume-from` in `crates/malt-bin/src/{cli,client,events}.rs`, reusing the SSE frame parser. **Run it against a live daemon before believing it works**: feature 004's parser dropped every frame while eight unit tests passed, because the test helper fed pre-trimmed lines the real reader never produces.
+- [ ] T024 [US3] Resume test in `crates/malt-daemon/tests/output_stream.rs`: consume, disconnect mid-command, resume from the last sequence, and assert the concatenation matches the command's full output **byte-for-byte**. Verify by content, not by count (SC-003).
+- [ ] T025 [P] [US3] Lagged-subscriber test in `crates/malt-daemon/tests/output_stream.rs`: a subscriber that stops reading is told it lagged and is dropped; the command's duration and other subscribers are unaffected (SC-005). Assert the gap notification **arrives** — its absence is exactly how 004's defect hid.
+- [ ] T026 [P] [US3] Byte-fidelity test in `crates/malt-daemon/tests/output_stream.rs`: invalid UTF-8 and a multi-byte character split across a chunk boundary both survive the round trip including base64 (SC-006).
+
+**Checkpoint**: US1 and US3 both work. Gates green. Commit. **Merge to main.**
+
+---
+
+## Phase 5: User Story 2 - An attached human sees output live (Priority: P2)
+
+**Goal**: an attached client's view updates during a command, not only at its end.
+
+**Independent Test**: quickstart Scenario 5 — attach a TUI, run a five-second output-producing command from elsewhere, and count more than one update before completion.
+
+### Implementation for User Story 2
+
+- [ ] T027 [US2] Feed each chunk to the compat translator and call `dispatch_render()` as it arrives, in `crates/malt-daemon/src/executor/session_thread.rs`, instead of feeding one slice at finalization. **Check first whether the finalization slicing should be removed or kept** — two paths feeding the same grid would double-render.
+- [ ] T028 [US2] Add the `OutputChunk` variant to `ClientMessage` in `crates/malt-daemon/src/executor/session_thread.rs`, delivered on the **same ordered per-client stream** as `Render` and `AuthorityChanged` (settled in 005: separate channels cannot promise ordering). Use the existing non-blocking `try_send`; add no second backpressure mechanism.
+- [ ] T029 [US2] Send `OutputChunk` frames to attached VNP clients in `crates/malt-daemon/src/vnp_listener.rs` using `MSG_OUTPUT_CHUNK` in the Shell domain. A client that ignores them must still render correctly — `maltty` and `malt-web` are frozen and must not break.
+- [ ] T030 [US2] Test in `crates/malt-daemon/tests/output_stream.rs` that an attached client receives **more than one** `Render` during a command producing output over several seconds (FR-007), driven by a real command.
+- [ ] T031 [P] [US2] Test in `crates/malt-daemon/tests/output_stream.rs` that two attached clients converge on identical content and neither sees output the other does not (SC-007).
+
+**Checkpoint**: US1, US2, US3 all work. Gates green. Commit. **Merge to main.**
+
+> **Do not fix the grid "staircase" defect here.** Streaming makes it more
+> visible, and it will be tempting. It is a separate P0 in `docs/BACKLOG.md`
+> and absorbing it violates Principle IX. If streaming genuinely worsens it
+> beyond its existing behaviour, write that down as a finding.
+
+---
+
+## Phase 6: User Story 4 - In-process utilities stream too (Priority: P3)
+
+**Goal**: built-in utilities have their output observable while they run.
+
+**Independent Test**: quickstart Scenario 7 — `cat` with input sent over time makes each line observable before the next is sent.
+
+### Implementation for User Story 4
+
+- [ ] T032 [US4] Change `ToolFn` in `crates/malt-tools/src/lib.rs` to take an output writer alongside the existing reader, so a tool can emit as it works rather than returning a finished buffer. This mirrors what feature 005 did for input; the same "three dispatch sites" lesson applies — put the rule in one place.
+- [ ] T033 [US4] Update all tools in `crates/malt-tools/src/custom/*.rs` for the new signature. Most ignore output framing entirely; `cat`, `grep`, `sed`, `head`, `wc` are the ones that matter.
+- [ ] T034 [US4] Update the three tool-dispatch sites in `crates/mash/src/executor.rs` via the existing single `tool_stdin` helper pattern — add the writer resolution to that one helper, not to each site.
+- [ ] T035 [US4] Verify redirection is unchanged in `crates/mash/src/executor.rs`: `apply_output_redirects` operates on the buffered result today, so a tool whose stdout is redirected to a file must still write the same bytes (FR-014). If the writer change bypasses that function, the redirect silently stops working while the streaming test still passes.
+- [ ] T036 [US4] Test in `crates/mash/tests/output_sink.rs` that a built-in copying input to output emits each line before the next arrives (SC-008), and a redirection test for T035.
+- [ ] T037 [US4] **Smoosh gate again**, since `mash` and `malt-tools` both changed: `cargo build -p mash && MASH="$(pwd)/target/debug/mash.exe" cargo test -p mash --test smoosh_runner smoosh_conformance_tests -- --nocapture`. Expect 183 passed / 3 skipped.
+
+**Checkpoint**: all four stories work. Gates green. Commit. **Merge to main.**
+
+---
+
+## Phase 7: Polish & Cross-Cutting Concerns
+
+- [ ] T038 Update `docs/BACKLOG.md`: close the "pushes one frame at completion, not incremental output" item with the test names that prove it, and close or re-scope the streaming-`ToolFn` item. Cite tests that **exist** — verify each name before writing it.
+- [ ] T039 [P] Update `AGENTS.md`: output streams during a command; `/exec` output is bounded and reports truncation; the new route and `malt watch --output`. Correct any "What's Implemented" claim this feature falsifies.
+- [ ] T040 [P] Amend `docs/design/architecture.md` where it describes output flow, if it describes something other than what now exists.
+- [ ] T041 Run the full quickstart manually against a live daemon — all eight scenarios including the 100 MB volume case and the stalled-subscriber case — and record the outcome, **including what it does not establish**, in a dated `docs/findings/` entry.
+- [ ] T042 Final verification: `cargo test --workspace`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and the Smoosh command from T037 (183 passed / 3 skipped). Update `specs/006-streaming-command-output/tasks.md` with the closing note. Commit. **Merge to main.**
+
+---
+
+## Dependencies & Execution Order
+
+### Phase Dependencies
+
+- **Phase 1 (Setup)** → blocks everything.
+- **Phase 2 (Foundational)** → **hard blocker for every story.** Until `mash` emits incrementally there is nothing to deliver, so no story can be started or meaningfully tested.
+- **Phase 3 (US1)** → blocks US2 and US3: both consume the chunk pipeline it builds.
+- **Phase 4 (US3)** and **Phase 5 (US2)** → independent of each other once US1 lands; either order works. US3 is listed first because it tests the byte stream exactly rather than through a rendered grid.
+- **Phase 6 (US4)** → after US1; independent of US2/US3.
+- **Phase 7 (Polish)** → after all stories.
+
+### Within-Story Dependencies
+
+- Foundational: T003 → T004 → T005 → T006 → T007 → T008. T005 before T006, so the capture invariant exists before anything routes to the sink.
+- US1: T009 → T010 → T011 → T012 → T013 → T014 → T015; T016–T018 after T013.
+- US3: T019 → T020 → T021 → T022 → T023; T024–T026 after T022.
+- US2: T027 → T028 → T029; T030–T031 after T029.
+- US4: T032 → T033 → T034 → T035; T036–T037 after T035.
+
+### Parallel Opportunities
+
+- T002 alongside T001 — different concerns, both read-only.
+- T017/T018 alongside T016 — same file, so coordinate, but independent subjects.
+- T025/T026 alongside T024 — same.
+- T031 alongside T030.
+- T039/T040 in parallel — different documents.
+- **US3 (Phase 4) and US2 (Phase 5) can run in parallel** once US1 is merged; they touch different crates (`malt-gateway`/`malt-bin` versus `malt-daemon`/`vnp_listener`).
+
+---
+
+## Implementation Strategy
+
+**MVP is Phase 1 + Phase 2 + Phase 3 (US1).** That is the whole point of the
+feature: output observable before a command ends. US2, US3, and US4 refine who
+receives it and how.
+
+Note that the MVP carries an unusually large invisible prefix — Phase 2
+changes `mash` and delivers no user-visible behaviour on its own. Resist
+shortening it. The alternative is routing output to the session without the
+capture distinction, which corrupts `$(...)` rather than merely failing to
+stream, and Smoosh is the only thing that reliably catches it.
+
+**Incremental delivery**: merge at each checkpoint, as in 003–005. Each story
+is independently valuable — US1 alone makes a long command observable; US3
+alone makes an agent able to follow it; US2 alone makes a human able to watch.
