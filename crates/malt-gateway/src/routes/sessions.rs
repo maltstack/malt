@@ -81,6 +81,16 @@ pub async fn end_input(
     Ok(Json(serde_json::json!({"ok": true, "data": null})))
 }
 
+pub async fn input_authority(
+    State(backend): State<Arc<dyn GatewayBackend>>,
+    Path(id): Path<u32>,
+) -> Result<Json<serde_json::Value>, GatewayError> {
+    let holder = backend.input_authority(id)?;
+    Ok(Json(
+        serde_json::json!({"ok": true, "data": {"holder": holder}}),
+    ))
+}
+
 pub async fn output(
     State(backend): State<Arc<dyn GatewayBackend>>,
     Path(id): Path<u32>,

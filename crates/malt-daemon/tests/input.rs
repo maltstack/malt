@@ -228,3 +228,153 @@ fn a_session_still_accepts_input_after_end_of_input() {
         "input must still reach the session after an EOF, got {out:?}"
     );
 }
+
+// ── Input authority (US3) ────────────────────────────────────────────────
+//
+// These drive authority through the paths production uses. A test that calls
+// `AuthorityTracker` directly passes today *with the feature absent* -- the
+// tracker was always complete and always unit-tested; what was missing was
+// anything calling it. So none of these touch the tracker directly.
+
+use malt_protocol::common::{InputAuthority, SessionId};
+
+fn attach(backend: &Arc<DaemonBackend>, session: u32, client_id: u64, authority: InputAuthority) {
+    let (render_tx, render_rx) = std::sync::mpsc::sync_channel(4);
+    // Kept alive: dropping the receiver would make the session treat the
+    // client as gone, which is a different scenario than the one under test.
+    std::mem::forget(render_rx);
+    backend
+        .coordinator()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .register_vnp_client(SessionId(session), client_id, authority, caps(), render_tx)
+        .expect("client should attach");
+}
+
+fn caps() -> malt_protocol::common::ClientCapabilities {
+    malt_protocol::common::ClientCapabilities {
+        color_depth: malt_protocol::common::ColorDepth::TrueColor,
+        unicode: malt_protocol::common::UnicodeLevel::Full,
+        image_protocol: malt_protocol::common::ImageProtocol::None,
+        overlay: false,
+        vt_passthrough: true,
+        max_fps: 60,
+        _unknown: Vec::new(),
+    }
+}
+
+fn holder(backend: &Arc<DaemonBackend>, session: u32) -> Option<u64> {
+    backend
+        .coordinator()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .input_authority_holder(&SessionId(session))
+        .expect("authority query should succeed")
+}
+
+/// Attaching through the real path takes authority; detaching releases it.
+///
+/// This is the assertion that would have failed before US3 while every
+/// `AuthorityTracker` unit test still passed.
+#[test]
+fn attaching_through_the_real_path_takes_and_releases_authority() {
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap().id;
+    assert_eq!(holder(&backend, session), None, "nobody holds it initially");
+
+    attach(&backend, session, 7, InputAuthority::Exclusive);
+    assert_eq!(holder(&backend, session), Some(7));
+
+    backend
+        .coordinator()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .unregister_vnp_client(SessionId(session), 7)
+        .unwrap();
+    assert_eq!(
+        holder(&backend, session),
+        None,
+        "a departed holder must not strand the session (FR-017/FR-018)"
+    );
+}
+
+/// An observer does not take authority from the holder.
+#[test]
+fn an_observer_does_not_take_authority() {
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap().id;
+    attach(&backend, session, 1, InputAuthority::Exclusive);
+    attach(&backend, session, 2, InputAuthority::Observe);
+    assert_eq!(
+        holder(&backend, session),
+        Some(1),
+        "attaching to observe must not seize the keyboard"
+    );
+}
+
+/// A non-holder's input is refused with a reason naming the holder, never
+/// silently dropped (FR-014).
+#[test]
+fn input_without_authority_is_refused_with_a_reason() {
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap().id;
+    attach(&backend, session, 1, InputAuthority::Exclusive);
+
+    // The HTTP surface has no per-connection identity, so it is unattributed
+    // and must not be able to type over the holder.
+    let err = backend
+        .send_input(session, "from-an-agent\n".to_string())
+        .expect_err("unattributed input must be refused while a client holds authority");
+    let message = format!("{err}");
+    assert!(
+        message.contains("authority"),
+        "refusal should say why, got {message:?}"
+    );
+    assert!(
+        message.contains('1'),
+        "refusal should name the holder so a client can decide whether to \
+         claim it (FR-015), got {message:?}"
+    );
+}
+
+/// Losing input rights must not reduce observation (FR-020).
+#[test]
+fn a_non_holder_can_still_read_output_and_history() {
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap().id;
+    backend
+        .exec_command(session, "echo observable".to_string())
+        .unwrap();
+    attach(&backend, session, 1, InputAuthority::Exclusive);
+
+    // With client 1 holding authority, an unattributed reader is refused
+    // input -- but output and history must be unaffected.
+    assert!(backend.send_input(session, "x\n".to_string()).is_err());
+    let text = backend.get_output_text(session).unwrap();
+    assert!(
+        text.contains("observable"),
+        "a non-holder must still see output, got {text:?}"
+    );
+    let history = backend.get_command_history(session).unwrap();
+    assert!(
+        !history.is_empty(),
+        "a non-holder must still see history (FR-020)"
+    );
+}
+
+/// With nobody attached, input still works exactly as before.
+///
+/// This is what keeps a session from becoming unanswerable (FR-018), and it
+/// is why every pre-existing input test in this file still passes.
+#[test]
+fn input_is_unrestricted_while_nobody_holds_authority() {
+    let backend = make_backend();
+    let session = backend.create_session(None, None).unwrap().id;
+    let out = answer(
+        &backend,
+        session,
+        r#"read -r X; echo unheld=[$X]"#,
+        "still-fine\n",
+    );
+    assert!(out.contains("unheld=[still-fine]"), "got {out:?}");
+}

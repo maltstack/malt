@@ -1,6 +1,7 @@
 use crate::bus::BusMessage;
 use crate::executor::events::LifecycleEvent;
 use crate::executor::pools::PoolConfig;
+use crate::executor::session_thread::InputOrigin;
 use crate::executor::session_thread::{
     from_persisted_command_block, CommandOutput, SessionCommand, SessionExecutor,
 };
@@ -303,6 +304,7 @@ impl Coordinator {
     pub fn write_session_input(
         &self,
         session_id: SessionId,
+        origin: InputOrigin,
         data: Vec<u8>,
     ) -> Result<(), DaemonError> {
         let handle = self
@@ -314,6 +316,7 @@ impl Coordinator {
                 let (reply_tx, reply_rx) = mpsc::channel();
                 cmd_tx
                     .send(SessionCommand::RawInput {
+                        origin,
                         data,
                         reply: reply_tx,
                     })
@@ -323,10 +326,43 @@ impl Coordinator {
                     Ok(Err(crate::executor::input::InputError::BufferFull)) => {
                         Err(DaemonError::InputBufferFull(session_id))
                     }
+                    // Surfaced rather than flattened into "unreachable": a
+                    // client refused for lack of authority must be able to
+                    // tell that apart from a broken session (FR-014).
+                    Ok(Err(denied @ crate::executor::input::InputError::NotAuthority { .. })) => {
+                        Err(DaemonError::InputNotAuthorized(denied.to_string()))
+                    }
                     Ok(Err(_)) | Err(_) => Err(DaemonError::SessionUnreachable(handle.id.clone())),
                 }
             }
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
+        }
+    }
+
+    /// Which client, if any, currently holds input authority (FR-015).
+    ///
+    /// A dormant session has no attached clients and therefore no holder,
+    /// reported as `None` rather than an error: "nobody holds it" is the true
+    /// answer, and it is what makes the session claimable.
+    pub fn input_authority_holder(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<u64>, DaemonError> {
+        let handle = self
+            .sessions
+            .get(&session_id.0)
+            .ok_or_else(|| DaemonError::SessionNotFound(session_id.clone()))?;
+        match &handle.lifecycle {
+            SessionLifecycle::Active { cmd_tx, .. } => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                cmd_tx
+                    .send(SessionCommand::GetInputAuthority { reply: reply_tx })
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))?;
+                reply_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone()))
+            }
+            SessionLifecycle::Dormant { .. } => Ok(None),
         }
     }
 
@@ -541,10 +577,11 @@ impl Coordinator {
         &mut self,
         session_id: SessionId,
         client_id: u64,
+        authority: malt_protocol::common::InputAuthority,
         capabilities: ClientCapabilities,
         render_tx: mpsc::SyncSender<RenderBatch>,
     ) -> Result<InitialState, DaemonError> {
-        self.begin_register_vnp_client(session_id, client_id, capabilities, render_tx)?
+        self.begin_register_vnp_client(session_id, client_id, authority, capabilities, render_tx)?
             .recv_timeout(Duration::from_secs(5))
             .map_err(|_| DaemonError::SessionUnreachable(SessionId(0)))
     }
@@ -555,6 +592,7 @@ impl Coordinator {
         &mut self,
         session_id: SessionId,
         client_id: u64,
+        authority: malt_protocol::common::InputAuthority,
         capabilities: ClientCapabilities,
         render_tx: mpsc::SyncSender<RenderBatch>,
     ) -> Result<mpsc::Receiver<InitialState>, DaemonError> {
@@ -588,6 +626,7 @@ impl Coordinator {
                 cmd_tx
                     .send(SessionCommand::RegisterVnpClient {
                         client_id,
+                        authority,
                         capabilities,
                         render_tx,
                         initial_reply: initial_tx,
@@ -647,14 +686,22 @@ impl Coordinator {
     }
 
     /// Route a typed keyboard event to a session's line editor.
-    pub fn send_key_input(&self, session_id: SessionId, key: KeyEvent) -> Result<(), DaemonError> {
+    pub fn send_key_input(
+        &self,
+        session_id: SessionId,
+        client_id: u64,
+        key: KeyEvent,
+    ) -> Result<(), DaemonError> {
         let handle = self
             .sessions
             .get(&session_id.0)
             .ok_or(DaemonError::SessionNotFound(session_id.clone()))?;
         match &handle.lifecycle {
             SessionLifecycle::Active { cmd_tx, .. } => cmd_tx
-                .send(SessionCommand::KeyInput { key })
+                .send(SessionCommand::KeyInput {
+                    origin: InputOrigin::Client(client_id),
+                    key,
+                })
                 .map_err(|_| DaemonError::SessionUnreachable(handle.id.clone())),
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),
         }

@@ -1,4 +1,5 @@
 use malt_daemon::bus::BusMessage;
+use malt_daemon::executor::session_thread::InputOrigin;
 use malt_daemon::executor::session_thread::{SessionCommand, SessionExecutor};
 use malt_protocol::common::{
     ClientCapabilities, ColorDepth, ImageProtocol, InputAuthority, IsolationTier, KeyModifiers,
@@ -162,14 +163,23 @@ fn restored_history_seeds_the_pane_and_resumes_command_ids() {
 fn session_executor_attach_detach() {
     let (cmd_tx, handle) =
         SessionExecutor::spawn(SessionId(1), PaneId(1), IsolationTier::Bare).unwrap();
+    // Attach and detach now travel the same commands a real client uses.
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
+    let (initial_tx, initial_rx) = std::sync::mpsc::channel();
     cmd_tx
-        .send(SessionCommand::AttachClient {
+        .send(SessionCommand::RegisterVnpClient {
             client_id: 100,
             authority: InputAuthority::Exclusive,
+            capabilities: default_capabilities(),
+            render_tx,
+            initial_reply: initial_tx,
         })
         .unwrap();
+    initial_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("initial state");
     cmd_tx
-        .send(SessionCommand::DetachClient { client_id: 100 })
+        .send(SessionCommand::UnregisterVnpClient { client_id: 100 })
         .unwrap();
     cmd_tx.send(SessionCommand::Shutdown).unwrap();
     handle.join().expect("session thread panicked");
@@ -197,6 +207,7 @@ fn register_vnp_client_returns_initial_state() {
     let (initial_tx, initial_rx) = std::sync::mpsc::channel();
     cmd_tx
         .send(SessionCommand::RegisterVnpClient {
+            authority: InputAuthority::Exclusive,
             client_id: 42,
             capabilities: default_capabilities(),
             render_tx,
@@ -222,7 +233,12 @@ fn key_input_char_does_not_crash() {
         modifiers: KeyModifiers::empty(),
         _unknown: Vec::new(),
     };
-    cmd_tx.send(SessionCommand::KeyInput { key }).unwrap();
+    cmd_tx
+        .send(SessionCommand::KeyInput {
+            origin: InputOrigin::Client(1),
+            key,
+        })
+        .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(50));
     cmd_tx.send(SessionCommand::Shutdown).unwrap();
     handle.join().expect("session thread panicked");
@@ -236,6 +252,7 @@ fn key_input_enter_triggers_render_to_client() {
     let (initial_tx, initial_rx) = std::sync::mpsc::channel();
     cmd_tx
         .send(SessionCommand::RegisterVnpClient {
+            authority: InputAuthority::Exclusive,
             client_id: 1,
             capabilities: default_capabilities(),
             render_tx,
@@ -253,7 +270,12 @@ fn key_input_enter_triggers_render_to_client() {
             modifiers: KeyModifiers::empty(),
             _unknown: Vec::new(),
         };
-        cmd_tx.send(SessionCommand::KeyInput { key }).unwrap();
+        cmd_tx
+            .send(SessionCommand::KeyInput {
+                origin: InputOrigin::Client(1),
+                key,
+            })
+            .unwrap();
     }
     let enter = KeyEvent {
         key: KeyValue::Named {
@@ -263,7 +285,10 @@ fn key_input_enter_triggers_render_to_client() {
         _unknown: Vec::new(),
     };
     cmd_tx
-        .send(SessionCommand::KeyInput { key: enter })
+        .send(SessionCommand::KeyInput {
+            origin: InputOrigin::Client(1),
+            key: enter,
+        })
         .unwrap();
     let batch = render_rx
         .recv_timeout(std::time::Duration::from_secs(5))
@@ -287,6 +312,7 @@ fn run_command_triggers_render_to_attached_client() {
     let (initial_tx, initial_rx) = std::sync::mpsc::channel();
     cmd_tx
         .send(SessionCommand::RegisterVnpClient {
+            authority: InputAuthority::Exclusive,
             client_id: 1,
             capabilities: default_capabilities(),
             render_tx,
@@ -344,6 +370,7 @@ fn unregister_vnp_client_does_not_crash() {
     let (initial_tx, initial_rx) = std::sync::mpsc::channel();
     cmd_tx
         .send(SessionCommand::RegisterVnpClient {
+            authority: InputAuthority::Exclusive,
             client_id: 7,
             capabilities: default_capabilities(),
             render_tx,

@@ -38,6 +38,13 @@ pub enum InputError {
     BufferFull,
     #[error("session input channel is closed")]
     Closed,
+    /// The sender does not hold input authority for this session.
+    ///
+    /// Names the holder so the caller can say something useful rather than
+    /// "refused": a client that cannot see who has the keyboard cannot decide
+    /// whether to claim it (FR-014, FR-015).
+    #[error("client {client_id:?} does not hold input authority; client {holder} does")]
+    NotAuthority { client_id: Option<u64>, holder: u64 },
 }
 
 /// One session's raw-input destination.

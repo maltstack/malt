@@ -32,6 +32,12 @@ pub trait GatewayBackend: Send + Sync + 'static {
     /// terminate, since a session's stdin has no natural end.
     fn end_input(&self, session_id: u32) -> Result<(), GatewayError>;
 
+    /// Which client holds input authority, if any (FR-015).
+    ///
+    /// `None` means nobody holds it and the session is claimable -- not that
+    /// the session is unusable.
+    fn input_authority(&self, session_id: u32) -> Result<Option<u64>, GatewayError>;
+
     fn get_output(&self, session_id: u32) -> Result<serde_json::Value, GatewayError>;
 
     /// Plain-text variant of `get_output`, for programmatic/agent

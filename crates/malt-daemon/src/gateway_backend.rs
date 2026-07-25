@@ -211,7 +211,14 @@ impl GatewayBackend for DaemonBackend {
         // that wants to run something uses `exec`.
         let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
         coord
-            .write_session_input(SessionId(session_id), input.into_bytes())
+            .write_session_input(
+                SessionId(session_id),
+                // The HTTP surface has no per-connection identity, so its
+                // input is unattributed: accepted while nobody holds
+                // authority, refused once someone does.
+                crate::executor::session_thread::InputOrigin::Unattributed,
+                input.into_bytes(),
+            )
             .map_err(map_execution_error)
     }
 
@@ -219,6 +226,13 @@ impl GatewayBackend for DaemonBackend {
         let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
         coord
             .end_session_input(SessionId(session_id))
+            .map_err(map_execution_error)
+    }
+
+    fn input_authority(&self, session_id: u32) -> Result<Option<u64>, GatewayError> {
+        let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
+        coord
+            .input_authority_holder(&SessionId(session_id))
             .map_err(map_execution_error)
     }
 

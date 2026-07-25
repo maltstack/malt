@@ -61,4 +61,12 @@ pub enum DaemonError {
 
     #[error("session {0:?} input buffer is full; the command has not consumed prior input")]
     InputBufferFull(malt_protocol::common::SessionId),
+
+    /// Input refused because the sender does not hold input authority.
+    ///
+    /// Carries the reason as text so the holder's identity survives to the
+    /// caller; a bare "forbidden" would leave a client unable to decide
+    /// whether to claim authority (FR-014, FR-015).
+    #[error("{0}")]
+    InputNotAuthorized(String),
 }

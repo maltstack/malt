@@ -205,8 +205,8 @@ fn handle_client(
     let mut frame_writer = FrameWriter::new(write_stream);
 
     // Wait for AttachSession.
-    let session_id_raw = match wait_for_attach(&mut frame_reader, &peer) {
-        Some(id) => id,
+    let (session_id_raw, requested_authority) = match wait_for_attach(&mut frame_reader, &peer) {
+        Some(attached) => attached,
         None => {
             warn!(peer = %peer, client_id, "VNP: no AttachSession received; disconnecting");
             return;
@@ -225,6 +225,7 @@ fn handle_client(
             match coord.begin_register_vnp_client(
                 session_id.clone(),
                 client_id,
+                requested_authority,
                 handshake.capabilities,
                 render_tx,
             ) {
@@ -345,7 +346,16 @@ fn handle_client(
 ///
 /// Returns the session ID as a `u32`, or `None` if the connection closes before
 /// the expected message arrives or if 64 non-matching frames are received.
-fn wait_for_attach(reader: &mut FrameReader<BufReader<TcpStream>>, peer: &str) -> Option<u32> {
+/// Await `AttachSession` and return the session it names *and the authority it
+/// asked for*.
+///
+/// The authority used to be decoded and dropped on the floor here, which is
+/// the single reason every attached client could type regardless of what it
+/// requested: by the time registration happened the request no longer existed.
+fn wait_for_attach(
+    reader: &mut FrameReader<BufReader<TcpStream>>,
+    peer: &str,
+) -> Option<(u32, malt_protocol::common::InputAuthority)> {
     let mut attempts = 0usize;
     loop {
         if attempts >= 64 {
@@ -385,7 +395,7 @@ fn wait_for_attach(reader: &mut FrameReader<BufReader<TcpStream>>, peer: &str) -
             let mut bit_reader = BitReader::new(msg_bytes);
             match AttachSession::unpack(&mut bit_reader) {
                 Ok(attach) => {
-                    return Some(attach.session_id.0);
+                    return Some((attach.session_id.0, attach.authority));
                 }
                 Err(e) => {
                     warn!(peer, error = %e, "VNP: AttachSession decode failed");
@@ -443,7 +453,8 @@ fn dispatch_frame(
             match KeyEvent::unpack(&mut bit_reader) {
                 Ok(key) => match coordinator.lock() {
                     Ok(coord) => {
-                        if let Err(e) = coord.send_key_input(SessionId(session_id), key) {
+                        if let Err(e) = coord.send_key_input(SessionId(session_id), client_id, key)
+                        {
                             warn!(peer, error = %e, "VNP: send_key_input failed");
                         }
                     }

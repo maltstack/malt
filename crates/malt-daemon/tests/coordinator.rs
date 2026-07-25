@@ -79,7 +79,6 @@ fn session_ids_never_recycled() {
 }
 
 use malt_daemon::bus::BusMessage;
-use malt_daemon::executor::session_thread::SessionCommand;
 use malt_protocol::common::{
     ClientCapabilities, ColorDepth, ImageProtocol, InputAuthority, KeyModifiers, UnicodeLevel,
 };
@@ -124,15 +123,25 @@ fn send_attach_command() {
     let id = coord
         .create_session(None, IsolationTier::Bare, None)
         .unwrap();
+    // The real attach path. `AttachClient` used to exist alongside it and was
+    // the only command that told the authority tracker -- but nothing in
+    // production ever sent it, so this test passed while attach and authority
+    // were entirely disconnected. There is now one path.
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
     coord
-        .send_command(
-            id.clone(),
-            SessionCommand::AttachClient {
-                client_id: 42,
-                authority: InputAuthority::Exclusive,
-            },
-        )
+        .register_vnp_client(id.clone(), 42, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
+    assert_eq!(
+        coord.input_authority_holder(&id).unwrap(),
+        Some(42),
+        "attaching with Exclusive must actually take input authority"
+    );
+    coord.unregister_vnp_client(id.clone(), 42).unwrap();
+    assert_eq!(
+        coord.input_authority_holder(&id).unwrap(),
+        None,
+        "detaching must release authority so the session is not stranded"
+    );
     coord.destroy_session(id);
 }
 
@@ -161,7 +170,7 @@ fn register_vnp_client_returns_initial_state() {
         .unwrap();
     let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
     let initial = coord
-        .register_vnp_client(sid, 1, caps(), render_tx)
+        .register_vnp_client(sid, 1, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
     assert_eq!(initial.frame_seq, 0);
 }
@@ -176,7 +185,7 @@ fn unregister_vnp_client_succeeds() {
         .unwrap();
     let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
     let _ = coord
-        .register_vnp_client(sid.clone(), 1, caps(), render_tx)
+        .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
     coord.unregister_vnp_client(sid, 1).unwrap();
 }
@@ -196,7 +205,7 @@ fn send_key_input_succeeds() {
         modifiers: KeyModifiers::empty(),
         _unknown: Vec::new(),
     };
-    coord.send_key_input(sid, key).unwrap();
+    coord.send_key_input(sid, 1, key).unwrap();
 }
 
 #[test]
@@ -384,7 +393,7 @@ fn session_goes_dormant_on_last_client_detach() {
 
     let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
     let _ = coord
-        .register_vnp_client(sid.clone(), 1, caps(), render_tx)
+        .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
 
     // Detach — client count hits 0 → session should go Dormant.
@@ -419,7 +428,7 @@ fn dormant_session_visible_in_list_sessions() {
 
         let (render_tx, _) = std::sync::mpsc::sync_channel(4);
         coord
-            .register_vnp_client(sid.clone(), 1, caps(), render_tx)
+            .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
             .unwrap();
         coord.unregister_vnp_client(sid.clone(), 1).unwrap();
         store.flush_all();
@@ -455,7 +464,7 @@ fn restore_shell_session_from_dormant() {
             .unwrap();
         let (render_tx, _) = std::sync::mpsc::sync_channel(4);
         coord
-            .register_vnp_client(sid.clone(), 1, caps(), render_tx)
+            .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
             .unwrap();
         coord.unregister_vnp_client(sid.clone(), 1).unwrap();
         store.flush_all();
@@ -468,7 +477,7 @@ fn restore_shell_session_from_dormant() {
 
     let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
     let initial = coord2
-        .register_vnp_client(sid.clone(), 2, caps(), render_tx)
+        .register_vnp_client(sid.clone(), 2, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
     assert_eq!(
         initial.frame_seq, 0,
@@ -528,7 +537,7 @@ fn destroy_dormant_session_removes_from_store() {
             .unwrap();
         let (render_tx, _) = std::sync::mpsc::sync_channel(4);
         coord
-            .register_vnp_client(sid.clone(), 1, caps(), render_tx)
+            .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
             .unwrap();
         coord.unregister_vnp_client(sid.clone(), 1).unwrap();
         store.flush_all();
@@ -560,13 +569,13 @@ fn second_daemon_sees_dormant_sessions() {
         // Detach both → dormant.
         let (tx1, _) = std::sync::mpsc::sync_channel(4);
         coord
-            .register_vnp_client(sid1.clone(), 1, caps(), tx1)
+            .register_vnp_client(sid1.clone(), 1, InputAuthority::Exclusive, caps(), tx1)
             .unwrap();
         coord.unregister_vnp_client(sid1, 1).unwrap();
 
         let (tx2, _) = std::sync::mpsc::sync_channel(4);
         coord
-            .register_vnp_client(sid2.clone(), 2, caps(), tx2)
+            .register_vnp_client(sid2.clone(), 2, InputAuthority::Exclusive, caps(), tx2)
             .unwrap();
         coord.unregister_vnp_client(sid2, 2).unwrap();
 
@@ -597,7 +606,7 @@ fn restore_fails_cleanly_on_bad_cwd() {
             .unwrap();
         let (render_tx, _) = std::sync::mpsc::sync_channel(4);
         coord
-            .register_vnp_client(sid.clone(), 1, caps(), render_tx)
+            .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
             .unwrap();
         coord.unregister_vnp_client(sid.clone(), 1).unwrap();
         store.flush_all();
@@ -619,7 +628,8 @@ fn restore_fails_cleanly_on_bad_cwd() {
     let store2 = make_store(&dir);
     let mut coord2 = Coordinator::new(PoolConfig::default(), store2);
     let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
-    let result = coord2.register_vnp_client(sid.clone(), 2, caps(), render_tx);
+    let result =
+        coord2.register_vnp_client(sid.clone(), 2, InputAuthority::Exclusive, caps(), render_tx);
     assert!(
         result.is_ok(),
         "restore with bad cwd should succeed via fallback: {:?}",
@@ -691,7 +701,8 @@ fn app_restore_returns_error() {
 
     // Attach should fail with AppRestoreNotSupported.
     let (render_tx, _) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
-    let result = coord2.register_vnp_client(sid.clone(), 1, caps(), render_tx);
+    let result =
+        coord2.register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx);
     assert!(
         matches!(
             result,
@@ -788,7 +799,7 @@ fn restore_compat_pane_relaunches_process_and_forwards_real_output() {
     // Attaching triggers restore_session, which spawns the real process.
     let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<RenderBatch>(4);
     coord2
-        .register_vnp_client(sid.clone(), 1, caps(), render_tx)
+        .register_vnp_client(sid.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
         .expect("compat pane restore should succeed, not return RestoreFailed");
 
     let sessions = coord2.list_sessions();
@@ -870,7 +881,13 @@ fn last_detach_while_execution_is_busy_keeps_the_session_active() {
     };
     let (render_tx, _render_rx) = mpsc::sync_channel(4);
     coord
-        .register_vnp_client(id.clone(), 1, capabilities, render_tx)
+        .register_vnp_client(
+            id.clone(),
+            1,
+            InputAuthority::Exclusive,
+            capabilities,
+            render_tx,
+        )
         .unwrap();
     let receiver = coord
         .submit_execution(id.clone(), "sleep 1; echo retained".to_string())
@@ -900,7 +917,7 @@ fn last_detach_after_queued_write_input_keeps_session_active_and_runs_command() 
         .unwrap();
     let (render_tx, _render_rx) = mpsc::sync_channel(4);
     coord
-        .register_vnp_client(id.clone(), 1, caps(), render_tx)
+        .register_vnp_client(id.clone(), 1, InputAuthority::Exclusive, caps(), render_tx)
         .unwrap();
 
     // This command is deliberately queued immediately before the final

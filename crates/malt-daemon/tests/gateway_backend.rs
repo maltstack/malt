@@ -374,7 +374,13 @@ fn command_history_survives_dormant_restore_and_ids_stay_monotonic() {
         let mut coord = coord_arc.lock().unwrap();
         let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
         coord
-            .register_vnp_client(SessionId(session_id), 1, test_caps(), render_tx)
+            .register_vnp_client(
+                SessionId(session_id),
+                1,
+                malt_protocol::common::InputAuthority::Exclusive,
+                test_caps(),
+                render_tx,
+            )
             .unwrap();
         coord
             .unregister_vnp_client(SessionId(session_id), 1)
@@ -388,7 +394,13 @@ fn command_history_survives_dormant_restore_and_ids_stay_monotonic() {
         let mut coord = coord_arc.lock().unwrap();
         let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
         coord
-            .register_vnp_client(SessionId(session_id), 2, test_caps(), render_tx)
+            .register_vnp_client(
+                SessionId(session_id),
+                2,
+                malt_protocol::common::InputAuthority::Exclusive,
+                test_caps(),
+                render_tx,
+            )
             .unwrap();
     }
 
@@ -504,7 +516,13 @@ fn a_dormant_session_reports_a_conflict_not_an_internal_error() {
         let mut coord = coord_arc.lock().unwrap();
         let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
         coord
-            .register_vnp_client(SessionId(session_id), 1, test_caps(), render_tx)
+            .register_vnp_client(
+                SessionId(session_id),
+                1,
+                malt_protocol::common::InputAuthority::Exclusive,
+                test_caps(),
+                render_tx,
+            )
             .unwrap();
         coord
             .unregister_vnp_client(SessionId(session_id), 1)
@@ -573,7 +591,13 @@ fn shell_env_state_survives_dormant_restore_via_env_snapshot() {
         let mut coord = coord_arc.lock().unwrap();
         let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
         coord
-            .register_vnp_client(SessionId(session_id), 1, test_caps(), render_tx)
+            .register_vnp_client(
+                SessionId(session_id),
+                1,
+                malt_protocol::common::InputAuthority::Exclusive,
+                test_caps(),
+                render_tx,
+            )
             .unwrap();
         coord
             .unregister_vnp_client(SessionId(session_id), 1)
@@ -590,7 +614,13 @@ fn shell_env_state_survives_dormant_restore_via_env_snapshot() {
         let mut coord = coord_arc.lock().unwrap();
         let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(4);
         coord
-            .register_vnp_client(SessionId(session_id), 2, test_caps(), render_tx)
+            .register_vnp_client(
+                SessionId(session_id),
+                2,
+                malt_protocol::common::InputAuthority::Exclusive,
+                test_caps(),
+                render_tx,
+            )
             .unwrap();
     }
 

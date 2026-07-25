@@ -101,16 +101,40 @@
 
 ### Implementation for User Story 3
 
-- [ ] T028 [US3] Add `client_id` to the input-carrying `SessionCommand` variants in `crates/malt-daemon/src/executor/session_thread.rs` — `KeyInput` carries none today, which is the decisive reason authority cannot be enforced (research R4). The VNP listener already allocates a per-connection id; thread it through.
-- [ ] T029 [US3] Drive `AuthorityTracker` from the real attach path in `crates/malt-daemon/src/executor/coordinator.rs` and `session_thread.rs`: `RegisterVnpClient`/`UnregisterVnpClient` must inform it. **Do not rewrite the tracker** — `attach`/`detach`/`claim`/`holder` are already implemented and unit-tested; the defect is that production never calls them (research R5).
-- [ ] T030 [US3] Honour the requested authority in `crates/malt-daemon/src/vnp_listener.rs`: `wait_for_attach` currently parses `AttachSession.authority` and discards it. Apply it, defaulting an unheld session's first attacher to holding (spec Assumptions).
-- [ ] T031 [US3] Enforce on input in `crates/malt-daemon/src/executor/session_thread.rs`: reject raw input from a client that does not hold authority, with a reason naming the holder. Never drop silently — that is indistinguishable from a dead connection (FR-014).
-- [ ] T032 [US3] Add an authority-query path so a client can ask who holds it (`Coordinator` + `GatewayBackend` + a route, following the `begin_*` pattern), per the contract.
-- [ ] T033 [US3] Arbitration test in `crates/malt-daemon/tests/input.rs`: two attached clients send distinguishable payloads concurrently to a blocked `read`; assert the command received bytes from exactly one, with **none** of the other's mixed in. Interleaving is the failure this prevents, so the payloads must be distinguishable byte-wise rather than merely counted.
-- [ ] T034 [P] [US3] Rejection test: a non-holder's input is refused with a reason identifying the holder, and the non-holder still receives output and events normally (FR-020 — losing input rights must not degrade observation).
-- [ ] T035 [P] [US3] Authority-through-the-real-path test in `crates/malt-daemon/tests/vnp_listener.rs`: drive attach via the actual VNP path and assert the tracker reflects it. A test that calls `AuthorityTracker` directly passes **today**, with the feature entirely absent — it must not be the evidence.
+- [X] T028 [US3] Add `client_id` to the input-carrying `SessionCommand` variants in `crates/malt-daemon/src/executor/session_thread.rs` — `KeyInput` carries none today, which is the decisive reason authority cannot be enforced (research R4). The VNP listener already allocates a per-connection id; thread it through.
+- [X] T029 [US3] Drive `AuthorityTracker` from the real attach path in `crates/malt-daemon/src/executor/coordinator.rs` and `session_thread.rs`: `RegisterVnpClient`/`UnregisterVnpClient` must inform it. **Do not rewrite the tracker** — `attach`/`detach`/`claim`/`holder` are already implemented and unit-tested; the defect is that production never calls them (research R5).
+- [X] T030 [US3] Honour the requested authority in `crates/malt-daemon/src/vnp_listener.rs`: `wait_for_attach` currently parses `AttachSession.authority` and discards it. Apply it, defaulting an unheld session's first attacher to holding (spec Assumptions).
+- [X] T031 [US3] Enforce on input in `crates/malt-daemon/src/executor/session_thread.rs`: reject raw input from a client that does not hold authority, with a reason naming the holder. Never drop silently — that is indistinguishable from a dead connection (FR-014).
+- [X] T032 [US3] Add an authority-query path so a client can ask who holds it (`Coordinator` + `GatewayBackend` + a route, following the `begin_*` pattern), per the contract.
+- [X] T033 [US3] Arbitration test in `crates/malt-daemon/tests/input.rs`: two attached clients send distinguishable payloads concurrently to a blocked `read`; assert the command received bytes from exactly one, with **none** of the other's mixed in. Interleaving is the failure this prevents, so the payloads must be distinguishable byte-wise rather than merely counted.
+- [X] T034 [P] [US3] Rejection test: a non-holder's input is refused with a reason identifying the holder, and the non-holder still receives output and events normally (FR-020 — losing input rights must not degrade observation).
+- [X] T035 [P] [US3] Authority-through-the-real-path test in `crates/malt-daemon/tests/vnp_listener.rs`: drive attach via the actual VNP path and assert the tracker reflects it. A test that calls `AuthorityTracker` directly passes **today**, with the feature entirely absent — it must not be the evidence.
 
 **Checkpoint**: all four gates green; quickstart Scenario 3 verified. Commit. **Merge to main.**
+
+> **US3 complete 2026-07-25.** The finding that mattered was sharper than the
+> task text: `AuthorityTracker` was not merely uncalled. There were **two
+> parallel attach paths** — `AttachClient`/`DetachClient`, which drove the
+> tracker but were sent only by a test, and `RegisterVnpClient`, the path
+> production actually uses, which ignored authority entirely. So the tracker
+> looked wired, and a test proved it was, while no real client ever reached
+> it. The vestigial pair is deleted; there is one attach path now.
+>
+> Input is attributed via `InputOrigin`. `Unattributed` is deliberately not a
+> fake client id: the HTTP surface has no per-connection identity, and
+> inventing one would put a lie in the type. It is accepted only while nobody
+> holds authority — so an unattached session behaves exactly as before (which
+> is why every pre-existing input test still passes), and an agent cannot use
+> the HTTP door to type over a human holding the keyboard.
+>
+> Refusals name the holder rather than being flattened to "unreachable": a
+> client that cannot see who has the keyboard cannot decide whether to claim
+> it. `GET /sessions/{id}/authority` is at **Read** scope, not Interact —
+> knowing who holds input is observation, and FR-020 keeps observation
+> available to clients that cannot type.
+>
+> Gates: workspace 1411 passed / 0 failed, fmt and clippy clean. Smoosh not
+> re-run: `mash` is untouched by this story.
 
 ---
 

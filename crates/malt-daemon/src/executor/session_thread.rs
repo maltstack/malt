@@ -152,6 +152,26 @@ struct Finalization {
     stderr_offset: usize,
 }
 
+/// Who sent a piece of input.
+///
+/// Input has to be attributable before authority can mean anything: the
+/// interactive path carried no client identity at all, which is the concrete
+/// reason arbitration could not be enforced however complete the tracker was.
+///
+/// `Unattributed` is deliberately not a fake client id. The HTTP surface
+/// authenticates with bearer tokens and has no per-connection identity, so
+/// inventing one would put a lie in the type. It is accepted only while nobody
+/// holds authority -- so an unattached session behaves exactly as before, and
+/// an agent cannot use the HTTP door to type over a human holding the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InputOrigin {
+    /// An attached client, identified by its connection id.
+    Client(u64),
+    /// A caller with no per-connection identity, e.g. the HTTP surface.
+    Unattributed,
+}
+
 /// Commands sent from the coordinator to a session executor.
 ///
 /// Variant sizes differ substantially: `ExecutionCompleted` carries a full
@@ -163,13 +183,6 @@ struct Finalization {
 pub enum SessionCommand {
     /// Deliver a message to the session's bus.
     Deliver(BusMessage),
-    /// Attach a client to this session.
-    AttachClient {
-        client_id: u64,
-        authority: malt_protocol::common::InputAuthority,
-    },
-    /// Detach a client from this session.
-    DetachClient { client_id: u64 },
     /// Resize the terminal.
     Resize { cols: u16, rows: u16 },
     /// Raw bytes from PTY output (from reader thread).
@@ -199,6 +212,7 @@ pub enum SessionCommand {
     /// history entry, and a published lifecycle event carrying its text --
     /// and prompt answers are routinely passwords.
     RawInput {
+        origin: InputOrigin,
         data: Vec<u8>,
         reply: mpsc::Sender<Result<(), InputError>>,
     },
@@ -227,6 +241,8 @@ pub enum SessionCommand {
         resume_from: Option<u64>,
         reply: mpsc::Sender<tokio::sync::mpsc::Receiver<LifecycleEvent>>,
     },
+    /// Report which client holds input authority, if any (FR-015).
+    GetInputAuthority { reply: mpsc::Sender<Option<u64>> },
     /// Get this session's command execution history, oldest first.
     GetCommandHistory {
         reply: mpsc::Sender<Vec<CommandBlock>>,
@@ -234,6 +250,9 @@ pub enum SessionCommand {
     /// Register a VNP client with this session's renderer.
     RegisterVnpClient {
         client_id: u64,
+        /// What the client asked for when it attached. Previously parsed off
+        /// the wire and discarded, which is why every client could type.
+        authority: malt_protocol::common::InputAuthority,
         capabilities: ClientCapabilities,
         render_tx: SyncSender<RenderBatch>,
         initial_reply: mpsc::Sender<InitialState>,
@@ -241,7 +260,7 @@ pub enum SessionCommand {
     /// Remove a VNP client from this session's renderer.
     UnregisterVnpClient { client_id: u64 },
     /// A typed keyboard event from a VNP client.
-    KeyInput { key: KeyEvent },
+    KeyInput { origin: InputOrigin, key: KeyEvent },
     /// A frame acknowledgement from a VNP client.
     AckFrame { client_id: u64, frame_seq: u64 },
     /// Take a snapshot of the current session state for persistence.
@@ -268,18 +287,6 @@ impl std::fmt::Debug for SessionCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Deliver(m) => f.debug_tuple("Deliver").field(m).finish(),
-            Self::AttachClient {
-                client_id,
-                authority,
-            } => f
-                .debug_struct("AttachClient")
-                .field("client_id", client_id)
-                .field("authority", authority)
-                .finish(),
-            Self::DetachClient { client_id } => f
-                .debug_struct("DetachClient")
-                .field("client_id", client_id)
-                .finish(),
             Self::Resize { cols, rows } => f
                 .debug_struct("Resize")
                 .field("cols", cols)
@@ -314,6 +321,7 @@ impl std::fmt::Debug for SessionCommand {
                 .debug_struct("SubscribeEvents")
                 .field("resume_from", resume_from)
                 .finish(),
+            Self::GetInputAuthority { .. } => f.debug_struct("GetInputAuthority").finish(),
             Self::GetCommandHistory { .. } => f.debug_struct("GetCommandHistory").finish(),
             Self::RegisterVnpClient { client_id, .. } => f
                 .debug_struct("RegisterVnpClient")
@@ -612,17 +620,6 @@ impl SessionExecutor {
                 Ok(SessionCommand::Deliver(msg)) => {
                     self.bus.publish(msg);
                 }
-                Ok(SessionCommand::AttachClient {
-                    client_id,
-                    authority,
-                }) => {
-                    self.authority.attach(client_id, authority);
-                    let _ = self.session.attach(client_id, authority);
-                }
-                Ok(SessionCommand::DetachClient { client_id }) => {
-                    self.authority.detach(client_id);
-                    let _ = self.session.detach(client_id);
-                }
                 Ok(SessionCommand::Resize { cols, rows }) => {
                     self.terminal_size = Rect::new(0, 0, cols, rows);
                     if let Some(compat) = &mut self.compat {
@@ -668,8 +665,17 @@ impl SessionExecutor {
                     });
                     self.dispatch_render();
                 }
-                Ok(SessionCommand::RawInput { data, reply }) => {
-                    let _ = reply.send(self.input_channel.try_write(&data));
+                Ok(SessionCommand::RawInput {
+                    origin,
+                    data,
+                    reply,
+                }) => {
+                    let _ = reply.send(match self.authority_error(origin) {
+                        // Refused, never silently dropped: to a client, silence
+                        // is indistinguishable from a dead connection (FR-014).
+                        Some(denied) => Err(denied),
+                        None => self.input_channel.try_write(&data),
+                    });
                 }
                 Ok(SessionCommand::EndOfInput { reply }) => {
                     let _ = reply.send(self.input_channel.end_of_input());
@@ -706,12 +712,22 @@ impl SessionExecutor {
                         self.pane_runtime.command_blocks().iter().cloned().collect();
                     let _ = reply.send(history);
                 }
+                Ok(SessionCommand::GetInputAuthority { reply }) => {
+                    let _ = reply.send(self.authority.holder());
+                }
                 Ok(SessionCommand::RegisterVnpClient {
                     client_id,
+                    authority,
                     capabilities,
                     render_tx,
                     initial_reply,
                 }) => {
+                    // Attaching and acquiring authority are one event on the
+                    // real path. They used to be separate commands and only
+                    // the unused one told the tracker, so the tracker looked
+                    // wired while production never reached it.
+                    self.authority.attach(client_id, authority);
+                    let _ = self.session.attach(client_id, authority);
                     self.renderer.register_client(client_id, capabilities);
                     self.render_pushers.insert(client_id, render_tx);
                     let element = match &self.compat {
@@ -734,10 +750,19 @@ impl SessionExecutor {
                     }
                 }
                 Ok(SessionCommand::UnregisterVnpClient { client_id }) => {
+                    // Releases authority so a holder that vanished cannot
+                    // strand the session (FR-017/FR-018).
+                    self.authority.detach(client_id);
+                    let _ = self.session.detach(client_id);
                     self.renderer.remove_client(client_id);
                     self.render_pushers.remove(&client_id);
                 }
-                Ok(SessionCommand::KeyInput { key }) => {
+                Ok(SessionCommand::KeyInput { origin, key }) => {
+                    if self.authority_error(origin).is_some() {
+                        // An observer's keystrokes must not reach the session.
+                        // Its output and events are untouched (FR-020).
+                        continue;
+                    }
                     if let Some(input_event) = crate::input_bridge::vnp_key_to_input_event(&key) {
                         match self.editor.feed(input_event) {
                             EditResult::Accept(line) => {
@@ -889,6 +914,26 @@ impl SessionExecutor {
     }
 
     /// Dispatch a render frame to all registered VNP clients.
+    /// Whether `origin` may send input right now, and why not if it may not.
+    ///
+    /// A session nobody holds is open to anyone -- that is what keeps it from
+    /// becoming permanently unanswerable (FR-018), and it is why sessions with
+    /// no attached client behave exactly as they did before authority existed.
+    fn authority_error(&self, origin: InputOrigin) -> Option<InputError> {
+        let holder = self.authority.holder()?;
+        match origin {
+            InputOrigin::Client(id) if id == holder => None,
+            InputOrigin::Client(id) => Some(InputError::NotAuthority {
+                client_id: Some(id),
+                holder,
+            }),
+            InputOrigin::Unattributed => Some(InputError::NotAuthority {
+                client_id: None,
+                holder,
+            }),
+        }
+    }
+
     fn dispatch_render(&mut self) {
         let now_ms = now_epoch_ms();
         for stale_id in self.renderer.shed_stale_clients(now_ms) {
