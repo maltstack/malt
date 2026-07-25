@@ -195,6 +195,82 @@ termination that only removes bookkeeping (A-06).
   it's still blocked inside `run_mash_command`. See
   `docs/findings/2026-07-24-audit-input-concurrency.md` §3b (recommendation 2).
 
+
+### From the 2026-07-25 architecture/spec/codebase audit
+
+Full evidence with file:line in
+`docs/findings/2026-07-25-architecture-spec-codebase-audit.md`. Its own
+recommended closure order is: transport auth, then fail-closed isolation,
+then credentials/rate limiting, then process termination and raw input.
+
+- **A-01 (Critical). The VNP transport is an unauthenticated, authority-free
+  control plane.** Verified independently: there is no token, credential,
+  scope, or peer check anywhere in `crates/malt-daemon/src/vnp_listener.rs`.
+  The listener accepts every connection, starts a thread, and sends the
+  session inventory during the handshake — before any identity is
+  established, because none ever is. It then accepts caller-supplied session
+  IDs and routes keys by session alone. `SessionCommand::KeyInput` carries no
+  client ID, so there is structurally nothing to enforce authority against,
+  and `AttachClient`/`DetachClient` (the only commands touching
+  `AuthorityTracker`) have zero production call sites. Any local process can
+  enumerate, observe, resize, and inject input into any session. HTTP bearer
+  auth does not cover this path — it is a different transport.
+  **Being addressed in `specs/005-raw-input-authority/` as User Story 1.**
+  That spec originally assumed authenticated clients; the assumption was
+  false and the spec was revised rather than shipped on top of it.
+- **A-08 (High). VNP allows pre-handshake resource exhaustion.** The accept
+  loop spawns an unbounded OS thread per connection and only sets a read
+  timeout *after* blocking handshake work, so connect-and-stall clients
+  retain threads and sockets indefinitely. Same listener, same fix window —
+  folded into spec 005 as FR-003/FR-004 ("an unidentified caller must not
+  harm the daemon").
+- **A-02 (Critical). Requested isolation can succeed without isolating.**
+  `apply_session_isolation` returns `()` and logs Job Object failure while
+  continuing uncontained; `Capped` and `Contained` resolve to the same
+  placeholder limits; `Contained` never launches inside HCS; non-Windows has
+  no enforcement path at all; and session creation reports the *requested*
+  tier rather than a verified one. This is why `specs/001-cli-isolation-flag/`
+  was reopened as Partially implemented on 2026-07-25 — its fail-closed
+  requirement is unmet, and marking it Complete asserted a security guarantee
+  the code does not provide. See the isolation-policy entry in P1 for the
+  concrete plumbing proposal.
+- **A-03 (High). Gateway credentials are predictable, leaked, and possibly
+  non-durable.** `generate_random_token` derives its value from epoch
+  nanoseconds and fixed arithmetic rather than a CSPRNG, so tokens are
+  guessable by anyone who can approximate daemon start time. Directory
+  creation and token-file write errors are ignored, so a daemon can come up
+  believing it persisted a token it did not. And `malt-bin/src/daemon.rs`
+  prints the admin token to stdout on every start. Fix: OS CSPRNG bytes, an
+  atomic owner-only write that fails startup on error, and stop printing the
+  secret.
+- **A-04 (High). Gateway auth broke the clean-machine CLI flow — a
+  regression from the 0a work.** `MaltClient` reads the token once at
+  construction, but `main.rs` constructs the client *before* starting the
+  daemon. On a machine with no existing token file the daemon then creates
+  the token while the already-built client holds `None`, so its health
+  probes go out unauthenticated and the default `malt` flow fails. An
+  existing token file masks this entirely, which is why it survived the
+  session it was introduced in. Compounding it, `MaltClient::shutdown`
+  ignores the HTTP status and body, so `malt stop` can report success after a
+  401. Fix: construct or reload the client after daemon startup, and treat
+  non-success statuses as errors.
+- **A-05 (High). Rate limiting is a permanent lifetime counter.**
+  `RateLimiter` keeps only a token→count map and increments forever; no
+  production path ever refills or evicts. A valid token therefore reaches a
+  permanent 429 after 100 requests for the life of the daemon. Also missing
+  the architecture's per-session and global dimensions, rate metadata, and
+  request-body size limits. Fix: a monotonic-clock window or bucket with
+  eviction, plus the missing dimensions, plus bounding bodies before handlers
+  allocate. (Wired in during 0a without noticing it never refills.)
+- **A-06 (High). `ProcessSupervisor::kill` only removes bookkeeping.** It
+  drops the map entry; dropping the `Child` does not terminate anything —
+  Unix only nonblocking-reaps and Windows just closes the handle. Restored
+  Compat panes create supervisor-owned processes, and session destruction
+  never kills them, so they outlive their session. Fix: terminate and wait on
+  the process (or its isolation group) before removal, invoke it on
+  destroy/shutdown, and test with a real PID that actually dies.
+
+
 ## P1 — real gaps, worth fixing soon
 
 - **No genuine raw-input path exists anywhere in the daemon — confirmed,
@@ -607,7 +683,8 @@ termination that only removes bookkeeping (A-06).
   agent's UI; MALT's is an external agent remotely driving a persistent
   session).
 - **Three gateway pane-management routes were fake — `list_panes` FIXED
-  2026-07-24, `split_pane`/`close_pane` intentionally left as honest
+  2026-07-24 (audit finding **A-09**), `split_pane`/`close_pane`
+  intentionally left as honest
   stubs.** `DaemonBackend::list_panes` always returned a hardcoded
   `PaneResponse { id: 1, .. }` regardless of which session's real pane id
   actually was — added `first_pane: PaneId` to `Coordinator`'s
@@ -658,6 +735,73 @@ termination that only removes bookkeeping (A-06).
   returns empty output and no process survives afterward. See
   `docs/findings/2026-07-24-live-daemon-session.md#2-backgrounded-commands--dont-appear-to-survive-through-exec--medium-priority-not-root-caused`.
 
+
+### From the 2026-07-25 audit (medium severity)
+
+- **A-10. Gateway responses are not authoritative.** `create_session` echoes
+  the *requested* name, while the coordinator auto-suffixes duplicates — so a
+  response can say `foo` when the session is really `foo-2`, and a later list
+  disagrees with the create that made it. Separately, destroying a
+  nonexistent session returns success, because the backend returns `Ok` and
+  the coordinator silently no-ops. The route tests use a mock backend, which
+  is exactly why neither surfaced. Fix: return stored coordinator data,
+  return typed `NotFound`, and add coverage against the real backend rather
+  than the mock.
+- **A-13. Hard invariants have production violations.** The constitution bans
+  `unwrap`/`expect` outside tests and OS calls outside `malt-platform`. Both
+  are violated: `DebouncedStore` panics if the flush thread fails to spawn;
+  nine `SharedFdRegistry` methods panic on mutex poison; `Io::File::clone`
+  panics on descriptor exhaustion; `malt-daemon`'s supervisor uses
+  `std::os::windows::io` directly; and `malt-tools` makes direct OS FD and
+  symlink calls. Fix: propagate structured errors, recover from poison
+  deliberately where that is the right call, and move OS-specific work behind
+  `malt-platform`. Worth doing as its own pass — these are the invariants
+  AGENTS.md claims are clean.
+- **A-14. `FrameWriter` lacks the reader's size bound.** `FrameReader`
+  rejects payloads over `PROTOCOL_MAX_FRAME_SIZE`, but `FrameWriter` casts
+  `payload.len()` to `u32` without the same check, so it can emit a frame the
+  peer will reject, or truncate an oversized advertised length. Fix: validate
+  before narrowing, return `FrameTooLarge`, and test both boundaries.
+- **A-15. Vi `dd` state leaks across sessions.** The pending-`d` operator
+  lives in a process-global `AtomicBool` in `malt-term/src/keymap.rs` rather
+  than on `Editor`, so a `d` typed in one session can make a `d` in another
+  session delete that second editor's line. Fix: move the pending-operator
+  state onto `Editor` and add an interleaved two-editor test. Same class as
+  the shared-process-state bugs AGENTS.md already documents.
+- **A-11 (update). Compat restore also picks the wrong pane.** Already
+  tracked here for running outside the session's isolation group; the audit
+  adds that restore selects the first `BTreeMap` entry rather than the
+  persisted `focus`, and that a stale comment still claims Compat restore is
+  unimplemented while the code launches it.
+- **A-16 (update). Active stubs in user-facing paths.** Already partly
+  tracked; the audit's specifics are `maltty` (startup `expect`s, ignores
+  render lines), `ThemeResolver` (no-op returning default colours),
+  `malt-term` keymap (history navigation, completion, ex mode, and search all
+  ignored), and `mash` (`select`, `coproc`, `umask`, limited `ulimit`). The
+  correction stands: implement, hide behind an unavailable capability, or
+  document as unsupported — but do not return apparent success.
+
+### Smaller items found while closing the audit's quality gates (2026-07-25)
+
+- **`rm` treats an unrecognized `-flag` as a path.** Real `rm` rejects it as
+  an invalid option. Found because clippy flagged an `if`/`else` whose
+  branches were identical; the branches were collapsed but the behaviour was
+  deliberately left alone, since changing it needs its own tests. See
+  `crates/malt-tools/src/custom/rm.rs`.
+- **`vexilc` codegen emits lint-dirty Rust.** Beyond the `@doc` off-by-one
+  already recorded above: redundant borrows (`write_string(&inner_val)`),
+  same-type casts (`self.timestamp as u64` where it is already `u64`), and
+  unused glob imports (`use vexil_runtime::*` in generated config modules).
+  Harmless, but they force the generated trees to be exempted from the
+  workspace lint gate. Worth reporting upstream together with the `@doc`
+  issue.
+- **The lint gate is now green but not enforced.** `cargo fmt --check` and
+  `cargo clippy --workspace --all-targets -- -D warnings` both pass as of
+  2026-07-25, but nothing runs them automatically. The audit's correction
+  asks for deterministic CI gates; without one this will drift back, as it
+  already did once.
+
+
 ## P2 — deliberately deferred, not forgotten (explicitly paused per ADR-0003)
 
 - **`maltty` cannot render a single character today, confirmed** —
@@ -698,7 +842,7 @@ termination that only removes bookkeeping (A-06).
   question. See `docs/findings/2026-07-24-audit-isolation-safety.md`
   item 5.
 - **`malt-elevate` has 9 of 10 privileged operations that actively report
-  success while doing nothing** (`stub_success()`,
+  success while doing nothing** (audit finding **A-12**; `stub_success()`,
   `crates/malt-elevate/src/dispatch.rs:44-65`) — only `CreateSymlink` is
   real. This is categorically worse than fail-open (it's not an attempt
   that failed, it's a lie), but confirmed **unreachable from any live code
@@ -760,6 +904,36 @@ termination that only removes bookkeeping (A-06).
   `docs/findings/2026-07-24-audit-persistence-restore.md` §3.
 
 ## Done (for context — remove once stale)
+
+### 2026-07-25 audit findings closed the same day
+
+- **A-17 — formatting and lint gates were red.** `cargo fmt --check` failed
+  across 39 tracked files and `cargo clippy -- -D warnings` failed. Both now
+  pass. Fixing the clippy gate surfaced two real defects (a duplicated
+  comparison in `sed`, and `lines().flatten()` looping forever on a
+  persistently-failing reader) plus a backoff that reset on connect rather
+  than on success. Generated vexilc trees and a small number of
+  deliberate-by-design lints are scoped with written justification rather
+  than obeyed. **Not yet CI-enforced** — see the smaller-items entry in P1.
+- **A-18 — the priority header contradicted the completed-work record.**
+  It listed delivered items as pending, which could have routed someone back
+  into finished work. Replaced with delivered-vs-open.
+- **A-19 — delivered specs still said Draft.** 002/003/004 marked
+  Implemented with pointers to their findings docs. Spec 001 was worse than
+  reported: it claimed *Complete* while its fail-closed guarantee is unmet,
+  and is now reopened as Partially implemented (see A-02).
+- **A-20 — governing documents were stale.** ADR-0004 written for the
+  Bus/bounded-channel divergence (a backlog note was not sufficient for a
+  design contradiction); `architecture.md` amended in place and its
+  `PersistedPane` model refreshed to include `env_snapshot` and
+  `command_blocks`; the `EnvSnapshot` schema comment no longer claims it is
+  unwired; feature 004's quickstart is platform-labelled with a PowerShell
+  path instead of Bash-only `kill -STOP`. Still open from A-20: ADR-0001 and
+  ADR-0002 retain superseded present-tense claims, and there is still no
+  root README defining supported commands, token handling, the VNP trust
+  boundary, or source-of-truth order.
+
+
 
 - 2026-07-24: **Strategic audit swarm + ADR-0003.** Five parallel agents
   audited execution correctness, input/concurrency, persistence/restore,
