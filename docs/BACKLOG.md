@@ -248,6 +248,20 @@ original ten, in order. Each links to its detail below.
   by ADR-0002. See
   `docs/findings/2026-07-24-audit-execution-correctness.md` §3
   (recommendations 4 and 6).
+  **Update 2026-07-25: the producer half now effectively exists, as a side
+  effect of features 002 + 003.** The command worker already announces
+  `SessionCommand::ExecutionStarted { command_id, command, started_at }`
+  before running, and `ExecutionCompleted` carries the finished result;
+  the control actor already handles both (that pair is what drives command
+  history). So "when did a command start / finish, with what id and exit
+  code" is live, structured, and already crossing a thread boundary —
+  what's missing is publishing it as `CommandStarted`/`CommandFinished`
+  and, the actual hard part, **giving the Bus its first real consumer**
+  (an SSE endpoint or a VNP-forwarded lifecycle channel). Re-verified
+  2026-07-25: `subscribe`/`drain`/`drain_critical` still have zero
+  non-test callers outside the bus's own internals. This meaningfully
+  reduces the scope of priority 3 — it is now a delivery-path problem,
+  not an instrumentation problem.
 - **Persistent execution history (ADR-0002 Phase 3/4) — both stacked gaps
   FIXED 2026-07-25**, sequenced as one coordinated change per the
   original recommendation. Full Spec Kit treatment:
@@ -351,6 +365,23 @@ original ten, in order. Each links to its detail below.
     404 still distinct for a missing session, and that `history`
     deliberately still succeeds on a dormant session (it answers from
     the snapshot rather than requiring a restore).
+- **Two more `DaemonError` variants still land on 500, deliberately left
+  alone 2026-07-25.** Noticed while fixing the dormant-session mapping,
+  not fixed with it because neither is reachable through
+  `map_execution_error` on a normal Gateway path, so changing them would
+  be speculative rather than evidence-driven:
+  - `NameConflict` (no unique session name after 100 attempts) — reaches
+    the Gateway via `create_session`, which maps errors with its own
+    inline `GatewayError::Internal(...)` rather than
+    `map_execution_error`. Arguably 409. Needs a test that can actually
+    provoke it (100 colliding names) before it's worth changing.
+  - `AppRestoreNotSupported` — only constructed in `restore_session`,
+    which today is reached through VNP attach, not any HTTP route. If a
+    restore-triggering HTTP route is ever added, this should be a 501 or
+    409, not a 500.
+  Fix either only alongside a test that reaches it for real; both are
+  currently unreachable-by-inspection, and an untestable status change is
+  how the "looks done but isn't" pattern starts.
 - **`vexilc` 0.5.1 attaches a field-level `@doc` to the *preceding*
   field.** Found 2026-07-25 while adding `PersistedCommandBlock`: a
   `@doc` written immediately above a field lands on the field before it
