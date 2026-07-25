@@ -191,11 +191,32 @@
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T044 Update `docs/BACKLOG.md`: mark ADR-0003 priorities 5 and 6 delivered, and audit findings A-01, A-03, A-07, A-08 closed with evidence (test names). Keep the peer-credential transport migration open and re-state why it was deferred.
-- [ ] T045 [P] Update `AGENTS.md`: VNP now requires authentication; `send` writes raw input rather than executing; input authority is live. Correct the "What's Implemented" claims that this feature falsifies.
-- [ ] T046 [P] Amend `docs/design/architecture.md` where it describes input handling, and note that local identification uses a shared token rather than the peer credentials the document specifies — with a pointer to the backlog item. Do not silently leave the document describing a mechanism that is not there.
-- [ ] T047 Run the full quickstart manually against a live daemon — all four scenarios, including the abrupt-kill handover — and record the outcome in a dated `docs/findings/` entry. The riskiest behavior here is only observable with real clients, as it was for 003 and 004.
-- [ ] T048 Final verification: all four gates plus Smoosh 183/183. Commit. **Merge to main.**
+- [X] T044 Update `docs/BACKLOG.md`: mark ADR-0003 priorities 5 and 6 delivered, and audit findings A-01, A-03, A-07, A-08 closed with evidence (test names). Keep the peer-credential transport migration open and re-state why it was deferred.
+- [X] T045 [P] Update `AGENTS.md`: VNP now requires authentication; `send` writes raw input rather than executing; input authority is live. Correct the "What's Implemented" claims that this feature falsifies.
+- [X] T046 [P] Amend `docs/design/architecture.md` where it describes input handling, and note that local identification uses a shared token rather than the peer credentials the document specifies — with a pointer to the backlog item. Do not silently leave the document describing a mechanism that is not there.
+- [X] T047 Run the full quickstart manually against a live daemon — all four scenarios, including the abrupt-kill handover — and record the outcome in a dated `docs/findings/` entry. The riskiest behavior here is only observable with real clients, as it was for 003 and 004.
+- [X] T048 Final verification: all four gates plus Smoosh 183/183. Commit. **Merge to main.**
+
+> **Spec 005 complete 2026-07-25.** Workspace 1418 passed / 0 failed; fmt and
+> clippy clean; Smoosh 183 passed, 3 skipped.
+>
+> Quickstart run recorded in
+> `docs/findings/2026-07-25-spec-005-quickstart-verification.md`, including
+> what it does **not** establish: scenarios 3 and 4 were driven by two real
+> VNP clients over real TCP and by the HTTP surface, not by two interactive
+> TUIs, and the TUI authority notice has no end-to-end coverage of the
+> rendered result.
+>
+> Two test names cited as evidence in `docs/BACKLOG.md` were wrong on first
+> writing and were corrected after checking they existed. A closure note that
+> cites a test which does not exist is worse than no note, because it reads as
+> verification.
+>
+> A-01 is closed for disclosure and injection but **local identification is
+> still a shared bearer token over TCP**, not the OS peer credentials
+> `docs/design/architecture.md` specifies. That document now carries an
+> as-built note rather than silently describing a mechanism that is not
+> there, and the migration stays open in the backlog.
 
 ---
 

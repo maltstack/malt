@@ -236,15 +236,40 @@ then credentials/rate limiting, then process termination and raw input.
   `AuthorityTracker`) have zero production call sites. Any local process can
   enumerate, observe, resize, and inject input into any session. HTTP bearer
   auth does not cover this path — it is a different transport.
-  **Being addressed in `specs/005-raw-input-authority/` as User Story 1.**
-  That spec originally assumed authenticated clients; the assumption was
-  false and the spec was revised rather than shipped on top of it.
+  **CLOSED 2026-07-25** by `specs/005-raw-input-authority/`. Every element
+  above is now false: the transport authenticates before disclosing anything
+  (`crates/malt-daemon/src/connection/handshake.rs` takes the inventory as a
+  `FnOnce` so the ordering is structural, not a convention);
+  `SessionCommand::KeyInput` carries an `InputOrigin`; and the vestigial
+  `AttachClient`/`DetachClient` pair is deleted, so there is one attach path
+  and it drives `AuthorityTracker`.
+  Evidence: `vnp_listener::an_unauthenticated_client_is_refused_and_learns_no_session_names`,
+  `attaching_over_the_wire_applies_the_requested_authority`,
+  `attaching_as_an_observer_over_the_wire_does_not_take_authority`,
+  `dropping_the_connection_releases_authority`, plus the live byte-level check
+  in `docs/findings/2026-07-25-spec-005-quickstart-verification.md`.
+  **Still open, deliberately:** local identification uses a shared bearer
+  token over TCP, not the OS peer credentials
+  (`SO_PEERCRED`/`GetNamedPipeClientProcessId`) that
+  `docs/design/architecture.md` specifies for local transports. The token
+  closes the disclosure and injection hole; it does not make "same user"
+  structural, and any local process that can read the token file is
+  indistinguishable from the owner. Migrating the local transport to a Unix
+  socket / named pipe with peer credentials remains the intended end state.
 - **A-08 (High). VNP allows pre-handshake resource exhaustion.** The accept
   loop spawns an unbounded OS thread per connection and only sets a read
   timeout *after* blocking handshake work, so connect-and-stall clients
   retain threads and sockets indefinitely. Same listener, same fix window —
   folded into spec 005 as FR-003/FR-004 ("an unidentified caller must not
   harm the daemon").
+  **CLOSED 2026-07-25.** A 10-second deadline is applied before the first
+  blocking read, and `MAX_PENDING_HANDSHAKES` (64) bounds concurrent
+  unidentified connections. The deadline is set on the stream itself rather
+  than on the write-side clone: `try_clone` duplicates the descriptor and a
+  receive timeout is per-descriptor on Windows, so the obvious placement
+  silently does nothing. Evidence:
+  `vnp_listener::a_connection_that_never_identifies_is_closed` and
+  `vnp_listener::stalled_connections_do_not_block_a_legitimate_client`.
 - **A-02 (Critical). Requested isolation can succeed without isolating.**
   `apply_session_isolation` returns `()` and logs Job Object failure while
   continuing uncontained; `Capped` and `Contained` resolve to the same

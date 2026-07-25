@@ -617,3 +617,129 @@ fn stalled_connections_do_not_block_a_legitimate_client() {
     );
     drop(stalled);
 }
+
+/// Attach over the real wire with a chosen authority.
+fn do_attach_with(writer: &mut FrameWriter<TcpStream>, session_id: u32, authority: InputAuthority) {
+    let attach = AttachSession {
+        session_id: SessionId(session_id),
+        authority,
+        _unknown: Vec::new(),
+    };
+    let env = make_envelope(DOMAIN_SESSION, MSG_ATTACH_SESSION, session_id);
+    let mut w = BitWriter::new();
+    attach.pack(&mut w).unwrap();
+    let payload = w.finish();
+    let combined = encode_message(&env, &payload).unwrap();
+    writer
+        .write_frame(&Frame {
+            flags: FrameFlags::new(),
+            payload: combined,
+        })
+        .unwrap();
+}
+
+/// The authority a client requests when attaching is honoured.
+///
+/// This drives the real listener over real TCP. It is the evidence that
+/// matters, because `AttachSession.authority` used to be decoded here and
+/// discarded: a test that called `AuthorityTracker` directly passed the whole
+/// time the request was being thrown away.
+#[test]
+fn attaching_over_the_wire_applies_the_requested_authority() {
+    let (coordinator, session_id) = make_coordinator_with_session();
+    let (addr, token) = start_test_listener_with_auth(coordinator.clone());
+    set_test_credential(&token);
+
+    let stream = TcpStream::connect(&addr).unwrap();
+    let mut writer = FrameWriter::new(stream.try_clone().unwrap());
+    let mut reader = FrameReader::new(BufReader::new(stream));
+    let _ = do_handshake(&mut writer, &mut reader);
+    do_attach_with(&mut writer, session_id, InputAuthority::Exclusive);
+    let _ = read_initial_state(&mut reader);
+
+    let holder = coordinator
+        .lock()
+        .unwrap()
+        .input_authority_holder(&SessionId(session_id))
+        .unwrap();
+    assert!(
+        holder.is_some(),
+        "a client attaching Exclusive over the wire must hold input authority"
+    );
+}
+
+/// An observer attaching over the wire does not take the keyboard.
+///
+/// The inverse of the test above, and the one that fails if the requested
+/// authority is ignored and every attacher is treated as a typist.
+#[test]
+fn attaching_as_an_observer_over_the_wire_does_not_take_authority() {
+    let (coordinator, session_id) = make_coordinator_with_session();
+    let (addr, token) = start_test_listener_with_auth(coordinator.clone());
+    set_test_credential(&token);
+
+    let stream = TcpStream::connect(&addr).unwrap();
+    let mut writer = FrameWriter::new(stream.try_clone().unwrap());
+    let mut reader = FrameReader::new(BufReader::new(stream));
+    let _ = do_handshake(&mut writer, &mut reader);
+    do_attach_with(&mut writer, session_id, InputAuthority::Observe);
+    let _ = read_initial_state(&mut reader);
+
+    let holder = coordinator
+        .lock()
+        .unwrap()
+        .input_authority_holder(&SessionId(session_id))
+        .unwrap();
+    assert_eq!(
+        holder, None,
+        "attaching to observe must not seize input authority"
+    );
+}
+
+/// A disconnected holder releases the keyboard without a clean detach.
+///
+/// The socket is dropped rather than a DetachSession being sent, which is
+/// what an abrupt client death looks like to the daemon.
+#[test]
+fn dropping_the_connection_releases_authority() {
+    let (coordinator, session_id) = make_coordinator_with_session();
+    let (addr, token) = start_test_listener_with_auth(coordinator.clone());
+    set_test_credential(&token);
+
+    {
+        let stream = TcpStream::connect(&addr).unwrap();
+        let mut writer = FrameWriter::new(stream.try_clone().unwrap());
+        let mut reader = FrameReader::new(BufReader::new(stream));
+        let _ = do_handshake(&mut writer, &mut reader);
+        do_attach_with(&mut writer, session_id, InputAuthority::Exclusive);
+        let _ = read_initial_state(&mut reader);
+        assert!(coordinator
+            .lock()
+            .unwrap()
+            .input_authority_holder(&SessionId(session_id))
+            .unwrap()
+            .is_some());
+        // Socket dropped here: no DetachSession, no goodbye.
+    }
+
+    // The listener notices on its next read and unregisters. Poll rather than
+    // sleep a fixed amount -- the point is that it happens without a timeout
+    // or grace period, not that it happens within any particular millisecond.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let holder = coordinator
+            .lock()
+            .unwrap()
+            .input_authority_holder(&SessionId(session_id))
+            .unwrap();
+        if holder.is_none() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "an abruptly departed holder must release authority, or the \
+             session is stranded until restart"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}

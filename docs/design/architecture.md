@@ -1171,6 +1171,16 @@ Authentication is category-based, with minimum requirements per transport:
 | Category | Transport | Mechanism | Setup |
 |----------|-----------|-----------|-------|
 | **Local** | Named pipe, Unix socket | OS peer credentials (`SO_PEERCRED` / `GetNamedPipeClientProcessId`) | Zero-config. Same user = authenticated. |
+
+> **As-built note (2026-07-25).** The local transport is TCP on `port+1` and
+> authenticates with the same shared bearer token as the HTTP surface, read
+> from `~/.config/malt/api-token` — *not* OS peer credentials, and not a named
+> pipe or Unix socket. This closed the disclosure and injection hole (audit
+> A-01) but does not make "same user" structural: any local process able to
+> read the token file is indistinguishable from the owner. The peer-credential
+> design above remains the intended end state and is tracked in
+> `docs/BACKLOG.md` under A-01. Recorded here so this table is not read as a
+> description of what exists.
 | **Remote-personal** | TCP+TLS, WebSocket+TLS | Self-signed TLS certificate + TOFU pinning + bearer token | `malt remote setup` generates cert + token. First connection pins the cert. |
 | **Remote-shared** | TCP+TLS, WebSocket+TLS | CA-signed TLS + API key (per-client, revocable) or OAuth 2.0 | For shared infrastructure, CI, team environments. |
 

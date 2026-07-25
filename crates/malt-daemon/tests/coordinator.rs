@@ -382,7 +382,6 @@ fn spawn_with_cwd_uses_provided_directory() {
 
 #[test]
 fn session_goes_dormant_on_last_client_detach() {
-
     let dir = tempfile::tempdir().unwrap();
     let store = make_store(&dir);
     let mut coord = Coordinator::new(PoolConfig::default(), store.clone());
@@ -451,7 +450,6 @@ fn dormant_session_visible_in_list_sessions() {
 
 #[test]
 fn restore_shell_session_from_dormant() {
-
     let dir = tempfile::tempdir().unwrap();
 
     {
@@ -591,7 +589,6 @@ fn second_daemon_sees_dormant_sessions() {
 
 #[test]
 fn restore_fails_cleanly_on_bad_cwd() {
-
     let dir = tempfile::tempdir().unwrap();
 
     // Create session, make it go dormant.
