@@ -1,6 +1,7 @@
 // Authentication middleware — token validation, capability extraction.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Mutex;
 
 /// Authorization scope levels, ordered from least to most privileged.
@@ -69,10 +70,19 @@ impl TokenStore {
 
     /// Generate a new token with the given scope.
     pub fn generate_token(&self, scope: AuthScope) -> String {
-        let token = generate_random_token();
+        // Entropy failure is not a recoverable condition for a credential.
+        // Callers that need to handle it use `try_generate_token`.
+        self.try_generate_token(scope)
+            .expect("OS entropy unavailable; cannot mint a credential")
+    }
+
+    /// Fallible token minting, for paths that must report entropy failure
+    /// rather than abort.
+    pub fn try_generate_token(&self, scope: AuthScope) -> Result<String, AuthError> {
+        let token = generate_random_token()?;
         let mut tokens = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
         tokens.insert(token.clone(), scope);
-        token
+        Ok(token)
     }
 
     /// Validate a bearer token and return the associated scope.
@@ -92,23 +102,28 @@ impl TokenStore {
     /// If the token file exists and is non-empty, the token is loaded and
     /// registered with `Admin` scope. Otherwise a new `Admin` token is
     /// generated and saved to the file.
-    pub fn load_or_generate_default(&self) -> String {
-        let token_path = dirs_token_path();
-        if let Ok(token) = std::fs::read_to_string(&token_path) {
+    pub fn load_or_generate_default(&self) -> Result<String, AuthError> {
+        self.load_or_generate_default_at(&dirs_token_path())
+    }
+
+    /// As [`TokenStore::load_or_generate_default`], against an explicit path.
+    /// Exists so tests can exercise the real persistence logic without
+    /// touching the developer's own token file.
+    pub fn load_or_generate_default_at(&self, token_path: &Path) -> Result<String, AuthError> {
+        if let Ok(token) = std::fs::read_to_string(token_path) {
             let token = token.trim().to_string();
             if !token.is_empty() {
                 let mut tokens = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
                 tokens.insert(token.clone(), AuthScope::Admin);
-                return token;
+                return Ok(token);
             }
         }
-        // Generate and save
-        let token = self.generate_token(AuthScope::Admin);
-        if let Some(parent) = token_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&token_path, &token);
-        token
+
+        let token = generate_random_token()?;
+        write_token_file(token_path, &token)?;
+        let mut tokens = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
+        tokens.insert(token.clone(), AuthScope::Admin);
+        Ok(token)
     }
 }
 
@@ -118,17 +133,70 @@ impl Default for TokenStore {
     }
 }
 
-fn generate_random_token() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!(
-        "malt_{:016x}{:016x}",
-        seed,
-        seed.wrapping_mul(6_364_136_223_846_793_005)
-    )
+/// Generate a bearer token from OS entropy.
+///
+/// This previously derived both halves from `SystemTime::now().as_nanos()`
+/// and a fixed multiplier, which made a token recomputable by anyone who
+/// could approximate daemon start time — the credential was effectively
+/// public. It is now 32 bytes of CSPRNG output rendered as hex.
+///
+/// A failure to obtain OS entropy is fatal rather than silently degraded:
+/// there is no weaker fallback that would be honest to hand out as a
+/// credential.
+/// Errors from credential minting and persistence.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum AuthError {
+    #[error("OS entropy unavailable: {0}")]
+    Entropy(String),
+    #[error("could not persist the API token to {path}: {source}")]
+    Persist {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Write the token durably and readable only by its owner.
+///
+/// Errors are returned rather than ignored: a daemon that silently fails to
+/// persist its token comes up with a credential no client can ever read,
+/// which presents as "auth is broken" long after the cause.
+fn write_token_file(path: &Path, token: &str) -> Result<(), AuthError> {
+    let persist = |source: std::io::Error| AuthError::Persist {
+        path: path.to_path_buf(),
+        source,
+    };
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(persist)?;
+    }
+
+    // Temp + rename, so a reader never observes a half-written token.
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, token).map_err(persist)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(persist)?;
+    }
+
+    std::fs::rename(&tmp, path).map_err(persist)?;
+    Ok(())
+}
+
+fn generate_random_token() -> Result<String, AuthError> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| AuthError::Entropy(e.to_string()))?;
+    let mut token = String::with_capacity(5 + bytes.len() * 2);
+    token.push_str("malt_");
+    for byte in bytes {
+        use std::fmt::Write as _;
+        // Writing to a String cannot fail; the Result is discarded knowingly.
+        let _ = write!(token, "{byte:02x}");
+    }
+    Ok(token)
 }
 
 /// Where `TokenStore::load_or_generate_default` reads/writes the default

@@ -37,8 +37,16 @@ pub fn run_daemon(port: u16) -> Result<()> {
         });
 
         let token_store = Arc::new(TokenStore::new());
-        let default_token = token_store.load_or_generate_default();
-        println!("API token: {default_token}");
+        // Print where the token lives, never the token itself. It used to go
+        // to stdout on every start, which put the credential into scrollback,
+        // CI logs, and shell history.
+        let _default_token = token_store
+            .load_or_generate_default()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        println!(
+            "API token written to {}",
+            malt_gateway::auth::dirs_token_path().display()
+        );
         let rate_limiter = Arc::new(RateLimiter::new(RATE_LIMIT_PER_WINDOW));
 
         let backend = Arc::new(DaemonBackend::new(coordinator.clone()));

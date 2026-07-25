@@ -16,8 +16,8 @@
 
 ## Phase 1: Setup
 
-- [ ] T001 Verify the baseline: `cargo build --workspace`, `cargo test --workspace`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`. All four must pass before starting. Record the Smoosh baseline too (`cargo test -p mash --test smoosh_runner smoosh_conformance_tests`, expect 183 passed / 3 skipped) — US2 changes `mash`, and a before-number is worthless once the change is in.
-- [ ] T002 Add an OS CSPRNG dependency (`getrandom`) to `crates/malt-gateway/Cargo.toml`, needed by T003. Confirm it is not already reachable transitively before adding.
+- [X] T001 Verify the baseline: `cargo build --workspace`, `cargo test --workspace`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`. All four must pass before starting. Record the Smoosh baseline too (`cargo test -p mash --test smoosh_runner smoosh_conformance_tests`, expect 183 passed / 3 skipped) — US2 changes `mash`, and a before-number is worthless once the change is in.
+- [X] T002 Add an OS CSPRNG dependency (`getrandom`) to `crates/malt-gateway/Cargo.toml`, needed by T003. Confirm it is not already reachable transitively before adding.
 
 ---
 
@@ -27,10 +27,10 @@
 
 **⚠️ CRITICAL**: T003 gates User Story 1. Authenticating with a guessable token is a lock whose key can be recomputed (research R1).
 
-- [ ] T003 Replace `generate_random_token` in `crates/malt-gateway/src/auth.rs` with OS CSPRNG bytes. It currently derives both halves from epoch nanoseconds and a fixed multiplier, so a token is recomputable by anyone who can approximate daemon start time (audit A-03). Keep the `malt_` prefix and the length so existing readers are unaffected.
-- [ ] T004 Fix token persistence in `crates/malt-gateway/src/auth.rs`: directory-creation and file-write errors are currently ignored, so the daemon can come up believing it persisted a token it did not. Write atomically (temp + rename), restrict to owner-only permissions, and fail daemon startup rather than continuing with a token nothing else can read.
-- [ ] T005 Stop printing the admin token to stdout in `crates/malt-bin/src/daemon.rs`. Print the path it was written to instead, so first-run discovery still works without putting the secret in scrollback, CI logs, and terminal history.
-- [ ] T006 [P] Tests in `crates/malt-gateway/tests/` (new `auth.rs`): two tokens generated in the same process differ; a token generated at a known instant is not reproducible from that instant (assert against the old epoch-derived construction, so the fix cannot silently regress); a write failure surfaces as an error rather than a silent success.
+- [X] T003 Replace `generate_random_token` in `crates/malt-gateway/src/auth.rs` with OS CSPRNG bytes. It currently derives both halves from epoch nanoseconds and a fixed multiplier, so a token is recomputable by anyone who can approximate daemon start time (audit A-03). Keep the `malt_` prefix and the length so existing readers are unaffected.
+- [X] T004 Fix token persistence in `crates/malt-gateway/src/auth.rs`: directory-creation and file-write errors are currently ignored, so the daemon can come up believing it persisted a token it did not. Write atomically (temp + rename), restrict to owner-only permissions, and fail daemon startup rather than continuing with a token nothing else can read.
+- [X] T005 Stop printing the admin token to stdout in `crates/malt-bin/src/daemon.rs`. Print the path it was written to instead, so first-run discovery still works without putting the secret in scrollback, CI logs, and terminal history.
+- [X] T006 [P] Tests in `crates/malt-gateway/tests/` (new `auth.rs`): two tokens generated in the same process differ; a token generated at a known instant is not reproducible from that instant (assert against the old epoch-derived construction, so the fix cannot silently regress); a write failure surfaces as an error rather than a silent success.
 
 **Checkpoint**: gates green. Commit. **Merge to main** — this is independently valuable even before US1.
 
