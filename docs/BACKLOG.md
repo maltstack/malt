@@ -314,16 +314,23 @@ then credentials/rate limiting, then process termination and raw input.
   silently does nothing. Evidence:
   `vnp_listener::a_connection_that_never_identifies_is_closed` and
   `vnp_listener::stalled_connections_do_not_block_a_legitimate_client`.
-- **A-02 (Critical). Requested isolation can succeed without isolating.**
-  `apply_session_isolation` returns `()` and logs Job Object failure while
-  continuing uncontained; `Capped` and `Contained` resolve to the same
-  placeholder limits; `Contained` never launches inside HCS; non-Windows has
-  no enforcement path at all; and session creation reports the *requested*
-  tier rather than a verified one. This is why `specs/001-cli-isolation-flag/`
-  was reopened as Partially implemented on 2026-07-25 — its fail-closed
-  requirement is unmet, and marking it Complete asserted a security guarantee
-  the code does not provide. See the isolation-policy entry in P1 for the
-  concrete plumbing proposal.
+- **A-02 (Critical). Requested isolation can succeed without isolating —
+  CLOSED 2026-07-26.** Required creation now returns an establishment result
+  or refuses before a session is inserted; `preferred` is the explicit,
+  status-bearing downgrade path and `disabled` requests Bare deliberately.
+  Windows Job Object establishment is created and enumerated before it is
+  reported as verified, session teardown uses kill-on-close, and Contained is
+  refused rather than relabelling a Job Object as a container. Evidence:
+  `required_contained_refusal_leaves_no_session`,
+  `failed_required_containment_leaves_no_session_or_named_job_object`,
+  `job_object_teardown_kills_its_real_process_tree`, and
+  `capped_session_reestablishes_verified_isolation_after_restart`.
+
+  This closes the fail-open trust defect, not all future isolation work.
+  AppContainer, HCS process spawning, Linux namespace/cgroup/seccomp wiring,
+  and macOS sandbox spawning remain unavailable session backends and must stay
+  refused until their real spawn-path integration and external-observation
+  tests exist.
 - **A-03 (High). Gateway credentials are predictable, leaked, and possibly
   non-durable.** `generate_random_token` derives its value from epoch
   nanoseconds and fixed arithmetic rather than a CSPRNG, so tokens are

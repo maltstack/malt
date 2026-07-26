@@ -141,7 +141,7 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 - [X] T036 Restore reruns session establishment and replaces the stored status from its result. `capped_session_reestablishes_verified_isolation_after_restart` persists, restarts, attaches, and verifies the newly inspected status.
 - [ ] T037 Surface containment lost after creation (FR-017) in `crates/malt-daemon/src/executor/session_thread.rs`, updating the stored status rather than leaving a session reporting a level it no longer has. Note the detection point is unspecified by the spec -- decide whether it is checked on query, on command execution, or not at all this cycle, and record which.
 - [X] T038 Closed `specs/001-cli-isolation-flag/spec.md` with the existing required-refusal, visible-preferred-downgrade, and verified-capped-status test evidence.
-- [ ] T039 [P] Update `docs/BACKLOG.md`: close audit A-02 with evidence, and mark priority 7 delivered. Restate what remains open — AppContainer, and any module T004 found broken.
+- [X] T039 [P] Closed audit A-02 in `docs/BACKLOG.md` with named evidence and restated the still-unavailable AppContainer, HCS, Linux, and macOS spawn backends.
 - [X] T040 [P] Updated `AGENTS.md` command reference with fail-closed policy semantics and `malt isolation capabilities`.
 - [X] T041 Recorded the breaking `SessionInfo.isolation` shape and Required-by-default behavior in `docs/RELEASE_NOTES.md`, naming `preferred` and `disabled` as explicit alternatives.
 - [ ] T042 Run the full quickstart manually against a live daemon — all eight scenarios — and record the outcome in a dated `docs/findings/` entry, **including what it does not establish**.
