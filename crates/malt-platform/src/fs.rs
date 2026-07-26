@@ -289,6 +289,11 @@ pub fn canonical_path_within(root: &Path, candidate: &Path) -> io::Result<bool> 
     Ok(candidate.starts_with(root))
 }
 
+/// Resolve a filesystem path once at an authority boundary.
+pub fn canonicalize_path(path: &Path) -> io::Result<PathBuf> {
+    fs::canonicalize(path)
+}
+
 /// Create a symbolic link.
 pub fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
     #[cfg(unix)]

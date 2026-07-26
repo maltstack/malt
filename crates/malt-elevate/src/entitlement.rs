@@ -5,6 +5,7 @@
 //! stale process claims are never restored from an unprivileged store.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use malt_platform::ipc::{process_identity, PeerIdentity, ProcessIdentity};
 
@@ -20,6 +21,14 @@ pub struct EnrolledDaemon {
 #[derive(Debug, Default)]
 pub struct EnrollmentRegistry {
     daemons: HashMap<u32, EnrolledDaemon>,
+    sessions: HashMap<u32, SessionEntitlement>,
+}
+
+#[derive(Debug, Clone)]
+struct SessionEntitlement {
+    owner: String,
+    storage_root: PathBuf,
+    pids: HashMap<u32, ProcessIdentity>,
 }
 
 impl EnrollmentRegistry {
@@ -69,6 +78,82 @@ impl EnrollmentRegistry {
             self.daemons.remove(&peer.process_id);
             Ok(false)
         }
+    }
+
+    /// Register a session's only permitted filesystem root and process set.
+    /// The caller may name resources, but the helper observes their identity
+    /// and refuses them unless they belong to the enrolled daemon's principal.
+    pub fn register_session(
+        &mut self,
+        peer: &PeerIdentity,
+        session_id: u32,
+        storage_root: &str,
+        pids: &[u32],
+    ) -> Result<(), ElevateError> {
+        if !self.is_currently_enrolled(peer)? {
+            return Err(ElevateError::AuthFailed(
+                "session registration requires an enrolled daemon process".to_string(),
+            ));
+        }
+        let owner = peer.principal.clone();
+        let storage_root = malt_platform::fs::canonicalize_path(Path::new(storage_root))
+            .map_err(ElevateError::Connection)?;
+        let mut observed_pids = HashMap::new();
+        for pid in pids {
+            let identity = process_identity(*pid).map_err(ElevateError::Connection)?;
+            if identity.principal != owner {
+                return Err(ElevateError::AuthFailed(format!(
+                    "PID {pid} does not belong to the enrolled daemon principal"
+                )));
+            }
+            observed_pids.insert(*pid, identity);
+        }
+        self.sessions.insert(
+            session_id,
+            SessionEntitlement {
+                owner,
+                storage_root,
+                pids: observed_pids,
+            },
+        );
+        Ok(())
+    }
+
+    /// Validate a path using the service's canonical session root.
+    pub fn allows_path(
+        &self,
+        peer: &PeerIdentity,
+        session_id: u32,
+        path: &Path,
+    ) -> Result<bool, ElevateError> {
+        let Some(session) = self.sessions.get(&session_id) else {
+            return Ok(false);
+        };
+        if session.owner != peer.principal {
+            return Ok(false);
+        }
+        malt_platform::fs::canonical_path_within(&session.storage_root, path)
+            .map_err(ElevateError::Connection)
+    }
+
+    /// Validate an observed PID against the session record and reject PID reuse.
+    pub fn allows_pid(
+        &mut self,
+        peer: &PeerIdentity,
+        session_id: u32,
+        pid: u32,
+    ) -> Result<bool, ElevateError> {
+        let Some(session) = self.sessions.get(&session_id) else {
+            return Ok(false);
+        };
+        if session.owner != peer.principal {
+            return Ok(false);
+        }
+        let Some(recorded) = session.pids.get(&pid) else {
+            return Ok(false);
+        };
+        let observed = process_identity(pid).map_err(ElevateError::Connection)?;
+        Ok(observed == *recorded)
     }
 }
 

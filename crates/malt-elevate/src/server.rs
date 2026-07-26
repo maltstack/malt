@@ -10,6 +10,7 @@ use malt_platform::ipc::{NamedPipeConnection, NamedPipeServer, PeerIdentity};
 use malt_platform::service::StopSignal;
 use malt_protocol::elevate_channel::{
     DAEMON_ENROLLMENT_REQUEST, DAEMON_ENROLLMENT_RESPONSE, HELLO, HELLO_ACK, REQUEST, RESPONSE,
+    SESSION_ENTITLEMENT_REQUEST, SESSION_ENTITLEMENT_RESPONSE,
 };
 use malt_protocol::framing::{Frame, FrameFlags, FrameReader, FrameWriter};
 use malt_protocol::vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
@@ -21,7 +22,8 @@ use crate::entitlement::EnrollmentRegistry;
 use crate::error::ElevateError;
 use crate::protocol::{
     DaemonEnrollmentRequest, DaemonEnrollmentResponse, ElevateHello, ElevateHelloAck,
-    ElevateRequestEnvelope, ElevateResponse, ReasonCode,
+    ElevateRequestEnvelope, ElevateResponse, ReasonCode, SessionEntitlementRequest,
+    SessionEntitlementResponse,
 };
 
 /// Configuration for one authorised daemon connection.
@@ -140,6 +142,13 @@ fn serve_connection(
                 .map_err(frame_error)?;
             continue;
         }
+        if tag == SESSION_ENTITLEMENT_REQUEST {
+            let response = register_session(&frame, &peer, enrollments)?;
+            FrameWriter::new(connection.file())
+                .write_frame(&encode_session_entitlement_response(&response)?)
+                .map_err(frame_error)?;
+            continue;
+        }
         let response = match decode_request(&frame) {
             Ok(envelope) if guard.consume(envelope.nonce) => {
                 let enrolled = enrollments
@@ -200,6 +209,46 @@ fn enroll_daemon(
             _unknown: Vec::new(),
         },
         Err(error) => DaemonEnrollmentResponse {
+            accepted: false,
+            reason: Some(error.to_string()),
+            _unknown: Vec::new(),
+        },
+    })
+}
+
+fn register_session(
+    frame: &Frame,
+    peer: &PeerIdentity,
+    enrollments: &std::sync::Mutex<EnrollmentRegistry>,
+) -> Result<SessionEntitlementResponse, ElevateError> {
+    let Some((&tag, body)) = frame.payload.split_first() else {
+        return Err(ElevateError::Protocol("empty elevate frame".to_string()));
+    };
+    if tag != SESSION_ENTITLEMENT_REQUEST {
+        return Err(ElevateError::Protocol(format!(
+            "unexpected session entitlement message tag {tag}"
+        )));
+    }
+    let mut reader = BitReader::new(body);
+    let request = SessionEntitlementRequest::unpack(&mut reader).map_err(|error| {
+        ElevateError::Protocol(format!("invalid session entitlement request: {error}"))
+    })?;
+    let result = enrollments
+        .lock()
+        .map_err(|_| ElevateError::AuthFailed("enrollment registry lock poisoned".to_string()))?
+        .register_session(
+            peer,
+            request.session_id.0,
+            &request.storage_root,
+            &request.pids,
+        );
+    Ok(match result {
+        Ok(()) => SessionEntitlementResponse {
+            accepted: true,
+            reason: None,
+            _unknown: Vec::new(),
+        },
+        Err(error) => SessionEntitlementResponse {
             accepted: false,
             reason: Some(error.to_string()),
             _unknown: Vec::new(),
@@ -321,6 +370,21 @@ fn encode_enrollment_response(response: &DaemonEnrollmentResponse) -> Result<Fra
         .pack(&mut writer)
         .map_err(|error| ElevateError::Protocol(format!("encode enrollment response: {error}")))?;
     let mut payload = vec![DAEMON_ENROLLMENT_RESPONSE];
+    payload.extend(writer.finish());
+    Ok(Frame {
+        flags: FrameFlags::new(),
+        payload,
+    })
+}
+
+fn encode_session_entitlement_response(
+    response: &SessionEntitlementResponse,
+) -> Result<Frame, ElevateError> {
+    let mut writer = BitWriter::new();
+    response.pack(&mut writer).map_err(|error| {
+        ElevateError::Protocol(format!("encode session entitlement response: {error}"))
+    })?;
+    let mut payload = vec![SESSION_ENTITLEMENT_RESPONSE];
     payload.extend(writer.finish());
     Ok(Frame {
         flags: FrameFlags::new(),

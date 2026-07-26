@@ -23,6 +23,8 @@ pub mod elevate_channel {
     pub const RESPONSE: u8 = 4;
     pub const DAEMON_ENROLLMENT_REQUEST: u8 = 5;
     pub const DAEMON_ENROLLMENT_RESPONSE: u8 = 6;
+    pub const SESSION_ENTITLEMENT_REQUEST: u8 = 7;
+    pub const SESSION_ENTITLEMENT_RESPONSE: u8 = 8;
 }
 
 // Envelope: hand-written helpers wrapping the generated type
