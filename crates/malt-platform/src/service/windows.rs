@@ -364,6 +364,25 @@ pub enum ServiceStatus {
 /// Register and start a demand-start service. The caller must already have
 /// explicit elevation; this function never attempts to elevate itself.
 pub fn install(name: &str, executable: &Path, arguments: &[&str]) -> io::Result<()> {
+    let service = create_service(name, executable, arguments)?;
+    // SAFETY: service is a valid service handle; there are no arguments.
+    if unsafe { StartServiceW(service.0, 0, std::ptr::null()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Register a demand-start service without starting it.
+///
+/// This supports inspection and real SCM tests where the test command is not
+/// itself a Windows service process. Production installation should use
+/// [`install`], which starts the registered helper immediately.
+pub fn register(name: &str, executable: &Path, arguments: &[&str]) -> io::Result<()> {
+    let _service = create_service(name, executable, arguments)?;
+    Ok(())
+}
+
+fn create_service(name: &str, executable: &Path, arguments: &[&str]) -> io::Result<Service> {
     let manager = Manager::open(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE)?;
     let name_w = wide(name)?;
     let command = service_command(executable, arguments)?;
@@ -390,12 +409,7 @@ pub fn install(name: &str, executable: &Path, arguments: &[&str]) -> io::Result<
     if handle.is_null() {
         return Err(io::Error::last_os_error());
     }
-    let service = Service(handle);
-    // SAFETY: service is a valid service handle; there are no arguments.
-    if unsafe { StartServiceW(service.0, 0, std::ptr::null()) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    Ok(Service(handle))
 }
 
 /// Stop, wait for, and delete an existing helper service. Service deletion is

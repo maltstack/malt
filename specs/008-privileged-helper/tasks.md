@@ -31,7 +31,7 @@ changes behaviour.
 
 - [X] T001 Add a build script `crates/malt-elevate/build.rs` compiling `schemas/elevate.vexil`. Follow `crates/malt-protocol/build.rs`, which **invokes the `vexilc` binary via `std::process::Command`** against `../../schemas` — it is not a `vexil-lang` build-dependency, so do not add one. CI already installs a pinned `vexilc` (`.github/actions/setup-vexilc`). **The schema exists and is complete** — this is wiring, not authoring (research R2).
 - [X] T002 [P] Add `Win32_System_Services`, `Win32_System_Pipes` and `Win32_System_Threading` to the `windows-sys` features in `crates/malt-platform/Cargo.toml`. `Win32_Foundation` and `Win32_Security` are already present.
-- [ ] T003 [P] Confirm `malt-elevate`'s new build script runs in CI. **It is already a workspace member** (`Cargo.toml:3`, ninth entry), so `cargo build --workspace` covers it — verify the pinned `vexilc` is on PATH for it as it is for `malt-protocol`, since a build script that cannot find `vexilc` fails the whole workspace build. That is exactly how CI run 1 failed on 2026-07-26.
+- [X] T003 [P] Confirm `malt-elevate`'s new build script runs in CI. **It is already a workspace member** (`Cargo.toml:3`, ninth entry), so `cargo build --workspace` covers it — verify the pinned `vexilc` is on PATH for it as it is for `malt-protocol`, since a build script that cannot find `vexilc` fails the whole workspace build. That is exactly how CI run 1 failed on 2026-07-26.
 
 ---
 
@@ -96,7 +96,7 @@ No container operation needed.
 - [X] T017 [P] [US2] Create `crates/malt-platform/src/ipc/` with a named-pipe server and client (`mod.rs`, `windows.rs`). Every `unsafe` block carries `// SAFETY:`. **Put this in `malt-platform`, not `malt-elevate`** — the plan's Structure Decision, and `dispatch.rs:142` is what happened last time this crate made its own OS calls.
 - [X] T018 [US2] Add peer-identity query to `crates/malt-platform/src/ipc/windows.rs`: attribute a connected pipe client to an OS principal. **This is the primary authentication control** — the existing nonce proves read access to a file, not the identity of a process (research R3).
 - [X] T019 [P] [US2] Create `crates/malt-platform/src/service/` with install, uninstall, and status against the Windows service manager (`mod.rs`, `windows.rs`), all `unsafe` documented.
-- [ ] T020 [US2] Add real-OS tests for T017–T019 in `crates/malt-platform/tests/`. **Tests that construct types without calling Win32 are the shape that hid two real `job_objects.rs` bugs** (Constitution IV) — these must open a pipe, query a peer, and register a service.
+- [X] T020 [US2] Add real-OS tests for T017–T019 in `crates/malt-platform/tests/`. **Tests that construct types without calling Win32 are the shape that hid two real `job_objects.rs` bugs** (Constitution IV) — these must open a pipe, query a peer, and register a service.
 
 ### Helper server
 
