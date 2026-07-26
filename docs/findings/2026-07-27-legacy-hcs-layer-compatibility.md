@@ -24,7 +24,9 @@ Windows Server 2022 / Nano Server LTSC 2022 layer, not a Docker Desktop cache.
 
 The host is now Windows build `10.0.26200.8875` (25H2). The legacy Vexil
 metadata and its HCS-layer test fixture identify the cached Nano Server image
-as build `10.0.20348` (LTSC 2022).
+as build `10.0.20348` (LTSC 2022). Vexil's compatibility test explicitly
+allows a 26200 host to use that older image under its relaxed policy, so build
+numbers alone do not explain the failed MALT construction.
 
 ## Live boundary evidence
 
@@ -40,22 +42,25 @@ HRESULT=0x80071126
 OperationFailure: Construct
 ```
 
-The same rejection is expected for the prior empty-layer configuration, but
-the legacy layer investigation changes the explanation: a prepared layer is
-present; it is not compatible with this upgraded host's process-isolated
-Windows-container ABI.
+The existing MALT helper still renders `Storage.Layers` as an empty list and
+uses the session directory directly as `Storage.Path`. It does not prepare a
+layer chain or initialise an HCS writable layer. The legacy cache supplies
+one prepared read-only layer, but MALT lacks the trusted image selection,
+layer-chain validation, writable-scratch preparation, and configuration
+assembly needed to use it. Therefore the generic HCS `Construct` failure does
+not establish a host/image incompatibility.
 
 ## Correction to the Docker inference
 
 Docker Desktop remains in Linux-container mode, but switching it was never a
-technical prerequisite for Vexil's old path. The relevant limitation is a
-compatible, HCS-ready Windows base image and its preparation/selection
-contract—not Docker's active engine mode.
+technical prerequisite for Vexil's old path. The relevant limitation is the
+missing MALT-owned image and HCS-layer preparation contract—not Docker's
+active engine mode.
 
 ## What this does not establish
 
-- It does not prove that this 20348 layer can run under Hyper-V isolation; the
-  required utility-VM/image configuration is not part of MALT.
+- It does not prove the existing 20348 layer will complete a contained MALT
+  session once MALT has the missing layer-provisioning pipeline.
 - It does not implement or vendor Vexil's OCI image pull, image validation,
   layer preparation, or cache lifecycle. Those are a separate feature.
 - It does not establish a contained MALT session or an HCS-created child
@@ -64,6 +69,6 @@ contract—not Docker's active engine mode.
 ## Result
 
 Contained isolation remains unavailable and required requests remain
-fail-closed. The next live proof needs an administrator-provisioned,
-host-compatible Windows base layer plus a reviewed MALT-owned image/layer
-provisioning feature; it must not rely on an undocumented sibling cache.
+fail-closed. The next live proof needs a reviewed MALT-owned image/layer
+provisioning feature; it may use the legacy cache as a test fixture, but must
+not rely on it as an undocumented runtime dependency.
