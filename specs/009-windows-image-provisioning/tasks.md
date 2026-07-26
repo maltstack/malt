@@ -36,7 +36,7 @@ every image command and contained session needs.
 verification, ownership, and HCS transaction tests in this phase pass.
 
 - [X] T006 Implement immutable SHA-256 digest parsing, canonical formatting, and streaming verification in `crates/malt-image/src/digest.rs` with tests in `crates/malt-image/src/digest.rs`.
-- [ ] T007 [P] Implement Windows/amd64 manifest-list selection and host-version-policy inputs in `crates/malt-image/src/manifest.rs` with malformed, non-Windows, wrong-architecture, and ambiguous-selection tests.
+- [X] T007 [P] Implement Windows/amd64 manifest-list selection and host-version-policy inputs in `crates/malt-image/src/manifest.rs` with malformed, non-Windows, wrong-architecture, and ambiguous-selection tests.
 - [ ] T008 [P] Implement bounded public-registry manifest/blob retrieval and size-aware descriptor verification in `crates/malt-image/src/registry.rs` with local fixture-server tests in `crates/malt-image/tests/registry.rs`.
 - [ ] T009 Implement safe OCI layer archive validation/extraction that rejects traversal, duplicate entries, links, and special files in `crates/malt-image/src/archive.rs` with adversarial tests in `crates/malt-image/src/archive.rs`.
 - [ ] T010 Implement atomic helper-owned blob/image-record publication and transaction rollback in `crates/malt-image/src/store.rs` with interrupted/corrupt-state tests in `crates/malt-image/src/store.rs`.

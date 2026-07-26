@@ -120,4 +120,13 @@ mod tests {
         assert_eq!(store.load_record(&record.manifest_digest).expect("load"), record);
         assert!(matches!(store.publish_record(&record), Err(StoreError::Exists(_))));
     }
+
+    #[test]
+    fn corrupt_or_mismatched_records_are_not_accepted() {
+        let directory = tempfile::tempdir().expect("temp");
+        let store = ImageStore::open(directory.path()).expect("store");
+        let record = record();
+        std::fs::write(store.record_path(&record.manifest_digest), b"not-json").expect("write corrupt record");
+        assert!(matches!(store.load_record(&record.manifest_digest), Err(StoreError::Json(_))));
+    }
 }

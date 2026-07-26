@@ -9,6 +9,7 @@ description = "Elevated helper binary for MALT — privileged operations with no
 [dependencies]
 malt-protocol = { path = "../malt-protocol" }
 malt-platform = { path = "../malt-platform", features = ["hcs"] }
+malt-image = { path = "../malt-image" }
 thiserror = "2"
 tracing = "0.1"
 

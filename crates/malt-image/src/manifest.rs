@@ -84,6 +84,13 @@ mod tests {
     }
 
     #[test]
+    fn select_rejects_wrong_windows_architecture_and_malformed_json() {
+        let json = format!(r#"{{"schemaVersion":2,"manifests":[{{"mediaType":"{OCI_IMAGE_MANIFEST}","digest":"{DIGEST}","size":3,"platform":{{"os":"windows","architecture":"arm64"}}}}]}}"#);
+        assert!(matches!(select_windows_amd64(json.as_bytes(), None), Err(ManifestError::NoWindowsAmd64)));
+        assert!(matches!(select_windows_amd64(b"{not-json", None), Err(ManifestError::Json(_))));
+    }
+
+    #[test]
     fn select_rejects_ambiguous_windows_variants_without_policy() {
         let json = format!(r#"{{"schemaVersion":2,"manifests":[{{"mediaType":"{OCI_IMAGE_MANIFEST}","digest":"{DIGEST}","size":3,"platform":{{"os":"windows","architecture":"amd64","os.version":"20348"}}}},{{"mediaType":"{OCI_IMAGE_MANIFEST}","digest":"{DIGEST}","size":3,"platform":{{"os":"windows","architecture":"amd64","os.version":"26100"}}}}]}}"#);
         assert!(matches!(select_windows_amd64(json.as_bytes(), None), Err(ManifestError::AmbiguousWindowsAmd64)));
