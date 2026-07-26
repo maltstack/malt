@@ -308,12 +308,14 @@ pub fn manage_hcs_container(
     session_id: malt_protocol::common::SessionId,
     memory_limit_mb: Option<u32>,
     hostname: Option<String>,
+    image_id: Option<String>,
 ) -> io::Result<malt_protocol::elevate::ElevateResponse> {
     send_hcs_container_operation(
         session_id,
         malt_protocol::elevate::ContainerOperation::Create {
             memory_limit_mb,
             hostname,
+            image_id,
         },
     )
 }
@@ -923,6 +925,7 @@ pub fn manage_hcs_container(
     session_id: malt_protocol::common::SessionId,
     _memory_limit_mb: Option<u32>,
     _hostname: Option<String>,
+    _image_id: Option<String>,
 ) -> io::Result<malt_protocol::elevate::ElevateResponse> {
     send_request(malt_protocol::elevate::ElevateRequestEnvelope {
         request_id: 0,
@@ -930,6 +933,7 @@ pub fn manage_hcs_container(
             operation: malt_protocol::elevate::ContainerOperation::Create {
                 memory_limit_mb: None,
                 hostname: None,
+                image_id: None,
             },
         },
         session_id,

@@ -103,7 +103,7 @@ message ElevateRequestEnvelope {
 @non_exhaustive
 @doc("Typed container operation. The helper renders the OS configuration itself.")
 union ContainerOperation {
-    Create    @0 { memory_limit_mb @0 : optional<u32>  hostname @1 : optional<string> }
+    Create    @0 { memory_limit_mb @0 : optional<u32>  hostname @1 : optional<string> image_id @2 : optional<string> }
     Start     @1 { id @0 : string }
     Terminate @2 { id @0 : string }
     StartProcess @3 { request @0 : HcsProcessRequest }

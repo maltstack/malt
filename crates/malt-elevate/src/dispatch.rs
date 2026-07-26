@@ -322,12 +322,14 @@ fn dispatch_hcs_container(
         ContainerOperation::Create {
             memory_limit_mb,
             hostname,
+            image_id,
         } => create_hcs_container(
             request_id,
             session_id,
             storage_root,
             *memory_limit_mb,
             hostname.as_deref(),
+            image_id.as_deref(),
             containers,
         ),
         ContainerOperation::Start { id } => {
@@ -373,6 +375,7 @@ fn create_hcs_container(
     storage_root: &Path,
     memory_limit_mb: Option<u32>,
     hostname: Option<&str>,
+    image_id: Option<&str>,
     containers: &mut HcsContainerRegistry,
 ) -> ElevateResponse {
     let hostname =
@@ -397,10 +400,13 @@ fn create_hcs_container(
     let (parents, workspace, root) = if fake_test {
         (Vec::new(), None, storage_root.to_path_buf())
     } else {
-        let record = match ready.as_slice() {
+        let record = match image_id {
+            Some(image_id) => match ready.iter().find(|record| record.manifest_digest.to_string() == image_id) { Some(record) => record, None => return refused(request_id, ReasonCode::InvalidParameters, "selected image is not a ready helper-owned image") },
+            None => match ready.as_slice() {
             [record] => record,
             [] => return refused(request_id, ReasonCode::InvalidParameters, "contained session requires one ready helper-owned Windows image; provision one with `malt image provision`"),
             _ => return refused(request_id, ReasonCode::InvalidParameters, "contained session requires an explicit image selector because multiple ready helper-owned images exist"),
+            },
         };
         let digest = record.manifest_digest.to_string().trim_start_matches("sha256:").to_string();
         let parents = (0..record.manifest.layers.len()).map(|index| malt_platform::isolation::layers::PreparedLayer { id: format!("malt-{digest}-{index}"), path: store.root().join("prepared").join(&digest).join("layers").join(index.to_string()) }).collect::<Vec<_>>();

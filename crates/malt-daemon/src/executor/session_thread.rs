@@ -321,6 +321,7 @@ fn apply_session_isolation(
                 session_id.clone(),
                 None,
                 Some(format!("malt-{}", session_id.0)),
+                None,
             )
             .map_err(|error| {
                 DaemonError::IsolationUnavailable(format!(
