@@ -18,7 +18,7 @@ use malt_protocol::vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
 use crate::auth::{ReplayDecision, ReplayGuard};
 use crate::capability::PROTOCOL_VERSION;
-use crate::dispatch::{dispatch_entitled_request, refused, HcsContainerRegistry};
+use crate::dispatch::{dispatch_entitled_request, dispatch_image_operation, refused, HcsContainerRegistry};
 use crate::entitlement::EnrollmentRegistry;
 use crate::error::ElevateError;
 use crate::protocol::{
@@ -167,6 +167,8 @@ fn serve_connection(
                         ReasonCode::NotEntitled,
                         "caller is not an explicitly enrolled daemon process",
                     )
+                } else if let malt_protocol::elevate::ElevateRequest::ManageImage { operation } = &envelope.request {
+                    dispatch_image_operation(envelope.request_id, operation)
                 } else if let Some(storage_root) =
                     registry.storage_root_for_session(&peer, envelope.session_id.0)
                 {

@@ -4,11 +4,11 @@
 //! effect. Everything else is an explicit refusal or an indeterminate result.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::protocol::{
     ContainerOperation, ElevateRequest, ElevateResponse, HcsProcessLaunch, HcsProcessRequest,
-    OutcomeKind, ReasonCode,
+    ImageOperation, OutcomeKind, ProvisionedImage, ProvisionedImageList, ReasonCode,
 };
 
 /// Dispatch a request to the operation handler.
@@ -54,6 +54,7 @@ pub fn dispatch_request(request_id: u32, request: &ElevateRequest) -> ElevateRes
                 )
             }
         }
+        ElevateRequest::ManageImage { operation } => dispatch_image_operation(request_id, operation),
         ElevateRequest::ApplySeatbelt { .. } => {
             unsupported_or_unimplemented(request_id, "ApplySeatbelt", cfg!(target_os = "macos"))
         }
@@ -73,6 +74,75 @@ pub fn dispatch_request(request_id: u32, request: &ElevateRequest) -> ElevateRes
             "unrecognized elevate operation cannot be validated",
         ),
     }
+}
+
+/// Dispatch an authenticated daemon's image request. Image IDs are manifest
+/// digests; helper code resolves them only in its ProgramData-owned store.
+pub fn dispatch_image_operation(request_id: u32, operation: &ImageOperation) -> ElevateResponse {
+    if !cfg!(windows) {
+        return unsupported_or_unimplemented(request_id, "ManageImage", false);
+    }
+    let store = match helper_image_store() {
+        Ok(store) => store,
+        Err(detail) => return refused(request_id, ReasonCode::OsError, detail),
+    };
+    match operation {
+        ImageOperation::Provision { reference } => match malt_image::acquire_public_windows_image(&store, reference) {
+            Ok(record) => pack_image_response(request_id, image_view(&record)),
+            Err(error) => refused(request_id, ReasonCode::OsError, format!("image provision failed: {error}")),
+        },
+        ImageOperation::List { .. } => match store.list_records() {
+            Ok(records) => pack_image_list_response(request_id, records.iter().map(image_view).collect()),
+            Err(error) => refused(request_id, ReasonCode::OsError, format!("could not list helper-owned images: {error}")),
+        },
+        ImageOperation::Inspect { id } => match parse_image_id(id).and_then(|digest| store.load_record(&digest).map_err(|error| error.to_string())) {
+            Ok(record) => pack_image_response(request_id, image_view(&record)),
+            Err(detail) => refused(request_id, ReasonCode::InvalidParameters, format!("unknown helper-owned image: {detail}")),
+        },
+        ImageOperation::Remove { id } => match parse_image_id(id).and_then(|digest| {
+            let record = store.load_record(&digest).map_err(|error| error.to_string())?;
+            if record.prepared { return Err("prepared images cannot be removed until helper workspace reference accounting is available".to_string()); }
+            store.remove_record(&digest).map_err(|error| error.to_string())?;
+            Ok(())
+        }) {
+            Ok(()) => performed(request_id, Some(id.as_bytes().to_vec()), "helper-owned image record removed"),
+            Err(detail) => refused(request_id, ReasonCode::InvalidParameters, detail),
+        },
+        ImageOperation::Unknown { .. } => refused(request_id, ReasonCode::InvalidParameters, "unknown image operation"),
+        _ => refused(request_id, ReasonCode::InvalidParameters, "unrecognized image operation"),
+    }
+}
+
+fn helper_image_store() -> Result<malt_image::ImageStore, String> {
+    let program_data = std::env::var_os("ProgramData").ok_or_else(|| "ProgramData is not set for the elevated helper".to_string())?;
+    malt_image::ImageStore::open(PathBuf::from(program_data).join("MALT").join("images")).map_err(|error| error.to_string())
+}
+
+fn parse_image_id(value: &str) -> Result<malt_image::Digest, String> { value.parse::<malt_image::Digest>().map_err(|error| error.to_string()) }
+
+fn image_view(record: &malt_image::ImageRecord) -> ProvisionedImage {
+    ProvisionedImage { id: record.manifest_digest.to_string(), manifest_digest: record.manifest_digest.to_string(), platform: format!("{}/{}", record.platform.os, record.platform.architecture), os_version: record.platform.os_version.clone(), ready: record.prepared, reason: (!record.prepared).then(|| "image acquired and verified but not yet HCS-prepared".to_string()), active_sessions: 0, _unknown: Vec::new() }
+}
+
+fn pack_image_response(request_id: u32, image: ProvisionedImage) -> ElevateResponse {
+    let mut writer = malt_protocol::vexil_runtime::BitWriter::new();
+    match malt_protocol::vexil_runtime::Pack::pack(&image, &mut writer) {
+        Ok(()) => performed(request_id, Some(writer.finish()), "helper-owned image operation completed"),
+        Err(error) => refused(request_id, ReasonCode::OsError, format!("could not encode image response: {error}")),
+    }
+}
+
+fn pack_image_list_response(request_id: u32, images: Vec<ProvisionedImage>) -> ElevateResponse {
+    let mut writer = malt_protocol::vexil_runtime::BitWriter::new();
+    let list = ProvisionedImageList { images, _unknown: Vec::new() };
+    match malt_protocol::vexil_runtime::Pack::pack(&list, &mut writer) {
+        Ok(()) => performed(request_id, Some(writer.finish()), "helper-owned image list completed"),
+        Err(error) => refused(request_id, ReasonCode::OsError, format!("could not encode image list response: {error}")),
+    }
+}
+
+fn performed(request_id: u32, payload: Option<Vec<u8>>, detail: impl Into<String>) -> ElevateResponse {
+    ElevateResponse { request_id, kind: OutcomeKind::Performed, reason: None, detail: Some(detail.into()), payload, _unknown: Vec::new() }
 }
 
 /// Dispatch an operation after the server has resolved the request's session

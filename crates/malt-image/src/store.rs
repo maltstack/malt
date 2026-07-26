@@ -86,6 +86,20 @@ impl ImageStore {
         fs::remove_file(path)?;
         Ok(())
     }
+
+    pub fn list_records(&self) -> Result<Vec<ImageRecord>, StoreError> {
+        let mut records: Vec<ImageRecord> = Vec::new();
+        for entry in fs::read_dir(self.root.join("records"))? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() && entry.path().extension().is_some_and(|extension| extension == "json") {
+                let mut bytes = Vec::new();
+                File::open(entry.path())?.read_to_end(&mut bytes)?;
+                records.push(serde_json::from_slice(&bytes)?);
+            }
+        }
+        records.sort_by(|left, right| left.manifest_digest.to_string().cmp(&right.manifest_digest.to_string()));
+        Ok(records)
+    }
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
