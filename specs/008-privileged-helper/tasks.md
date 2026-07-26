@@ -100,10 +100,10 @@ No container operation needed.
 
 ### Helper server
 
-- [ ] T021 [US2] Create `crates/malt-elevate/src/server.rs`: accept a connection, authenticate the peer, read framed requests, dispatch, respond. Bound every request with a timeout.
+- [X] T021 [US2] Create `crates/malt-elevate/src/server.rs`: accept a connection, authenticate the peer, read framed requests, dispatch, respond. Bound every request with a timeout.
 - [X] T022 [US2] Rewrite `crates/malt-elevate/src/main.rs` to serve. **Delete the "Phase 2 skeleton — IPC loop not yet implemented" path entirely** rather than leaving it behind a flag.
-- [ ] T023 [US2] Rewrite `crates/malt-elevate/src/auth.rs`: peer identity from T018 as the primary control; per-request single-use nonce with a bounded validity window for replay rejection. **A shared secret may remain as defence in depth but MUST NOT be the only control**, and no comment may claim a property the code does not implement (T008 removed the last two).
-- [ ] T024 [US2] Implement session-entitlement validation in `crates/malt-elevate/src/dispatch.rs` per [data-model.md](./data-model.md) §3: session ownership, pid membership checked **against the OS not against the request**, and path containment checked **after canonicalization**. **Put the path check in one function every operation calls** — guarding sites individually is how two of three tool-dispatch sites were missed.
+- [X] T023 [US2] Rewrite `crates/malt-elevate/src/auth.rs`: peer identity from T018 as the primary control; per-request single-use nonce with a bounded validity window for replay rejection. **A shared secret may remain as defence in depth but MUST NOT be the only control**, and no comment may claim a property the code does not implement (T008 removed the last two).
+- [X] T024 [US2] Implement session-entitlement validation in `crates/malt-elevate/src/dispatch.rs` per [data-model.md](./data-model.md) §3: session ownership, pid membership checked **against the OS not against the request**, and path containment checked **after canonicalization**. **Put the path check in one function every operation calls** — guarding sites individually is how two of three tool-dispatch sites were missed.
 - [X] T025 [US2] Return `Indeterminate` when a request was sent and no response arrived (FR-005). **The defect this prevents**: resolving an unknown outcome to either success or failure — the caller must be told it is unknown.
 
 ### Daemon and CLI
@@ -140,7 +140,7 @@ refused for that reason through the helper.
 
 ### Container operation
 
-- [ ] T038 [US3] Implement `ManageHcsContainer` in `crates/malt-elevate/src/dispatch.rs` against `malt_platform::isolation::hcs`. **The helper renders the container configuration document itself from typed fields plus the session's entitlement — the caller never supplies it** (FR-013, contract §1). This is the difference between a helper and an arbitrary-privileged-action service.
+- [X] T038 [US3] Implement `ManageHcsContainer` in `crates/malt-elevate/src/dispatch.rs` against `malt_platform::isolation::hcs`. **The helper renders the container configuration document itself from typed fields plus the session's entitlement — the caller never supplies it** (FR-013, contract §1). This is the difference between a helper and an arbitrary-privileged-action service.
 - [ ] T039 [US3] Ensure teardown runs on every failure path, so a create that fails part-way leaves no compute system behind (contract, operation rule 3). The `run_operation` helper added to `hcs.rs` earlier today already closes operations on every path — follow that shape.
 - [ ] T040 [US3] Route the daemon's contained-session path through `elevate_client` when the tier requires it, updating the session's `IsolationContext` **only on a `Performed` outcome**. `Refused` and `Indeterminate` leave it untouched.
 

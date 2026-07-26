@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 const MAX_CONCURRENT_CLIENTS: usize = 16;
+const FRAME_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 use malt_platform::ipc::{NamedPipeConnection, NamedPipeServer, PeerIdentity};
 use malt_platform::service::StopSignal;
@@ -12,7 +13,7 @@ use malt_protocol::elevate_channel::{
     DAEMON_ENROLLMENT_REQUEST, DAEMON_ENROLLMENT_RESPONSE, HELLO, HELLO_ACK, REQUEST, RESPONSE,
     SESSION_ENTITLEMENT_REQUEST, SESSION_ENTITLEMENT_RESPONSE,
 };
-use malt_protocol::framing::{Frame, FrameFlags, FrameReader, FrameWriter};
+use malt_protocol::framing::{Frame, FrameFlags, FrameWriter};
 use malt_protocol::vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
 use crate::auth::{ReplayDecision, ReplayGuard};
@@ -282,7 +283,7 @@ fn register_session(
 }
 
 fn read_frame(connection: &mut NamedPipeConnection) -> Result<Frame, ElevateError> {
-    match FrameReader::new(connection.file()).read_frame() {
+    match connection.read_frame_timeout(FRAME_READ_TIMEOUT) {
         Ok(frame) => Ok(frame),
         Err(malt_protocol::framing::FrameError::Io(error))
             if matches!(

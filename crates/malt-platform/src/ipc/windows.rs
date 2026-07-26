@@ -1,6 +1,8 @@
 use std::fs::File;
 use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, LocalFree, ERROR_PIPE_CONNECTED, FILETIME, GENERIC_READ,
@@ -24,6 +26,7 @@ use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows_sys::Win32::System::IO::CancelSynchronousIo;
 
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 
@@ -77,6 +80,69 @@ impl NamedPipeConnection {
     /// Borrow the connection as a standard file for framed I/O.
     pub fn file(&mut self) -> &mut File {
         &mut self.file
+    }
+
+    /// Read one VNP frame within a hard connection deadline.
+    ///
+    /// The framing reader uses synchronous ReadFile through File. Windows lets
+    /// another thread cancel that pending operation when it owns a
+    /// THREAD_TERMINATE-capable handle, keeping a partial frame from occupying
+    /// a helper client slot forever.
+    pub fn read_frame_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<malt_protocol::framing::Frame, malt_protocol::framing::FrameError> {
+        use malt_protocol::framing::{FrameError, FrameReader};
+
+        let mut reader_file = self.file.try_clone().map_err(FrameError::Io)?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let reader = std::thread::Builder::new()
+            .name("malt-named-pipe-frame-read".to_string())
+            .spawn(move || {
+                let result = FrameReader::new(&mut reader_file).read_frame();
+                let _ = sender.send(result);
+            })
+            .map_err(FrameError::Io)?;
+        match receiver.recv_timeout(timeout) {
+            Ok(result) => {
+                reader.join().map_err(|_| {
+                    FrameError::Io(io::Error::other(
+                        "named-pipe frame reader panicked after completing I/O",
+                    ))
+                })?;
+                result
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // SAFETY: reader is a live Rust thread. Its native handle is
+                // valid until JoinHandle is consumed, and the reader issues
+                // only synchronous I/O on its cloned pipe handle.
+                let cancelled = unsafe { CancelSynchronousIo(reader.as_raw_handle() as *mut _) };
+                if cancelled == 0 {
+                    let error = io::Error::last_os_error();
+                    // ERROR_NOT_FOUND means the frame read completed in the
+                    // race between the deadline and cancellation. Joining is
+                    // then immediate and the deadline still wins.
+                    if error.raw_os_error() != Some(1168) {
+                        return Err(FrameError::Io(error));
+                    }
+                }
+                reader.join().map_err(|_| {
+                    FrameError::Io(io::Error::other(
+                        "named-pipe frame reader panicked while cancelling I/O",
+                    ))
+                })?;
+                Err(FrameError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "named-pipe frame read exceeded its deadline",
+                )))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = reader.join();
+                Err(FrameError::Io(io::Error::other(
+                    "named-pipe frame reader exited without reporting a result",
+                )))
+            }
+        }
     }
 }
 

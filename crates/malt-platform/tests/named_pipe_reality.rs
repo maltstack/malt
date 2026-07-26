@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use malt_platform::ipc::{
     current_process_principal, process_identity, NamedPipeClient, NamedPipeServer,
 };
+use malt_protocol::framing::FrameError;
 
 #[test]
 fn process_identity_is_observed_from_the_running_process() {
@@ -67,4 +68,40 @@ fn named_pipe_accepts_a_real_client_and_attributes_its_process() {
     let identity = server.join().expect("server thread");
     assert_eq!(identity.process_id, std::process::id());
     assert_eq!(identity.principal, expected_principal);
+}
+
+#[test]
+fn named_pipe_partial_frame_read_is_cancelled_at_its_deadline() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let name = format!("malt-platform-timeout-{}-{suffix}", std::process::id());
+    let server_name = name.clone();
+    let server = thread::spawn(move || {
+        let server = NamedPipeServer::create(&server_name).expect("create named pipe");
+        let mut connection = server.accept().expect("accept named pipe client");
+        let started = std::time::Instant::now();
+        let result = connection.read_frame_timeout(Duration::from_millis(100));
+        (started.elapsed(), result)
+    });
+
+    let _client = loop {
+        match NamedPipeClient::connect(&name) {
+            Ok(client) => break client,
+            Err(error) if error.raw_os_error() == Some(2) => {
+                thread::sleep(Duration::from_millis(5))
+            }
+            Err(error) => panic!("connect named pipe: {error}"),
+        }
+    };
+    let (elapsed, result) = server.join().expect("server thread");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "frame timeout took too long: {elapsed:?}"
+    );
+    match result {
+        Err(FrameError::Io(error)) => assert_eq!(error.kind(), std::io::ErrorKind::TimedOut),
+        other => panic!("expected timed-out framed read, got {other:?}"),
+    }
 }
