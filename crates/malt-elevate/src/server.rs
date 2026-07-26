@@ -15,7 +15,7 @@ use malt_protocol::elevate_channel::{
 use malt_protocol::framing::{Frame, FrameFlags, FrameReader, FrameWriter};
 use malt_protocol::vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
-use crate::auth::ReplayGuard;
+use crate::auth::{ReplayDecision, ReplayGuard};
 use crate::capability::PROTOCOL_VERSION;
 use crate::dispatch::refused;
 use crate::entitlement::EnrollmentRegistry;
@@ -149,8 +149,9 @@ fn serve_connection(
                 .map_err(frame_error)?;
             continue;
         }
-        let response = match decode_request(&frame) {
-            Ok(envelope) if guard.consume(envelope.nonce) => {
+        let envelope = decode_request(&frame)?;
+        let response = match guard.consume(envelope.nonce) {
+            ReplayDecision::Accepted => {
                 let enrolled = enrollments
                     .lock()
                     .map_err(|_| {
@@ -167,12 +168,16 @@ fn serve_connection(
                     )
                 }
             }
-            Ok(envelope) => refused(
+            ReplayDecision::OutsideValidityWindow => refused(
+                envelope.request_id,
+                ReasonCode::InvalidParameters,
+                "request nonce is outside the 30-second validity window",
+            ),
+            ReplayDecision::Replayed => refused(
                 envelope.request_id,
                 ReasonCode::InvalidParameters,
                 "request nonce has already been consumed",
             ),
-            Err(error) => return Err(error),
         };
         FrameWriter::new(connection.file())
             .write_frame(&encode_response(&response)?)

@@ -282,10 +282,15 @@ pub fn register_session_entitlement(
 }
 
 #[cfg(windows)]
-fn enrollment_nonce(pid: u32) -> u64 {
+fn enrollment_nonce(_subject: u32) -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
     static NEXT_NONCE: AtomicU64 = AtomicU64::new(1);
-    (u64::from(pid) << 32) ^ NEXT_NONCE.fetch_add(1, Ordering::Relaxed)
+    let issued_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    (issued_at << 32) | (NEXT_NONCE.fetch_add(1, Ordering::Relaxed) & u64::from(u32::MAX))
 }
 
 #[cfg(all(test, windows))]

@@ -8,6 +8,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::ElevateError;
 
@@ -27,6 +28,21 @@ pub struct ReplayGuard {
     order: Mutex<VecDeque<u64>>,
 }
 
+/// Request nonces use the high 32 bits for their UTC issuance second and the
+/// low 32 bits as a caller-local sequence.  It makes the otherwise opaque
+/// protocol field independently time-verifiable by the privileged service.
+pub const REQUEST_NONCE_VALIDITY_SECS: u64 = 30;
+
+/// Why a request nonce was refused.  Keeping stale and replayed requests
+/// distinct ensures a caller cannot mistake an expired request for a transport
+/// failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayDecision {
+    Accepted,
+    Replayed,
+    OutsideValidityWindow,
+}
+
 impl ReplayGuard {
     /// Create a bounded guard. Capacity zero would silently disable replay
     /// protection, so it is rejected at construction.
@@ -43,18 +59,32 @@ impl ReplayGuard {
         })
     }
 
-    /// Consume `nonce`, returning false if it was already observed.
-    pub fn consume(&self, nonce: u64) -> bool {
+    /// Consume a timestamped request nonce against the current UTC clock.
+    pub fn consume(&self, nonce: u64) -> ReplayDecision {
+        let now = match unix_seconds() {
+            Ok(now) => now,
+            Err(_) => return ReplayDecision::OutsideValidityWindow,
+        };
+        self.consume_at(nonce, now)
+    }
+
+    /// Consume a timestamped request nonce at a supplied UTC second. This is
+    /// public for deterministic tests; production callers use `consume`.
+    pub fn consume_at(&self, nonce: u64, now: u64) -> ReplayDecision {
+        let issued_at = nonce >> 32;
+        if issued_at > now || now - issued_at > REQUEST_NONCE_VALIDITY_SECS {
+            return ReplayDecision::OutsideValidityWindow;
+        }
         let mut seen = match self.seen.lock() {
             Ok(guard) => guard,
-            Err(_) => return false,
+            Err(_) => return ReplayDecision::Replayed,
         };
         if !seen.insert(nonce) {
-            return false;
+            return ReplayDecision::Replayed;
         }
         let mut order = match self.order.lock() {
             Ok(guard) => guard,
-            Err(_) => return false,
+            Err(_) => return ReplayDecision::Replayed,
         };
         order.push_back(nonce);
         if order.len() > self.capacity {
@@ -62,8 +92,14 @@ impl ReplayGuard {
                 seen.remove(&expired);
             }
         }
-        true
+        ReplayDecision::Accepted
     }
+}
+
+fn unix_seconds() -> Result<u64, std::time::SystemTimeError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
 }
 
 impl NonceAuth {
@@ -137,12 +173,32 @@ mod tests {
     }
 
     #[test]
-    fn replay_guard_consumes_each_nonce_once() {
+    fn replay_guard_consumes_each_nonce_once_within_the_validity_window() {
         let guard = ReplayGuard::new(2).expect("valid capacity");
-        assert!(guard.consume(10));
-        assert!(!guard.consume(10));
-        assert!(guard.consume(11));
-        assert!(guard.consume(12));
-        assert!(guard.consume(10), "bounded window releases expired nonce");
+        let now = 4_000;
+        let nonce = |sequence| (now << 32) | sequence;
+        assert_eq!(guard.consume_at(nonce(10), now), ReplayDecision::Accepted);
+        assert_eq!(guard.consume_at(nonce(10), now), ReplayDecision::Replayed);
+        assert_eq!(guard.consume_at(nonce(11), now), ReplayDecision::Accepted);
+        assert_eq!(guard.consume_at(nonce(12), now), ReplayDecision::Accepted);
+        assert_eq!(
+            guard.consume_at(nonce(10), now),
+            ReplayDecision::Accepted,
+            "bounded window releases the oldest nonce only after capacity is exceeded"
+        );
+    }
+
+    #[test]
+    fn replay_guard_refuses_expired_and_future_nonces() {
+        let guard = ReplayGuard::new(2).expect("valid capacity");
+        let now = 4_000;
+        assert_eq!(
+            guard.consume_at(((now - REQUEST_NONCE_VALIDITY_SECS - 1) << 32) | 1, now),
+            ReplayDecision::OutsideValidityWindow
+        );
+        assert_eq!(
+            guard.consume_at(((now + 1) << 32) | 1, now),
+            ReplayDecision::OutsideValidityWindow
+        );
     }
 }
