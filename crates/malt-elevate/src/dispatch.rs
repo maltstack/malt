@@ -54,7 +54,9 @@ pub fn dispatch_request(request_id: u32, request: &ElevateRequest) -> ElevateRes
                 )
             }
         }
-        ElevateRequest::ManageImage { operation } => dispatch_image_operation(request_id, operation),
+        ElevateRequest::ManageImage { operation } => {
+            dispatch_image_operation(request_id, operation)
+        }
         ElevateRequest::ApplySeatbelt { .. } => {
             unsupported_or_unimplemented(request_id, "ApplySeatbelt", cfg!(target_os = "macos"))
         }
@@ -79,6 +81,21 @@ pub fn dispatch_request(request_id: u32, request: &ElevateRequest) -> ElevateRes
 /// Dispatch an authenticated daemon's image request. Image IDs are manifest
 /// digests; helper code resolves them only in its ProgramData-owned store.
 pub fn dispatch_image_operation(request_id: u32, operation: &ImageOperation) -> ElevateResponse {
+    dispatch_image_operation_with_containers(
+        request_id,
+        operation,
+        &HcsContainerRegistry::default(),
+    )
+}
+
+/// Dispatch an image operation with the live helper compute-system registry.
+/// The registry is the helper's independent authority for refusing removal of
+/// an image whose writable workspace is still active.
+pub fn dispatch_image_operation_with_containers(
+    request_id: u32,
+    operation: &ImageOperation,
+    containers: &HcsContainerRegistry,
+) -> ElevateResponse {
     if !cfg!(windows) {
         return unsupported_or_unimplemented(request_id, "ManageImage", false);
     }
@@ -87,49 +104,122 @@ pub fn dispatch_image_operation(request_id: u32, operation: &ImageOperation) -> 
         Err(detail) => return refused(request_id, ReasonCode::OsError, detail),
     };
     match operation {
-        ImageOperation::Provision { reference } => match malt_image::acquire_public_windows_image(&store, reference).and_then(|record| prepare_image(&store, record).map_err(malt_image::ProvisionError::Store)) {
-            Ok(record) => pack_image_response(request_id, image_view(&record)),
-            Err(error) => refused(request_id, ReasonCode::OsError, format!("image provision failed: {error}")),
-        },
+        ImageOperation::Provision { reference } => {
+            match malt_image::acquire_public_windows_image(&store, reference).and_then(|record| {
+                prepare_image(&store, record).map_err(malt_image::ProvisionError::Store)
+            }) {
+                Ok(record) => pack_image_response(request_id, image_view(&record)),
+                Err(error) => refused(
+                    request_id,
+                    ReasonCode::OsError,
+                    format!("image provision failed: {error}"),
+                ),
+            }
+        }
         ImageOperation::List { .. } => match store.list_records() {
-            Ok(records) => pack_image_list_response(request_id, records.iter().map(image_view).collect()),
-            Err(error) => refused(request_id, ReasonCode::OsError, format!("could not list helper-owned images: {error}")),
+            Ok(records) => {
+                pack_image_list_response(request_id, records.iter().map(image_view).collect())
+            }
+            Err(error) => refused(
+                request_id,
+                ReasonCode::OsError,
+                format!("could not list helper-owned images: {error}"),
+            ),
         },
-        ImageOperation::Inspect { id } => match parse_image_id(id).and_then(|digest| store.load_record(&digest).map_err(|error| error.to_string())) {
+        ImageOperation::Inspect { id } => match parse_image_id(id).and_then(|digest| {
+            store
+                .load_record(&digest)
+                .map_err(|error| error.to_string())
+        }) {
             Ok(record) => pack_image_response(request_id, image_view(&record)),
-            Err(detail) => refused(request_id, ReasonCode::InvalidParameters, format!("unknown helper-owned image: {detail}")),
+            Err(detail) => refused(
+                request_id,
+                ReasonCode::InvalidParameters,
+                format!("unknown helper-owned image: {detail}"),
+            ),
         },
         ImageOperation::Remove { id } => match parse_image_id(id).and_then(|digest| {
-            let record = store.load_record(&digest).map_err(|error| error.to_string())?;
-            if record.prepared { remove_prepared_image(&store, &record)?; }
-            store.remove_record(&digest).map_err(|error| error.to_string())?;
+            let record = store
+                .load_record(&digest)
+                .map_err(|error| error.to_string())?;
+            let digest_text = record.manifest_digest.to_string();
+            let dependent_sessions = containers
+                .containers
+                .values()
+                .filter(|container| container.image_id.as_deref() == Some(digest_text.as_str()))
+                .map(|container| container.session_id.to_string())
+                .collect::<Vec<_>>();
+            if !dependent_sessions.is_empty() {
+                return Err(format!(
+                    "cannot remove helper-owned image while contained sessions are active: {}",
+                    dependent_sessions.join(", ")
+                ));
+            }
+            if record.prepared {
+                remove_prepared_image(&store, &record)?;
+            }
+            store
+                .remove_record(&digest)
+                .map_err(|error| error.to_string())?;
             Ok(())
         }) {
-            Ok(()) => performed(request_id, Some(id.as_bytes().to_vec()), "helper-owned image record removed"),
+            Ok(()) => performed(
+                request_id,
+                Some(id.as_bytes().to_vec()),
+                "helper-owned image record removed",
+            ),
             Err(detail) => refused(request_id, ReasonCode::InvalidParameters, detail),
         },
-        ImageOperation::Unknown { .. } => refused(request_id, ReasonCode::InvalidParameters, "unknown image operation"),
-        _ => refused(request_id, ReasonCode::InvalidParameters, "unrecognized image operation"),
+        ImageOperation::Unknown { .. } => refused(
+            request_id,
+            ReasonCode::InvalidParameters,
+            "unknown image operation",
+        ),
+        _ => refused(
+            request_id,
+            ReasonCode::InvalidParameters,
+            "unrecognized image operation",
+        ),
     }
 }
 
-fn remove_prepared_image(store: &malt_image::ImageStore, record: &malt_image::ImageRecord) -> Result<(), String> {
-    let digest = record.manifest_digest.to_string().trim_start_matches("sha256:").to_string();
+fn remove_prepared_image(
+    store: &malt_image::ImageStore,
+    record: &malt_image::ImageRecord,
+) -> Result<(), String> {
+    let digest = record
+        .manifest_digest
+        .to_string()
+        .trim_start_matches("sha256:")
+        .to_string();
     let root = store.root().join("prepared").join(&digest);
     for index in (0..record.manifest.layers.len()).rev() {
-        let layer = malt_platform::isolation::layers::PreparedLayer { id: format!("malt-{digest}-{index}"), path: root.join("layers").join(index.to_string()) };
-        malt_platform::isolation::layers::destroy_prepared_layer(layer).map_err(|error| error.to_string())?;
+        let layer = malt_platform::isolation::layers::PreparedLayer {
+            id: format!("malt-{digest}-{index}"),
+            path: root.join("layers").join(index.to_string()),
+        };
+        malt_platform::isolation::layers::destroy_prepared_layer(layer)
+            .map_err(|error| error.to_string())?;
     }
     std::fs::remove_dir_all(root).map_err(|error| error.to_string())
 }
 
-fn prepare_image(store: &malt_image::ImageStore, mut record: malt_image::ImageRecord) -> Result<malt_image::ImageRecord, malt_image::StoreError> {
-    if record.prepared { return Ok(record); }
+fn prepare_image(
+    store: &malt_image::ImageStore,
+    mut record: malt_image::ImageRecord,
+) -> Result<malt_image::ImageRecord, malt_image::StoreError> {
+    if record.prepared {
+        return Ok(record);
+    }
     if let Err(error) = malt_platform::isolation::hcs::ensure_hcs_runtime() {
         tracing::info!(%error, manifest = %record.manifest_digest, "image acquired but HCS preparation is unavailable");
         return Ok(record);
     }
-    let digest = record.manifest_digest.to_string().trim_start_matches("sha256:").to_string();
+    let digest = record
+        .manifest_digest
+        .to_string()
+        .trim_start_matches("sha256:")
+        .to_string();
     let root = store.root().join("prepared").join(&digest);
     let sources = root.join("sources");
     let layers_root = root.join("layers");
@@ -138,16 +228,25 @@ fn prepare_image(store: &malt_image::ImageStore, mut record: malt_image::ImageRe
         let mut parents = Vec::new();
         for (index, descriptor) in record.manifest.layers.iter().enumerate() {
             let source = sources.join(index.to_string());
-            let input = std::fs::File::open(store.blob_path(&descriptor.digest)).map_err(|error| error.to_string())?;
+            let input = std::fs::File::open(store.blob_path(&descriptor.digest))
+                .map_err(|error| error.to_string())?;
             malt_image::extract_gzip_layer(input, &source).map_err(|error| error.to_string())?;
-            let layer = malt_platform::isolation::layers::materialize_layer(&layers_root.join(index.to_string()), &source, &format!("malt-{digest}-{index}"), &parents).map_err(|error| error.to_string())?;
+            let layer = malt_platform::isolation::layers::materialize_layer(
+                &layers_root.join(index.to_string()),
+                &source,
+                &format!("malt-{digest}-{index}"),
+                &parents,
+            )
+            .map_err(|error| error.to_string())?;
             parents.push(layer);
         }
         Ok(parents)
     })();
     if let Err(error) = result {
         let _ = std::fs::remove_dir_all(&root);
-        return Err(malt_image::StoreError::Io(std::io::Error::other(format!("HCS image preparation failed: {error}"))));
+        return Err(malt_image::StoreError::Io(std::io::Error::other(format!(
+            "HCS image preparation failed: {error}"
+        ))));
     }
     record.prepared = true;
     store.replace_record(&record)?;
@@ -155,35 +254,81 @@ fn prepare_image(store: &malt_image::ImageStore, mut record: malt_image::ImageRe
 }
 
 fn helper_image_store() -> Result<malt_image::ImageStore, String> {
-    let program_data = std::env::var_os("ProgramData").ok_or_else(|| "ProgramData is not set for the elevated helper".to_string())?;
-    malt_image::ImageStore::open(PathBuf::from(program_data).join("MALT").join("images")).map_err(|error| error.to_string())
+    let program_data = std::env::var_os("ProgramData")
+        .ok_or_else(|| "ProgramData is not set for the elevated helper".to_string())?;
+    malt_image::ImageStore::open(PathBuf::from(program_data).join("MALT").join("images"))
+        .map_err(|error| error.to_string())
 }
 
-fn parse_image_id(value: &str) -> Result<malt_image::Digest, String> { value.parse::<malt_image::Digest>().map_err(|error| error.to_string()) }
+fn parse_image_id(value: &str) -> Result<malt_image::Digest, String> {
+    value
+        .parse::<malt_image::Digest>()
+        .map_err(|error| error.to_string())
+}
 
 fn image_view(record: &malt_image::ImageRecord) -> ProvisionedImage {
-    ProvisionedImage { id: record.manifest_digest.to_string(), manifest_digest: record.manifest_digest.to_string(), platform: format!("{}/{}", record.platform.os, record.platform.architecture), os_version: record.platform.os_version.clone(), ready: record.prepared, reason: (!record.prepared).then(|| "image acquired and verified but not yet HCS-prepared".to_string()), active_sessions: 0, _unknown: Vec::new() }
+    ProvisionedImage {
+        id: record.manifest_digest.to_string(),
+        manifest_digest: record.manifest_digest.to_string(),
+        platform: format!("{}/{}", record.platform.os, record.platform.architecture),
+        os_version: record.platform.os_version.clone(),
+        ready: record.prepared,
+        reason: (!record.prepared)
+            .then(|| "image acquired and verified but not yet HCS-prepared".to_string()),
+        active_sessions: 0,
+        _unknown: Vec::new(),
+    }
 }
 
 fn pack_image_response(request_id: u32, image: ProvisionedImage) -> ElevateResponse {
     let mut writer = malt_protocol::vexil_runtime::BitWriter::new();
     match malt_protocol::vexil_runtime::Pack::pack(&image, &mut writer) {
-        Ok(()) => performed(request_id, Some(writer.finish()), "helper-owned image operation completed"),
-        Err(error) => refused(request_id, ReasonCode::OsError, format!("could not encode image response: {error}")),
+        Ok(()) => performed(
+            request_id,
+            Some(writer.finish()),
+            "helper-owned image operation completed",
+        ),
+        Err(error) => refused(
+            request_id,
+            ReasonCode::OsError,
+            format!("could not encode image response: {error}"),
+        ),
     }
 }
 
 fn pack_image_list_response(request_id: u32, images: Vec<ProvisionedImage>) -> ElevateResponse {
     let mut writer = malt_protocol::vexil_runtime::BitWriter::new();
-    let list = ProvisionedImageList { images, _unknown: Vec::new() };
+    let list = ProvisionedImageList {
+        images,
+        _unknown: Vec::new(),
+    };
     match malt_protocol::vexil_runtime::Pack::pack(&list, &mut writer) {
-        Ok(()) => performed(request_id, Some(writer.finish()), "helper-owned image list completed"),
-        Err(error) => refused(request_id, ReasonCode::OsError, format!("could not encode image list response: {error}")),
+        Ok(()) => performed(
+            request_id,
+            Some(writer.finish()),
+            "helper-owned image list completed",
+        ),
+        Err(error) => refused(
+            request_id,
+            ReasonCode::OsError,
+            format!("could not encode image list response: {error}"),
+        ),
     }
 }
 
-fn performed(request_id: u32, payload: Option<Vec<u8>>, detail: impl Into<String>) -> ElevateResponse {
-    ElevateResponse { request_id, kind: OutcomeKind::Performed, reason: None, detail: Some(detail.into()), payload, _unknown: Vec::new() }
+fn performed(
+    request_id: u32,
+    payload: Option<Vec<u8>>,
+    detail: impl Into<String>,
+) -> ElevateResponse {
+    ElevateResponse {
+        request_id,
+        kind: OutcomeKind::Performed,
+        reason: None,
+        detail: Some(detail.into()),
+        payload,
+        _unknown: Vec::new(),
+    }
 }
 
 /// Dispatch an operation after the server has resolved the request's session
@@ -241,6 +386,7 @@ pub struct HcsContainerRegistry {
 #[derive(Debug)]
 struct ManagedContainer {
     session_id: u32,
+    image_id: Option<String>,
     system: malt_platform::isolation::hcs::HcsComputeSystem,
     workspace: Option<malt_platform::isolation::layers::WritableLayer>,
 }
@@ -388,17 +534,30 @@ fn create_hcs_container(
             ),
             None => "malt",
         };
-    let fake_test = cfg!(test) && matches!(std::env::var("MALT_HCS_FAKE").as_deref(), Ok("1") | Ok("true"));
+    let fake_test = cfg!(test)
+        && matches!(
+            std::env::var("MALT_HCS_FAKE").as_deref(),
+            Ok("1") | Ok("true")
+        );
     let store = match helper_image_store() {
         Ok(store) => store,
         Err(detail) => return refused(request_id, ReasonCode::OsError, detail),
     };
     let ready = match store.list_records() {
-        Ok(records) => records.into_iter().filter(|record| record.prepared).collect::<Vec<_>>(),
-        Err(error) => return refused(request_id, ReasonCode::OsError, format!("could not inspect helper-owned images: {error}")),
+        Ok(records) => records
+            .into_iter()
+            .filter(|record| record.prepared)
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            return refused(
+                request_id,
+                ReasonCode::OsError,
+                format!("could not inspect helper-owned images: {error}"),
+            )
+        }
     };
-    let (parents, workspace, root) = if fake_test {
-        (Vec::new(), None, storage_root.to_path_buf())
+    let (parents, workspace, root, selected_image) = if fake_test {
+        (Vec::new(), None, storage_root.to_path_buf(), None)
     } else {
         let record = match image_id {
             Some(image_id) => match ready.iter().find(|record| record.manifest_digest.to_string() == image_id) { Some(record) => record, None => return refused(request_id, ReasonCode::InvalidParameters, "selected image is not a ready helper-owned image") },
@@ -408,14 +567,46 @@ fn create_hcs_container(
             _ => return refused(request_id, ReasonCode::InvalidParameters, "contained session requires an explicit image selector because multiple ready helper-owned images exist"),
             },
         };
-        let digest = record.manifest_digest.to_string().trim_start_matches("sha256:").to_string();
-        let parents = (0..record.manifest.layers.len()).map(|index| malt_platform::isolation::layers::PreparedLayer { id: format!("malt-{digest}-{index}"), path: store.root().join("prepared").join(&digest).join("layers").join(index.to_string()) }).collect::<Vec<_>>();
-        let workspace = match malt_platform::isolation::layers::initialize_writable_layer(&store.root().join("sessions").join(session_id.to_string()).join(request_id.to_string()), &parents) {
+        let digest = record
+            .manifest_digest
+            .to_string()
+            .trim_start_matches("sha256:")
+            .to_string();
+        let parents = (0..record.manifest.layers.len())
+            .map(|index| malt_platform::isolation::layers::PreparedLayer {
+                id: format!("malt-{digest}-{index}"),
+                path: store
+                    .root()
+                    .join("prepared")
+                    .join(&digest)
+                    .join("layers")
+                    .join(index.to_string()),
+            })
+            .collect::<Vec<_>>();
+        let workspace = match malt_platform::isolation::layers::initialize_writable_layer(
+            &store
+                .root()
+                .join("sessions")
+                .join(session_id.to_string())
+                .join(request_id.to_string()),
+            &parents,
+        ) {
             Ok(workspace) => workspace,
-            Err(error) => return refused(request_id, ReasonCode::OsError, format!("could not create helper-owned contained workspace: {error}")),
+            Err(error) => {
+                return refused(
+                    request_id,
+                    ReasonCode::OsError,
+                    format!("could not create helper-owned contained workspace: {error}"),
+                )
+            }
         };
         let root = workspace.path().to_path_buf();
-        (parents, Some(workspace), root)
+        (
+            parents,
+            Some(workspace),
+            root,
+            Some(record.manifest_digest.to_string()),
+        )
     };
     let id = format!("malt-session-{session_id}-{request_id}");
     if containers.containers.contains_key(&id) {
@@ -425,14 +616,28 @@ fn create_hcs_container(
             "compute-system id is already registered for this helper lifetime",
         );
     }
-    let config = hcs_config(&id, hostname, root.to_string_lossy().as_ref(), memory_limit_mb, &parents);
+    let config = hcs_config(
+        &id,
+        hostname,
+        root.to_string_lossy().as_ref(),
+        memory_limit_mb,
+        &parents,
+    );
     let config = malt_platform::isolation::hcs::HcsConfig {
         id: id.clone(),
         config_json: config,
     };
     match malt_platform::isolation::hcs::create_compute_system(&config) {
         Ok(system) => {
-            containers.containers.insert(id.clone(), ManagedContainer { session_id, system, workspace });
+            containers.containers.insert(
+                id.clone(),
+                ManagedContainer {
+                    session_id,
+                    image_id: selected_image,
+                    system,
+                    workspace,
+                },
+            );
             ElevateResponse {
                 request_id,
                 kind: OutcomeKind::Performed,
@@ -445,9 +650,20 @@ fn create_hcs_container(
             }
         }
         Err(error) => {
-            let cleanup = workspace.map(malt_platform::isolation::layers::destroy_writable_layer).transpose();
-            refused(request_id, ReasonCode::OsError, format!("ManageHcsContainer failed: {error}; workspace cleanup: {}", cleanup.map(|_| "complete".to_string()).unwrap_or_else(|cleanup| cleanup.to_string())))
-        },
+            let cleanup = workspace
+                .map(malt_platform::isolation::layers::destroy_writable_layer)
+                .transpose();
+            refused(
+                request_id,
+                ReasonCode::OsError,
+                format!(
+                    "ManageHcsContainer failed: {error}; workspace cleanup: {}",
+                    cleanup
+                        .map(|_| "complete".to_string())
+                        .unwrap_or_else(|cleanup| cleanup.to_string())
+                ),
+            )
+        }
     }
 }
 
@@ -588,7 +804,14 @@ fn tear_down_after_process_launch_failure(
     detail: String,
 ) -> ElevateResponse {
     let cleanup = containers.containers.remove(id).map(|container| {
-        malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle()).and_then(|()| container.workspace.map(malt_platform::isolation::layers::destroy_writable_layer).transpose()).map(|_| ())
+        malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle())
+            .and_then(|()| {
+                container
+                    .workspace
+                    .map(malt_platform::isolation::layers::destroy_writable_layer)
+                    .transpose()
+            })
+            .map(|_| ())
     });
     let detail = match cleanup {
         Some(Ok(())) => format!("{detail}; the affected compute system was terminated"),
@@ -625,7 +848,15 @@ fn terminate_hcs_container(
             "helper lost the managed compute-system record before teardown",
         );
     };
-    match malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle()).and_then(|()| container.workspace.map(malt_platform::isolation::layers::destroy_writable_layer).transpose()).map(|_| ()) {
+    match malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle())
+        .and_then(|()| {
+            container
+                .workspace
+                .map(malt_platform::isolation::layers::destroy_writable_layer)
+                .transpose()
+        })
+        .map(|_| ())
+    {
         Ok(()) => ElevateResponse {
             request_id,
             kind: OutcomeKind::Performed,
@@ -738,6 +969,7 @@ mod tests {
                 operation: ContainerOperation::Create {
                     memory_limit_mb: None,
                     hostname: None,
+                    image_id: None,
                 },
             },
             ElevateRequest::ApplySeatbelt {
@@ -774,7 +1006,13 @@ mod tests {
             id: "layer-test".to_string(),
             path: std::path::PathBuf::from(r"C:\prepared\layer-test"),
         }];
-        let json = hcs_config("malt-session-7-8", "malt", r"C:\session-root", Some(512), &parents);
+        let json = hcs_config(
+            "malt-session-7-8",
+            "malt",
+            r"C:\session-root",
+            Some(512),
+            &parents,
+        );
         assert!(json.contains(r#""Owner":"malt-session-malt-session-7-8""#));
         assert!(json.contains(r#""Path":"C:\\session-root""#));
         assert!(json.contains(r#""SizeInMB":512"#));
@@ -843,6 +1081,7 @@ mod tests {
             operation: ContainerOperation::Create {
                 memory_limit_mb: Some(256),
                 hostname: Some("malt-test".to_string()),
+                image_id: None,
             },
         };
         let mut containers = HcsContainerRegistry::default();
@@ -905,6 +1144,7 @@ mod tests {
                 operation: ContainerOperation::Create {
                     memory_limit_mb: Some(256),
                     hostname: Some("malt-test".to_string()),
+                    image_id: None,
                 },
             },
             &mut containers,

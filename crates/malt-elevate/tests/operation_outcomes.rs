@@ -69,6 +69,7 @@ fn schema_requests() -> Vec<(&'static str, ElevateRequest)> {
                 operation: ContainerOperation::Create {
                     memory_limit_mb: None,
                     hostname: None,
+                    image_id: None,
                 },
             },
         ),
