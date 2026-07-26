@@ -133,6 +133,81 @@ pub fn uninstall() -> io::Result<()> {
     malt_platform::service::uninstall(HELPER_SERVICE_NAME)
 }
 
+/// Explicitly enrol one running daemon process after UAC approval.
+#[cfg(windows)]
+pub fn enroll_daemon(pid: u32) -> io::Result<()> {
+    use malt_platform::ipc::NamedPipeClient;
+    use malt_protocol::elevate::{DaemonEnrollmentRequest, DaemonEnrollmentResponse, ElevateHello};
+    use malt_protocol::elevate_channel::{
+        DAEMON_ENROLLMENT_REQUEST, DAEMON_ENROLLMENT_RESPONSE, HELLO, HELLO_ACK,
+    };
+    use malt_protocol::vexil_runtime::{BitWriter, Pack};
+
+    match status()? {
+        HelperState::Reachable { .. } => {}
+        state => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                format!("helper must be reachable before daemon enrollment: {state:?}"),
+            ))
+        }
+    }
+    let mut connection = NamedPipeClient::connect(HELPER_PIPE_NAME)?;
+    let nonce = enrollment_nonce(pid);
+    let hello = ElevateHello {
+        nonce,
+        version: HELPER_PROTOCOL_VERSION,
+        _unknown: Vec::new(),
+    };
+    let mut writer = BitWriter::new();
+    hello
+        .pack(&mut writer)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let mut payload = vec![HELLO];
+    payload.extend(writer.finish());
+    write_frame(&mut connection, payload)?;
+    let acknowledgement =
+        read_tagged::<malt_protocol::elevate::ElevateHelloAck>(&mut connection, HELLO_ACK)?;
+    if acknowledgement.nonce != nonce
+        || acknowledgement.version != HELPER_PROTOCOL_VERSION
+        || !acknowledgement.accepted
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "helper rejected the enrollment handshake",
+        ));
+    }
+    let mut writer = BitWriter::new();
+    DaemonEnrollmentRequest {
+        pid,
+        _unknown: Vec::new(),
+    }
+    .pack(&mut writer)
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let mut payload = vec![DAEMON_ENROLLMENT_REQUEST];
+    payload.extend(writer.finish());
+    write_frame(&mut connection, payload)?;
+    let response =
+        read_tagged::<DaemonEnrollmentResponse>(&mut connection, DAEMON_ENROLLMENT_RESPONSE)?;
+    if response.accepted {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            response
+                .reason
+                .unwrap_or_else(|| "helper refused daemon enrollment".to_string()),
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn enrollment_nonce(pid: u32) -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_NONCE: AtomicU64 = AtomicU64::new(1);
+    (u64::from(pid) << 32) ^ NEXT_NONCE.fetch_add(1, Ordering::Relaxed)
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;

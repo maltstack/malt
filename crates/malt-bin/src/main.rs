@@ -102,7 +102,7 @@ fn handle_elevate(command: ElevateCommand) -> Result<()> {
             Ok(())
         }
         ElevateCommand::Install => {
-            if relaunch_elevated_if_needed("install")? {
+            if relaunch_elevated_if_needed(&["elevate", "install"])? {
                 return Ok(());
             }
             let helper = helper_executable()?;
@@ -118,7 +118,7 @@ fn handle_elevate(command: ElevateCommand) -> Result<()> {
             handle_elevate(ElevateCommand::Status)
         }
         ElevateCommand::Uninstall => {
-            if relaunch_elevated_if_needed("uninstall")? {
+            if relaunch_elevated_if_needed(&["elevate", "uninstall"])? {
                 return Ok(());
             }
             malt_daemon::elevate_client::uninstall().map_err(|error| {
@@ -132,25 +132,41 @@ fn handle_elevate(command: ElevateCommand) -> Result<()> {
             );
             Ok(())
         }
+        ElevateCommand::AuthorizeDaemon { pid } => {
+            let pid_text = pid.to_string();
+            if relaunch_elevated_if_needed(&["elevate", "authorize-daemon", &pid_text])? {
+                return Ok(());
+            }
+            malt_daemon::elevate_client::enroll_daemon(pid)
+                .map_err(|error| anyhow::anyhow!("daemon enrollment was not accepted: {error}"))?;
+            println!("helper enrolled daemon process {pid}");
+            Ok(())
+        }
     }
 }
 
 /// Relaunch exactly one explicit elevate subcommand through UAC when the
 /// current process is unelevated. Returns true in the parent after the child
 /// completed, so only the elevated child reaches SCM mutation.
-fn relaunch_elevated_if_needed(operation: &str) -> Result<bool> {
+fn relaunch_elevated_if_needed(arguments: &[&str]) -> Result<bool> {
     if malt_daemon::elevate_client::is_current_process_elevated()? {
         return Ok(false);
     }
     let executable = std::env::current_exe()?;
-    let exit_code = malt_daemon::elevate_client::run_elevated(&executable, &["elevate", operation])
-        .map_err(|error| {
+    let exit_code =
+        malt_daemon::elevate_client::run_elevated(&executable, arguments).map_err(|error| {
             anyhow::anyhow!("Windows elevation was not granted; no helper change ran: {error}")
         })?;
     if exit_code != 0 {
-        anyhow::bail!("elevated `malt elevate {operation}` exited with code {exit_code}");
+        anyhow::bail!(
+            "elevated `malt {}` exited with code {exit_code}",
+            arguments.join(" ")
+        );
     }
-    println!("elevated `malt elevate {operation}` completed successfully");
+    println!(
+        "elevated `malt {}` completed successfully",
+        arguments.join(" ")
+    );
     Ok(true)
 }
 

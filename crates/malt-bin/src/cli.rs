@@ -90,6 +90,8 @@ pub enum ElevateCommand {
     Install,
     /// Explicitly remove the privileged helper service
     Uninstall,
+    /// Explicitly UAC-authorize one already-running daemon process
+    AuthorizeDaemon { pid: u32 },
 }
 
 /// Canonical command-line spellings for the session isolation tiers.
