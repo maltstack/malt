@@ -149,7 +149,7 @@ refused for that reason through the helper.
 - [ ] T041 [US3] Add `crates/malt-daemon/tests/elevate_boundary.rs` making the **same call directly and through the helper in one run** and asserting the direct one is refused for lack of privilege while the routed one is not refused for that reason (SC-007). **Do not assert the routed call succeeded** — a compute system is image-backed and images are out of scope, so a different failure is a pass. Comparing both calls is what makes this falsifiable rather than a story about privilege.
 - [ ] T042 [P] [US3] Test teardown leaves nothing, **verified by enumerating the compute system and finding it absent** (SC-008), not by teardown returning success — the same rule spec 007's SC-006 applies to sessions.
 - [ ] T043 [P] [US3] Test that killing the helper mid-operation yields `Indeterminate` and leaves the session's isolation status unchanged (FR-005, Scenario 10).
-- [ ] T044 [US3] Assert `mash::Env` carries exactly one isolation field — count is 1, it is 2 today (SC-009). **Run this after T038 lands**, not before: the requirement is that adding a container backend needed no parallel path, and checking before the backend exists tests nothing.
+- [X] T044 [US3] Assert `mash::Env` carries exactly one isolation field — count is 1, it is 2 today (SC-009). **Run this after T038 lands**, not before: the requirement is that adding a container backend needed no parallel path, and checking before the backend exists tests nothing.
 
 **Checkpoint**: all three stories functional. Gates green, commit, merge.
 

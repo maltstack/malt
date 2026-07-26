@@ -1613,3 +1613,17 @@ pub struct EnvSnapshot {
     pub cwd: String,
     pub traps: HashMap<String, String>, // signal → action string
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn environment_has_exactly_one_isolation_carrier_field() {
+        let source = include_str!("env.rs");
+        let carrier_field = concat!("isolation_context", ": Option<");
+        assert_eq!(
+            source.matches(carrier_field).count(),
+            1,
+            "a second isolation carrier would let reporting and enforcement diverge"
+        );
+    }
+}
