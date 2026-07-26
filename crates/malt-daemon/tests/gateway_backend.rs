@@ -187,7 +187,7 @@ fn required_contained_refusal_leaves_no_session() {
             Some("required".to_string()),
         )
         .unwrap_err();
-    assert!(matches!(error, GatewayError::IsolationUnavailable(_)));
+    assert!(matches!(error, GatewayError::IsolationUnavailable { .. }));
     assert!(
         backend.list_sessions().unwrap().is_empty(),
         "a required failure must not leave a runnable session"
@@ -275,7 +275,10 @@ fn capabilities_match_the_required_creation_path() {
         Some("contained".to_string()),
         Some("required".to_string()),
     );
-    assert!(matches!(result, Err(GatewayError::IsolationUnavailable(_))));
+    assert!(matches!(
+        result,
+        Err(GatewayError::IsolationUnavailable { .. })
+    ));
 }
 
 #[test]

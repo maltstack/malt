@@ -44,8 +44,12 @@ pub enum GatewayError {
     #[error("input buffer full: {0}")]
     InputBufferFull(String),
 
-    #[error("isolation unavailable: {0}")]
-    IsolationUnavailable(String),
+    #[error("isolation unavailable: {message}")]
+    IsolationUnavailable {
+        message: String,
+        requested: String,
+        best_available: String,
+    },
 
     #[error("internal error: {0}")]
     Internal(String),
@@ -61,6 +65,10 @@ struct ErrorBody {
 struct ErrorDetail {
     code: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requested: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    best_available: Option<String>,
 }
 
 impl IntoResponse for GatewayError {
@@ -83,7 +91,7 @@ impl IntoResponse for GatewayError {
             GatewayError::InputBufferFull(_) => {
                 (StatusCode::TOO_MANY_REQUESTS, "input_buffer_full")
             }
-            GatewayError::IsolationUnavailable(_) => {
+            GatewayError::IsolationUnavailable { .. } => {
                 (StatusCode::CONFLICT, "isolation_unavailable")
             }
             GatewayError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
@@ -94,9 +102,41 @@ impl IntoResponse for GatewayError {
             error: ErrorDetail {
                 code,
                 message: self.to_string(),
+                requested: match &self {
+                    GatewayError::IsolationUnavailable { requested, .. } => Some(requested.clone()),
+                    _ => None,
+                },
+                best_available: match &self {
+                    GatewayError::IsolationUnavailable { best_available, .. } => {
+                        Some(best_available.clone())
+                    }
+                    _ => None,
+                },
             },
         };
 
         (status, axum::Json(body)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    #[tokio::test]
+    async fn isolation_unavailable_is_a_structured_conflict() {
+        let response = GatewayError::IsolationUnavailable {
+            message: "contained unavailable; retry preferred".to_string(),
+            requested: "contained".to_string(),
+            best_available: "bare".to_string(),
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "isolation_unavailable");
+        assert_eq!(json["error"]["requested"], "contained");
+        assert_eq!(json["error"]["best_available"], "bare");
     }
 }

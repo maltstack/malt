@@ -268,9 +268,13 @@ impl GatewayBackend for DaemonBackend {
         let session_id = coord
             .create_session_with_policy(name.clone(), tier, policy, None)
             .map_err(|e| match e {
-                DaemonError::IsolationUnavailable(detail) => GatewayError::IsolationUnavailable(format!(
-                    "{tier:?} was required but could not be established: {detail}. Retry with isolation_policy=preferred to accept a lower level."
-                )),
+                DaemonError::IsolationUnavailable(detail) => GatewayError::IsolationUnavailable {
+                    message: format!(
+                        "{tier:?} was required but could not be established: {detail}. Retry with isolation_policy=preferred to accept a lower level."
+                    ),
+                    requested: format!("{tier:?}").to_ascii_lowercase(),
+                    best_available: "bare".to_string(),
+                },
                 other => GatewayError::Internal(other.to_string()),
             })?;
 
