@@ -65,14 +65,14 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 ### Implementation for User Story 1
 
 - [X] T008 [US1] Added `IsolationPolicy` to `schemas/common.vexil`; `CreateSession` revision 2 carries it and generated protocol round-trip coverage passes.
-- [ ] T009 [US1] Change `apply_session_isolation` in `crates/malt-daemon/src/executor/session_thread.rs` to return what was established rather than `()`. The existing warning text is honest — *"session will run without process containment"* — the defect is that it says it to a log instead of the caller.
+- [X] T009 [US1] `apply_session_isolation` now returns `EstablishedIsolation` (effective tier, basis, mechanism, detail), which the coordinator stores rather than reconstructing from the request.
 - [X] T010 [US1] Coordinator applies `Required`/`Preferred`/`Disabled`; `required_contained_refusal_leaves_no_session` proves the required failure leaves no session.
-- [ ] T011 [US1] Ensure the failure path leaves nothing behind in `crates/malt-daemon/src/executor/coordinator.rs` — no half-created session, no orphaned job or thread. A fail-closed path that leaks is a different bug traded for the first one.
-- [ ] T012 [US1] Accept the policy on all three request surfaces: `crates/malt-gateway/src/routes/sessions.rs` and `types.rs`, the VNP create path, and `malt new --isolation-policy` in `crates/malt-bin/src/cli.rs`. Default to `Required` when a tier above the baseline is named (research R5).
-- [ ] T013 [US1] Return 409 with `isolation_unavailable` per contracts/isolation-status.md, and **name `preferred` in the message**. A refusal that does not say how to proceed converts a silent downgrade into a dead end.
+- [X] T011 [US1] Construction inserts a session only after both threads start; a control-thread start failure now closes and joins the worker so its environment and Job Object drop before returning an error.
+- [X] T012 [US1] HTTP, `malt new --isolation-policy`, and the authenticated VNP pre-attach `CreateSession` path accept the policy. VNP replies with the existing typed `SessionList` containing the stored status, then permits attach on the same connection.
+- [X] T013 [US1] Required failures return structured 409 `isolation_unavailable`; `isolation_unavailable_is_a_structured_conflict` verifies the message names `preferred`.
 - [X] T014 [US1] `gateway_backend::required_contained_refusal_leaves_no_session` asserts the post-failure list is empty.
 - [X] T015 [P] [US1] `preferred_contained_request_returns_visible_bare_downgrade` and `disabled_isolation_attempts_nothing_and_reports_none` cover both policies.
-- [ ] T016 [P] [US1] Test in `crates/malt-daemon/tests/isolation.rs` that a failed establishment leaves no orphaned OS resource, verified by inspection rather than by the call not erroring (SC-006 in miniature).
+- [X] T016 [P] [US1] `failed_required_containment_leaves_no_session_or_named_job_object` inspects the named Job Object on Windows after refusal, rather than trusting the call error.
 
 **Checkpoint**: the trust defect is closed on every platform, including those with no enforcement at all. Gates green. Commit. **Merge to main.**
 
@@ -87,7 +87,7 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 ### Implementation for User Story 2
 
 - [X] T017 [US2] Added `IsolationBasis`/`IsolationStatus`; `SessionInfo.isolation` now carries the status and CreateSession is revision 2.
-- [ ] T018 [US2] Store the status on the session in `crates/malt-daemon/src/executor/coordinator.rs`, computed once at establishment. **One value read by all surfaces** — not three constructions, which is what lets FR-007 hold structurally rather than by convention.
+- [X] T018 [US2] `SessionHandle` stores one `IsolationStatus` constructed from `EstablishedIsolation`; list/get/create and VNP project that same value.
 - [X] T019 [US2] HTTP create/get/list and VNP SessionInfo all project the same stored status shape.
 - [X] T020 [US2] `malt new` prints the effective tier and a visible downgrade warning; `malt list` displays the effective tier.
 - [X] T021 [US2] `creation_get_and_list_share_the_same_isolation_status` compares every status field across the three HTTP surfaces.
@@ -129,7 +129,7 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 - [X] T031 [US4] Added `malt isolation capabilities` and its authenticated client call.
 - [ ] T032 [US4] Wire the Linux path in `crates/malt-daemon/src/executor/session_thread.rs` using the existing `namespaces`/`cgroups`/`seccomp`/`rlimit` modules — subject to what T004 found about whether they work. Do not write new backends before confirming the existing ones are absent or broken.
 - [ ] T033 [US4] Wire the macOS path using the existing `crates/malt-platform/src/isolation/sandbox.rs` — 359 lines of `sandbox_init`, currently zero callers. Note this is **larger** than vexil-v2's equivalent; an earlier survey wrongly called macOS a MALT gap, so check before porting anything.
-- [ ] T034 [US4] Test in `crates/malt-daemon/tests/isolation.rs` that on a platform with no enforcement path a required request fails with a clear reason, and a preferred one succeeds reporting no containment.
+- [X] T034 [US4] `unsupported_platform_required_refuses_and_preferred_reports_bare` covers the no-backend path under `cfg(not(windows))`; Windows uses the explicit contained-unavailable path.
 - [X] T035 [P] [US4] `capabilities_match_the_required_creation_path` proves the reported unavailable Contained tier is refused under Required.
 
 **Checkpoint**: all four stories work. Gates green. Commit. **Merge to main.**

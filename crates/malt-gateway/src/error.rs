@@ -138,5 +138,12 @@ mod tests {
         assert_eq!(json["error"]["code"], "isolation_unavailable");
         assert_eq!(json["error"]["requested"], "contained");
         assert_eq!(json["error"]["best_available"], "bare");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .expect("structured error message")
+                .contains("preferred"),
+            "a required refusal must explain the explicit fallback policy"
+        );
     }
 }
