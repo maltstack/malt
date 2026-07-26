@@ -260,6 +260,25 @@ fn creation_get_and_list_share_the_same_isolation_status() {
 }
 
 #[test]
+fn capabilities_match_the_required_creation_path() {
+    let backend = make_backend();
+    let capabilities = backend.isolation_capabilities().unwrap();
+    let contained = capabilities
+        .iter()
+        .find(|capability| capability.tier == "contained")
+        .expect("contained capability must be reported");
+    assert!(!contained.available);
+    assert_eq!(contained.basis, "none");
+
+    let result = backend.create_session_with_policy(
+        None,
+        Some("contained".to_string()),
+        Some("required".to_string()),
+    );
+    assert!(matches!(result, Err(GatewayError::IsolationUnavailable(_))));
+}
+
+#[test]
 fn get_output_text_returns_plain_text_matching_executed_output() {
     let backend = make_backend();
     let created = backend.create_session(None, None).unwrap();
