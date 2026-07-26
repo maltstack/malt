@@ -3,7 +3,7 @@
 use crate::protocol::{ElevateCapabilities, OperationCapability, ReasonCode, SCHEMA_VERSION};
 
 /// The protocol version exposed by this helper.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Return the operations this build and host can actually perform.
 pub fn capabilities() -> ElevateCapabilities {

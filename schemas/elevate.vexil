@@ -1,4 +1,4 @@
-@version("0.6.0")
+@version("0.7.0")
 namespace malt.elevate
 
 import malt.common
@@ -67,6 +67,31 @@ message HcsProcessLaunch {
     stderr_handle  @4 : u64
 }
 
+@doc("Sanitized immutable identity and readiness of one helper-owned Windows image.")
+message ProvisionedImage {
+    id              @0 : string
+    manifest_digest @1 : string
+    platform        @2 : string
+    os_version      @3 : optional<string>
+    ready           @4 : bool
+    reason          @5 : optional<string>
+    active_sessions @6 : u32
+}
+
+@doc("Helper-owned image listing payload.")
+message ProvisionedImageList {
+    images @0 : array<ProvisionedImage>
+}
+
+@non_exhaustive
+@doc("Image lifecycle operation. No variant accepts a local path or HCS storage document.")
+union ImageOperation {
+    Provision @0 { reference @0 : string }
+    List      @1 {}
+    Inspect   @2 { id @0 : string }
+    Remove    @3 { id @0 : string }
+}
+
 @doc("Wrapper carrying correlation ID for request/response pairing.")
 message ElevateRequestEnvelope {
     request_id @0 : u32
@@ -101,6 +126,8 @@ union ElevateRequest {
     ApplySeatbelt    @8 { pid @0 : u32  profile @1 : string }
     # Cross-platform
     BindPort         @9 { port @0 : u16  socket_path @1 : string }
+    # Helper-owned Windows OCI lifecycle
+    ManageImage      @10 { operation @0 : ImageOperation }
 }
 
 @non_exhaustive

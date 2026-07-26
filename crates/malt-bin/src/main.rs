@@ -673,7 +673,7 @@ mod tests {
             helper_status_message(HelperState::InstalledStopped),
             helper_status_message(HelperState::InstalledUnreachable),
             helper_status_message(HelperState::Reachable {
-                protocol_version: 2,
+                protocol_version: 3,
             }),
             helper_status_message(HelperState::VersionMismatch {
                 expected: 2,

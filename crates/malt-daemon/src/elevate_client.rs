@@ -8,7 +8,7 @@ use std::path::Path;
 
 pub const HELPER_SERVICE_NAME: &str = "MALT-Elevate";
 pub const HELPER_PIPE_NAME: &str = "malt-elevate";
-pub const HELPER_PROTOCOL_VERSION: u32 = 2;
+pub const HELPER_PROTOCOL_VERSION: u32 = 3;
 
 /// Observable helper state. Reachability is never inferred from SCM alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
