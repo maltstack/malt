@@ -248,12 +248,22 @@ impl From<nix::Error> for IsolationError {
 /// - Daemon passes it to MASH during environment setup
 /// - MASH stores it in `Env` and passes it to platform spawn traits
 /// - Platform spawn traits interpret the token to apply isolation
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct IsolationContext {
     /// The isolation tier this context represents.
     tier: IsolationTier,
     /// Platform-specific isolation configuration (opaque bytes).
     config: Vec<u8>,
+    established: Established,
+}
+
+/// The live platform resource that actually enforces this context.
+#[derive(Debug, Clone)]
+pub enum Established {
+    Nothing,
+    #[cfg(windows)]
+    JobObject(std::sync::Arc<super::job_objects::JobObject>),
+    Container(String),
 }
 
 impl IsolationContext {
@@ -262,6 +272,7 @@ impl IsolationContext {
         Self {
             tier: IsolationTier::Bare,
             config: Vec::new(),
+            established: Established::Nothing,
         }
     }
 
@@ -270,6 +281,7 @@ impl IsolationContext {
         Self {
             tier: IsolationTier::Restricted,
             config: Vec::new(),
+            established: Established::Nothing,
         }
     }
 
@@ -278,6 +290,7 @@ impl IsolationContext {
         Self {
             tier: IsolationTier::Capped,
             config: Vec::new(),
+            established: Established::Nothing,
         }
     }
 
@@ -286,6 +299,7 @@ impl IsolationContext {
         Self {
             tier: IsolationTier::Contained,
             config: Vec::new(),
+            established: Established::Nothing,
         }
     }
 
@@ -315,6 +329,32 @@ impl IsolationContext {
     /// Get the opaque platform-specific configuration bytes.
     pub fn config(&self) -> &[u8] {
         &self.config
+    }
+
+    #[cfg(windows)]
+    pub fn establish_job_object(&mut self, job: std::sync::Arc<super::job_objects::JobObject>) {
+        self.established = Established::JobObject(job);
+    }
+
+    #[cfg(windows)]
+    pub fn job_object(&self) -> Option<&std::sync::Arc<super::job_objects::JobObject>> {
+        match &self.established {
+            Established::JobObject(job) => Some(job),
+            _ => None,
+        }
+    }
+
+    /// Record the HCS compute-system identity after a helper reports it
+    /// performed. This is deliberately separate from requesting containment.
+    pub fn establish_container(&mut self, id: String) {
+        self.established = Established::Container(id);
+    }
+
+    pub fn container_id(&self) -> Option<&str> {
+        match &self.established {
+            Established::Container(id) => Some(id),
+            _ => None,
+        }
     }
 }
 

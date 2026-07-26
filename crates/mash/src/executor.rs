@@ -5687,7 +5687,10 @@ fn apply_exec_redirects(env: &Env, io: &mut ResolvedIo) {
 /// silent.
 #[cfg(windows)]
 fn assign_child_to_session_job(env: &Env, child: &malt_platform::process::Child) {
-    if let Some(job) = env.job_object() {
+    if let Some(job) = env
+        .isolation_context()
+        .and_then(|context| context.job_object())
+    {
         if let Err(error) =
             malt_platform::isolation::job_objects::assign_process_to_job(job, child.pid())
         {

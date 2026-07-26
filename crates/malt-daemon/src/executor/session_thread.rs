@@ -151,7 +151,9 @@ fn apply_session_isolation(
                 "created Job Object could not be externally inspected: {error}"
             ))
         })?;
-        env.set_job_object(std::sync::Arc::new(job));
+        let mut context = malt_platform::isolation::IsolationContext::from(isolation);
+        context.establish_job_object(std::sync::Arc::new(job));
+        env.set_isolation_context(context);
         Ok(EstablishedIsolation {
             effective: isolation,
             basis: IsolationBasis::Verified,

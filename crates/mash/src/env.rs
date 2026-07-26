@@ -316,8 +316,6 @@ pub struct Env {
     /// assigned to, if the session's isolation tier is above Bare. Shared
     /// (`Arc`) across `Env::clone()` (subshells) so the whole session's
     /// process tree lives in one job — killing the job kills all of it.
-    #[cfg(windows)]
-    job_object: Option<Arc<malt_platform::isolation::job_objects::JobObject>>,
     fd_registry: malt_platform::vfs::SharedFdRegistry,
     fd_aliases: Arc<Mutex<HashMap<u32, u32>>>,
     fd_snapshots: Arc<Mutex<HashMap<u32, PathBuf>>>,
@@ -369,8 +367,6 @@ impl Clone for Env {
             jobs: self.jobs.clone(),
             job_tasks: self.job_tasks.clone(),
             isolation_context: self.isolation_context.clone(),
-            #[cfg(windows)]
-            job_object: self.job_object.clone(),
             fd_registry,
             fd_aliases: Arc::new(Mutex::new(self.fd_aliases_lock().clone())),
             fd_snapshots: Arc::new(Mutex::new(self.fd_snapshots_lock().clone())),
@@ -408,8 +404,6 @@ impl Env {
             jobs: Arc::new(Mutex::new(Vec::new())),
             job_tasks: Arc::new(Mutex::new(HashMap::new())),
             isolation_context: None,
-            #[cfg(windows)]
-            job_object: None,
             fd_registry: malt_platform::vfs::SharedFdRegistry::new(),
             fd_aliases: Arc::new(Mutex::new(HashMap::new())),
             fd_snapshots: Arc::new(Mutex::new(HashMap::new())),
@@ -1301,19 +1295,21 @@ impl Env {
         self.isolation_context.take()
     }
 
-    /// Set the Windows Job Object every externally-spawned child in this
-    /// session should be assigned to. Called once by the daemon at session
-    /// startup when the isolation tier is above Bare; shared across
-    /// subshells via `Env::clone()`.
     #[cfg(windows)]
     pub fn set_job_object(&mut self, job: Arc<malt_platform::isolation::job_objects::JobObject>) {
-        self.job_object = Some(job);
+        let mut context = self
+            .isolation_context
+            .take()
+            .unwrap_or_else(malt_platform::isolation::IsolationContext::bare);
+        context.establish_job_object(job);
+        self.isolation_context = Some(context);
     }
 
-    /// Get the session's Job Object, if isolation is active.
     #[cfg(windows)]
     pub fn job_object(&self) -> Option<&Arc<malt_platform::isolation::job_objects::JobObject>> {
-        self.job_object.as_ref()
+        self.isolation_context
+            .as_ref()
+            .and_then(|context| context.job_object())
     }
 
     pub fn register_fd(&self, fd: u32, file: File) {
