@@ -215,11 +215,14 @@ fn validate_created_session(session: &SessionData, expected_tier: IsolationTierA
 }
 
 fn creation_message(session: &SessionData) -> String {
+    let mechanism = session.isolation.mechanism.as_deref().unwrap_or("none");
     format!(
-        "created session {} ({}) [{}]",
+        "created session {} ({}) [{}; basis: {}; mechanism: {}]",
         session.id,
         session.name.as_deref().unwrap_or("-"),
-        session.isolation.effective
+        session.isolation.effective,
+        session.isolation.basis,
+        mechanism,
     )
 }
 
