@@ -46,14 +46,20 @@ handles directly.
   compute system and that an explicit terminate leaves it absent.
 - `mash::Env` has exactly one isolation carrier. It carries a Job Object today
   and is deliberately not upgraded to `Container` without a real HCS child.
+- `cargo test -p malt-daemon --test elevate_boundary
+  privilege_boundary_changes_the_outcome -- --ignored --exact --nocapture`,
+  with `MALT_RUN_ELEVATE_BOUNDARY=1`, ran on this host. The direct
+  unprivileged call returned `HCS_E_ACCESS_DENIED`; after UAC enrolled the
+  same test process and registered its session entitlement, the helper-routed
+  call did not return that privilege refusal. This establishes the boundary,
+  not a usable image-backed container.
 
 ## What remains unverified and incomplete
 
 - An HCS process spawned for a MALT session through the helper.
 - Daemon-side waiting, cancellation, stdin/stdout/stderr relay, redirections,
   pipelines, and job control for that HCS process.
-- A live direct-versus-helper comparison on a host with usable Windows image
-  layers, and a helper-death-during-operation test against a real session.
+- A helper-death-during-operation test against a real session.
 - The UAC-decline scenario and a real protocol-version mismatch scenario.
 
 Those are not environment-only omissions: the first three need the explicit

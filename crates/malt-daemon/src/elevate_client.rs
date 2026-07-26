@@ -290,19 +290,42 @@ pub fn manage_hcs_container(
     memory_limit_mb: Option<u32>,
     hostname: Option<String>,
 ) -> io::Result<malt_protocol::elevate::ElevateResponse> {
-    use malt_protocol::elevate::{ContainerOperation, ElevateRequest, ElevateRequestEnvelope};
+    send_hcs_container_operation(
+        session_id,
+        malt_protocol::elevate::ContainerOperation::Create {
+            memory_limit_mb,
+            hostname,
+        },
+    )
+}
+
+/// Ask the helper to terminate only the compute system it recorded for this
+/// caller's session. This is intentionally separate from generic requests so
+/// callers cannot name an arbitrary system id without the entitlement check.
+#[cfg(windows)]
+pub fn terminate_hcs_container(
+    session_id: malt_protocol::common::SessionId,
+    id: String,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    send_hcs_container_operation(
+        session_id,
+        malt_protocol::elevate::ContainerOperation::Terminate { id },
+    )
+}
+
+#[cfg(windows)]
+fn send_hcs_container_operation(
+    session_id: malt_protocol::common::SessionId,
+    operation: malt_protocol::elevate::ContainerOperation,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    use malt_protocol::elevate::{ElevateRequest, ElevateRequestEnvelope};
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static NEXT_REQUEST_ID: AtomicU32 = AtomicU32::new(1);
     let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     send_request(ElevateRequestEnvelope {
         request_id,
-        request: ElevateRequest::ManageHcsContainer {
-            operation: ContainerOperation::Create {
-                memory_limit_mb,
-                hostname,
-            },
-        },
+        request: ElevateRequest::ManageHcsContainer { operation },
         session_id,
         nonce: request_nonce(),
         _unknown: Vec::new(),
@@ -623,6 +646,14 @@ pub fn manage_hcs_container(
         nonce: 0,
         _unknown: Vec::new(),
     })
+}
+
+#[cfg(not(windows))]
+pub fn terminate_hcs_container(
+    session_id: malt_protocol::common::SessionId,
+    _id: String,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    manage_hcs_container(session_id, None, None)
 }
 
 #[cfg(not(windows))]
