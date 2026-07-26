@@ -771,9 +771,13 @@ Full evidence in `docs/findings/2026-07-26-spec-006-quickstart-verification.md`.
   `malt_platform::process::spawn`/mash's external-command spawn path to
   become HCS-aware (launch via `hcs::create_process`, not a normal OS
   spawn), which is genuinely new engineering, not a parameter change. That
-  remains open — Contained gets the same Job-Object-only containment as
-  Capped today, nothing more. Restricted tokens (`tokens.rs`) are unwired
-  for the same underlying reason (using a token means
+  remains open — `Contained` is now refused before session creation rather
+  than being re-labelled as Capped/Job-Object containment. The privileged
+  helper can create an entitled HCS compute system, but it still needs an
+  HCS-aware MASH child spawn and I/O handoff before a session may claim it;
+  see `docs/findings/2026-07-26-privileged-helper-hcs-spawn-survey.md`.
+  Restricted tokens (`tokens.rs`) are unwired for the same underlying reason
+  (using a token means
   `CreateProcessAsUser` in the actual spawn path) and remain a separate
   open item.
 - **Isolation policy: implement `required`/`preferred`/`disabled`
