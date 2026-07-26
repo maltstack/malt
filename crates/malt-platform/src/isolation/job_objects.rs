@@ -292,6 +292,35 @@ pub fn terminate_job_object(job: &JobObject) -> Result<(), IsolationError> {
     Ok(())
 }
 
+/// Report whether a named Job Object is currently present.
+///
+/// This is intentionally an inspection primitive rather than a creation
+/// result: callers use it to prove a refused session did not leave a named
+/// kernel object behind. It never creates the object as a side effect.
+#[cfg(windows)]
+pub fn job_object_exists(name: &str) -> Result<bool, IsolationError> {
+    let mut c_name = name.as_bytes().to_vec();
+    c_name.push(0);
+    // SAFETY: `c_name` is a valid NUL-terminated ANSI name. A non-zero handle
+    // is closed before this function returns.
+    let handle = unsafe { OpenJobObjectA(JOB_OBJECT_ALL_ACCESS, 0, c_name.as_ptr()) };
+    if handle == 0 {
+        let error = std::io::Error::last_os_error();
+        return match error.raw_os_error() {
+            // ERROR_FILE_NOT_FOUND: there is no named kernel object by that
+            // name. Treat only that condition as absence; access and other
+            // failures must remain visible to the caller.
+            Some(2) => Ok(false),
+            _ => Err(IsolationError::JobObjectError(format!(
+                "OpenJobObjectA failed for '{name}': {error}"
+            ))),
+        };
+    }
+    // SAFETY: `handle` is a valid handle returned by OpenJobObjectA.
+    unsafe { CloseHandle(handle) };
+    Ok(true)
+}
+
 /// Max processes a single job's query buffer can report. Generous for a
 /// shell session's process tree. If a job genuinely has more processes than
 /// this, the query fails rather than silently under-reporting the count —

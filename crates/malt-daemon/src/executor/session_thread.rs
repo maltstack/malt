@@ -836,7 +836,7 @@ impl SessionExecutor {
             start_command_id,
         )?;
         let control_ingress = ingress.clone();
-        let control_thread = thread::Builder::new()
+        let control_thread = match thread::Builder::new()
             .name(format!("session-control-{}", session_id.0))
             .spawn(move || {
                 let mut executor = SessionExecutor {
@@ -865,8 +865,21 @@ impl SessionExecutor {
                     output_subscriber_buffer,
                 };
                 executor.run(control_rx);
-            })
-            .map_err(DaemonError::Io)?;
+            }) {
+            Ok(control_thread) => control_thread,
+            Err(error) => {
+                // The worker owns the environment, including any Job Object.
+                // If the second thread cannot start, explicitly close its
+                // admission channel and wait for it to drop that environment
+                // before reporting failure. Returning immediately here used
+                // to strand a worker (and its isolation resource) even though
+                // no SessionHandle was inserted.
+                ingress.close();
+                let _ = control_tx.send(SessionCommand::Shutdown);
+                let _ = worker_thread.join();
+                return Err(DaemonError::Io(error));
+            }
+        };
         Ok(SessionSpawn {
             established_isolation,
             control_tx,
