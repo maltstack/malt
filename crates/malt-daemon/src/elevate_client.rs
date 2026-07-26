@@ -324,11 +324,19 @@ pub fn manage_hcs_container(
 /// reserved for image inventory: the helper still requires daemon enrollment,
 /// but never accepts a caller-selected filesystem path.
 #[cfg(windows)]
-pub fn manage_image(operation: malt_protocol::elevate::ImageOperation) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+pub fn manage_image(
+    operation: malt_protocol::elevate::ImageOperation,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
     use malt_protocol::elevate::{ElevateRequest, ElevateRequestEnvelope};
     use std::sync::atomic::{AtomicU32, Ordering};
     static NEXT_IMAGE_REQUEST: AtomicU32 = AtomicU32::new(50_000);
-    send_request(ElevateRequestEnvelope { request_id: NEXT_IMAGE_REQUEST.fetch_add(1, Ordering::Relaxed), request: ElevateRequest::ManageImage { operation }, session_id: malt_protocol::common::SessionId(0), nonce: request_nonce(), _unknown: Vec::new() })
+    send_request(ElevateRequestEnvelope {
+        request_id: NEXT_IMAGE_REQUEST.fetch_add(1, Ordering::Relaxed),
+        request: ElevateRequest::ManageImage { operation },
+        session_id: malt_protocol::common::SessionId(0),
+        nonce: request_nonce(),
+        _unknown: Vec::new(),
+    })
 }
 
 /// Ask the helper to terminate only the compute system it recorded for this
@@ -589,6 +597,7 @@ mod tests {
                 operation: ContainerOperation::Create {
                     memory_limit_mb: None,
                     hostname: None,
+                    image_id: None,
                 },
             },
             session_id: SessionId(88),
@@ -947,7 +956,7 @@ pub fn terminate_hcs_container(
     session_id: malt_protocol::common::SessionId,
     _id: String,
 ) -> io::Result<malt_protocol::elevate::ElevateResponse> {
-    manage_hcs_container(session_id, None, None)
+    manage_hcs_container(session_id, None, None, None)
 }
 
 #[cfg(not(windows))]

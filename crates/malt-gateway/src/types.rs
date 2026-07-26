@@ -38,10 +38,15 @@ pub struct CreateSessionRequest {
     pub name: Option<String>,
     pub isolation: Option<String>,
     pub isolation_policy: Option<String>,
+    /// Opaque helper-owned Windows image identity for contained sessions.
+    /// This is intentionally never interpreted as a local filesystem path.
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ProvisionImageRequest { pub reference: String }
+pub struct ProvisionImageRequest {
+    pub reference: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ImageResponse {

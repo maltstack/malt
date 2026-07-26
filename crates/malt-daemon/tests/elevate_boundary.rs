@@ -63,8 +63,13 @@ fn privilege_boundary_changes_the_outcome() {
     register_session_entitlement(session_id.clone(), root.path(), &[std::process::id()])
         .expect("register session entitlement with helper");
 
-    let routed = manage_hcs_container(session_id.clone(), None, Some("malt-boundary".to_string()))
-        .expect("send HCS operation through helper");
+    let routed = manage_hcs_container(
+        session_id.clone(),
+        None,
+        Some("malt-boundary".to_string()),
+        None,
+    )
+    .expect("send HCS operation through helper");
     let routed_detail = routed.detail.clone().unwrap_or_default();
     assert!(
         !is_access_denied(&routed_detail),

@@ -9,10 +9,29 @@ use crate::types::{
 /// Implementations bridge the HTTP layer to the daemon's session store,
 /// executor, and layout engine.
 pub trait GatewayBackend: Send + Sync + 'static {
-    fn provision_image(&self, _reference: String) -> Result<crate::types::ImageResponse, GatewayError> { Err(GatewayError::Internal("image provisioning is unavailable in this backend".to_string())) }
-    fn list_images(&self) -> Result<Vec<crate::types::ImageResponse>, GatewayError> { Err(GatewayError::Internal("image inventory is unavailable in this backend".to_string())) }
-    fn inspect_image(&self, _id: String) -> Result<crate::types::ImageResponse, GatewayError> { Err(GatewayError::Internal("image inventory is unavailable in this backend".to_string())) }
-    fn remove_image(&self, _id: String) -> Result<(), GatewayError> { Err(GatewayError::Internal("image inventory is unavailable in this backend".to_string())) }
+    fn provision_image(
+        &self,
+        _reference: String,
+    ) -> Result<crate::types::ImageResponse, GatewayError> {
+        Err(GatewayError::Internal(
+            "image provisioning is unavailable in this backend".to_string(),
+        ))
+    }
+    fn list_images(&self) -> Result<Vec<crate::types::ImageResponse>, GatewayError> {
+        Err(GatewayError::Internal(
+            "image inventory is unavailable in this backend".to_string(),
+        ))
+    }
+    fn inspect_image(&self, _id: String) -> Result<crate::types::ImageResponse, GatewayError> {
+        Err(GatewayError::Internal(
+            "image inventory is unavailable in this backend".to_string(),
+        ))
+    }
+    fn remove_image(&self, _id: String) -> Result<(), GatewayError> {
+        Err(GatewayError::Internal(
+            "image inventory is unavailable in this backend".to_string(),
+        ))
+    }
     fn list_sessions(&self) -> Result<Vec<SessionResponse>, GatewayError>;
 
     fn isolation_capabilities(
@@ -33,6 +52,17 @@ pub trait GatewayBackend: Send + Sync + 'static {
     ) -> Result<SessionResponse, GatewayError> {
         let _ = isolation_policy;
         self.create_session(name, isolation)
+    }
+
+    fn create_session_with_policy_and_image(
+        &self,
+        name: Option<String>,
+        isolation: Option<String>,
+        isolation_policy: Option<String>,
+        image: Option<String>,
+    ) -> Result<SessionResponse, GatewayError> {
+        let _ = image;
+        self.create_session_with_policy(name, isolation, isolation_policy)
     }
 
     fn get_session(&self, id: u32) -> Result<SessionResponse, GatewayError>;

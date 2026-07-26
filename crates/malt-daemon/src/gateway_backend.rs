@@ -7,8 +7,8 @@ use base64::Engine;
 use malt_gateway::backend::GatewayBackend;
 use malt_gateway::error::GatewayError;
 use malt_gateway::types::{
-    CommandHistoryEntry, ExecResult, IsolationCapabilityResponse, IsolationStatusResponse,
-    ImageResponse, LifecycleEventDto, OutputChunkDto, PaneResponse, SessionResponse,
+    CommandHistoryEntry, ExecResult, ImageResponse, IsolationCapabilityResponse,
+    IsolationStatusResponse, LifecycleEventDto, OutputChunkDto, PaneResponse, SessionResponse,
 };
 use malt_protocol::common::{IsolationPolicy, IsolationTier, SessionId};
 use malt_protocol::shell::OutputStream;
@@ -217,24 +217,77 @@ fn isolation_status_response(
     }
 }
 
-fn performed_payload(response: malt_protocol::elevate::ElevateResponse) -> Result<Vec<u8>, GatewayError> {
-    if response.kind != malt_protocol::elevate::OutcomeKind::Performed { return Err(GatewayError::BadRequest(response.detail.unwrap_or_else(|| "helper did not perform image operation".to_string()))); }
-    response.payload.ok_or_else(|| GatewayError::Internal("helper performed image operation without payload".to_string()))
+fn performed_payload(
+    response: malt_protocol::elevate::ElevateResponse,
+) -> Result<Vec<u8>, GatewayError> {
+    if response.kind != malt_protocol::elevate::OutcomeKind::Performed {
+        return Err(GatewayError::BadRequest(response.detail.unwrap_or_else(
+            || "helper did not perform image operation".to_string(),
+        )));
+    }
+    response.payload.ok_or_else(|| {
+        GatewayError::Internal("helper performed image operation without payload".to_string())
+    })
 }
-fn to_image_response(image: malt_protocol::elevate::ProvisionedImage) -> ImageResponse { ImageResponse { id: image.id, manifest_digest: image.manifest_digest, platform: image.platform, os_version: image.os_version, ready: image.ready, reason: image.reason, active_sessions: image.active_sessions } }
-fn image_response(response: malt_protocol::elevate::ElevateResponse) -> Result<ImageResponse, GatewayError> { let payload = performed_payload(response)?; let mut reader = malt_protocol::vexil_runtime::BitReader::new(&payload); let image = <malt_protocol::elevate::ProvisionedImage as malt_protocol::vexil_runtime::Unpack>::unpack(&mut reader).map_err(|e| GatewayError::Internal(e.to_string()))?; Ok(to_image_response(image)) }
+fn to_image_response(image: malt_protocol::elevate::ProvisionedImage) -> ImageResponse {
+    ImageResponse {
+        id: image.id,
+        manifest_digest: image.manifest_digest,
+        platform: image.platform,
+        os_version: image.os_version,
+        ready: image.ready,
+        reason: image.reason,
+        active_sessions: image.active_sessions,
+    }
+}
+fn image_response(
+    response: malt_protocol::elevate::ElevateResponse,
+) -> Result<ImageResponse, GatewayError> {
+    let payload = performed_payload(response)?;
+    let mut reader = malt_protocol::vexil_runtime::BitReader::new(&payload);
+    let image =
+        <malt_protocol::elevate::ProvisionedImage as malt_protocol::vexil_runtime::Unpack>::unpack(
+            &mut reader,
+        )
+        .map_err(|e| GatewayError::Internal(e.to_string()))?;
+    Ok(to_image_response(image))
+}
 
 impl GatewayBackend for DaemonBackend {
-    fn provision_image(&self, reference: String) -> Result<ImageResponse, GatewayError> { image_response(crate::elevate_client::manage_image(malt_protocol::elevate::ImageOperation::Provision { reference }).map_err(|e| GatewayError::Internal(e.to_string()))?) }
+    fn provision_image(&self, reference: String) -> Result<ImageResponse, GatewayError> {
+        image_response(
+            crate::elevate_client::manage_image(
+                malt_protocol::elevate::ImageOperation::Provision { reference },
+            )
+            .map_err(|e| GatewayError::Internal(e.to_string()))?,
+        )
+    }
     fn list_images(&self) -> Result<Vec<ImageResponse>, GatewayError> {
-        let response = crate::elevate_client::manage_image(malt_protocol::elevate::ImageOperation::List {}).map_err(|e| GatewayError::Internal(e.to_string()))?;
+        let response =
+            crate::elevate_client::manage_image(malt_protocol::elevate::ImageOperation::List {})
+                .map_err(|e| GatewayError::Internal(e.to_string()))?;
         let payload = performed_payload(response)?;
         let mut reader = malt_protocol::vexil_runtime::BitReader::new(&payload);
         let list = <malt_protocol::elevate::ProvisionedImageList as malt_protocol::vexil_runtime::Unpack>::unpack(&mut reader).map_err(|e| GatewayError::Internal(e.to_string()))?;
         Ok(list.images.into_iter().map(to_image_response).collect())
     }
-    fn inspect_image(&self, id: String) -> Result<ImageResponse, GatewayError> { image_response(crate::elevate_client::manage_image(malt_protocol::elevate::ImageOperation::Inspect { id }).map_err(|e| GatewayError::Internal(e.to_string()))?) }
-    fn remove_image(&self, id: String) -> Result<(), GatewayError> { let _ = performed_payload(crate::elevate_client::manage_image(malt_protocol::elevate::ImageOperation::Remove { id }).map_err(|e| GatewayError::Internal(e.to_string()))?)?; Ok(()) }
+    fn inspect_image(&self, id: String) -> Result<ImageResponse, GatewayError> {
+        image_response(
+            crate::elevate_client::manage_image(malt_protocol::elevate::ImageOperation::Inspect {
+                id,
+            })
+            .map_err(|e| GatewayError::Internal(e.to_string()))?,
+        )
+    }
+    fn remove_image(&self, id: String) -> Result<(), GatewayError> {
+        let _ = performed_payload(
+            crate::elevate_client::manage_image(malt_protocol::elevate::ImageOperation::Remove {
+                id,
+            })
+            .map_err(|e| GatewayError::Internal(e.to_string()))?,
+        )?;
+        Ok(())
+    }
     fn isolation_capabilities(&self) -> Result<Vec<IsolationCapabilityResponse>, GatewayError> {
         Ok(malt_platform::isolation::session_tier_capabilities()
             .into_iter()
@@ -279,11 +332,21 @@ impl GatewayBackend for DaemonBackend {
         isolation: Option<String>,
         isolation_policy: Option<String>,
     ) -> Result<SessionResponse, GatewayError> {
+        self.create_session_with_policy_and_image(name, isolation, isolation_policy, None)
+    }
+
+    fn create_session_with_policy_and_image(
+        &self,
+        name: Option<String>,
+        isolation: Option<String>,
+        isolation_policy: Option<String>,
+        image: Option<String>,
+    ) -> Result<SessionResponse, GatewayError> {
         let tier = parse_isolation(isolation)?;
         let policy = parse_isolation_policy(isolation_policy, tier)?;
         let mut coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
         let session_id = coord
-            .create_session_with_policy(name.clone(), tier, policy, None)
+            .create_session_with_policy_and_image(name.clone(), tier, policy, None, image)
             .map_err(|e| match e {
                 DaemonError::IsolationUnavailable(detail) => GatewayError::IsolationUnavailable {
                     message: format!(

@@ -51,6 +51,9 @@ pub enum Command {
         /// Whether the requested isolation must be established.
         #[arg(long, value_enum)]
         isolation_policy: Option<IsolationPolicyArg>,
+        /// Opaque helper-owned Windows image identity for contained isolation.
+        #[arg(long)]
+        image: Option<String>,
     },
     /// Attach to a session
     Attach { session_id: Option<u32> },
@@ -204,6 +207,26 @@ mod tests {
                 }
                 other => panic!("expected New, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn parse_contained_session_with_opaque_image() {
+        let cli = Cli::try_parse_from([
+            "malt",
+            "new",
+            "--isolation",
+            "contained",
+            "--image",
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::New { image, .. }) => assert_eq!(
+                image.as_deref(),
+                Some("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+            ),
+            other => panic!("expected New, got {other:?}"),
         }
     }
 

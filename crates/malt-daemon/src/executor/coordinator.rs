@@ -255,8 +255,19 @@ impl Coordinator {
         policy: IsolationPolicy,
         group: Option<GroupId>,
     ) -> Result<SessionId, DaemonError> {
+        self.create_session_with_policy_and_image(name, isolation, policy, group, None)
+    }
+
+    pub fn create_session_with_policy_and_image(
+        &mut self,
+        name: Option<String>,
+        isolation: IsolationTier,
+        policy: IsolationPolicy,
+        group: Option<GroupId>,
+        image_id: Option<String>,
+    ) -> Result<SessionId, DaemonError> {
         if policy == IsolationPolicy::Disabled {
-            let id = self.create_session_inner(name, IsolationTier::Bare, group)?;
+            let id = self.create_session_inner(name, IsolationTier::Bare, group, None)?;
             self.set_isolation_status(
                 id.clone(),
                 isolation,
@@ -265,13 +276,13 @@ impl Coordinator {
             );
             return Ok(id);
         }
-        match self.create_session_inner(name.clone(), isolation, group.clone()) {
+        match self.create_session_inner(name.clone(), isolation, group.clone(), image_id.clone()) {
             Ok(id) => Ok(id),
             Err(error @ DaemonError::IsolationUnavailable(_))
                 if policy == IsolationPolicy::Preferred =>
             {
                 let detail = format!("{isolation:?} unavailable: {error}");
-                let id = self.create_session_inner(name, IsolationTier::Bare, group)?;
+                let id = self.create_session_inner(name, IsolationTier::Bare, group, None)?;
                 self.set_isolation_status(
                     id.clone(),
                     isolation,
@@ -303,6 +314,7 @@ impl Coordinator {
         name: Option<String>,
         isolation: IsolationTier,
         _group: Option<GroupId>,
+        image_id: Option<String>,
     ) -> Result<SessionId, DaemonError> {
         // --- Name uniqueness ---
         let base = name.unwrap_or_else(|| "session".to_string());
@@ -338,10 +350,11 @@ impl Coordinator {
         self.next_pane_id += 1;
 
         self.pool_config.validate()?;
-        let spawned = SessionExecutor::spawn_with_capacity(
+        let spawned = SessionExecutor::spawn_with_capacity_and_image(
             session_id.clone(),
             pane_id.clone(),
             isolation,
+            image_id,
             self.pool_config.session_channel_size,
             Vec::new(),
         )?;

@@ -296,6 +296,7 @@ fn apply_session_isolation(
     env: &mut Env,
     session_id: SessionId,
     isolation: IsolationTier,
+    image_id: Option<String>,
 ) -> Result<malt_platform::isolation::IsolationContext, DaemonError> {
     let context = malt_platform::isolation::IsolationContext::from(isolation);
 
@@ -321,7 +322,7 @@ fn apply_session_isolation(
                 session_id.clone(),
                 None,
                 Some(format!("malt-{}", session_id.0)),
-                None,
+                image_id,
             )
             .map_err(|error| {
                 DaemonError::IsolationUnavailable(format!(
@@ -866,7 +867,33 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        let isolation_context = apply_session_isolation(&mut env, session_id.clone(), isolation)?;
+        let isolation_context =
+            apply_session_isolation(&mut env, session_id.clone(), isolation, None)?;
+        Self::spawn_with_env(
+            session_id,
+            first_pane,
+            isolation,
+            capacity,
+            env,
+            command_blocks,
+            output_log::MAX_RETAINED_BYTES,
+            output_log::SUBSCRIBER_BUFFER,
+            isolation_context,
+        )
+    }
+
+    pub fn spawn_with_capacity_and_image(
+        session_id: SessionId,
+        first_pane: PaneId,
+        isolation: IsolationTier,
+        image_id: Option<String>,
+        capacity: usize,
+        command_blocks: Vec<CommandBlock>,
+    ) -> Result<SessionSpawn, DaemonError> {
+        let mut env = Env::from_os();
+        env.set_interactive(true);
+        let isolation_context =
+            apply_session_isolation(&mut env, session_id.clone(), isolation, image_id)?;
         Self::spawn_with_env(
             session_id,
             first_pane,
@@ -899,7 +926,8 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        let isolation_context = apply_session_isolation(&mut env, session_id.clone(), isolation)?;
+        let isolation_context =
+            apply_session_isolation(&mut env, session_id.clone(), isolation, None)?;
         Self::spawn_with_env(
             session_id,
             first_pane,
@@ -962,7 +990,8 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        let isolation_context = apply_session_isolation(&mut env, session_id.clone(), isolation)?;
+        let isolation_context =
+            apply_session_isolation(&mut env, session_id.clone(), isolation, None)?;
         if let Some(snapshot) = &env_snapshot {
             env.apply_snapshot(snapshot);
         }

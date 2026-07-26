@@ -7,7 +7,10 @@ mod output;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Command, ElevateCommand, ImageCommand, IsolationCommand, IsolationPolicyArg, IsolationTierArg};
+use cli::{
+    Cli, Command, ElevateCommand, ImageCommand, IsolationCommand, IsolationPolicyArg,
+    IsolationTierArg,
+};
 use client::{MaltClient, SessionData};
 
 fn main() -> Result<()> {
@@ -30,7 +33,14 @@ fn main() -> Result<()> {
             name,
             isolation,
             isolation_policy,
-        }) => handle_new(&client, name.as_deref(), isolation, isolation_policy),
+            image,
+        }) => handle_new(
+            &client,
+            name.as_deref(),
+            isolation,
+            isolation_policy,
+            image.as_deref(),
+        ),
         Some(Command::Attach { session_id }) => handle_attach(&cli.api_addr, session_id),
         Some(Command::Kill { session_id }) => handle_kill(&client, session_id),
         Some(Command::Exec {
@@ -62,15 +72,38 @@ fn main() -> Result<()> {
 fn handle_image(client: &MaltClient, command: ImageCommand) -> Result<()> {
     match command {
         ImageCommand::Provision { reference } => print_image(&client.provision_image(&reference)?),
-        ImageCommand::List => { for image in client.list_images()? { print_image(&image)?; } Ok(()) }
+        ImageCommand::List => {
+            for image in client.list_images()? {
+                print_image(&image)?;
+            }
+            Ok(())
+        }
         ImageCommand::Inspect { id } => print_image(&client.inspect_image(&id)?),
-        ImageCommand::Remove { id } => { client.remove_image(&id)?; println!("removed helper-owned image {id}"); Ok(()) }
+        ImageCommand::Remove { id } => {
+            client.remove_image(&id)?;
+            println!("removed helper-owned image {id}");
+            Ok(())
+        }
     }
 }
 
 fn print_image(image: &client::ImageData) -> Result<()> {
-    println!("image:       {}\nmanifest:    {}\nplatform:    {}{}\nreadiness:   {}\nactive:      {}", image.id, image.manifest_digest, image.platform, image.os_version.as_ref().map(|version| format!(" (os.version {version})")).unwrap_or_default(), if image.ready { "ready" } else { "unavailable" }, image.active_sessions);
-    if let Some(reason) = &image.reason { println!("assessment:  {reason}"); }
+    println!(
+        "image:       {}\nmanifest:    {}\nplatform:    {}{}\nreadiness:   {}\nactive:      {}",
+        image.id,
+        image.manifest_digest,
+        image.platform,
+        image
+            .os_version
+            .as_ref()
+            .map(|version| format!(" (os.version {version})"))
+            .unwrap_or_default(),
+        if image.ready { "ready" } else { "unavailable" },
+        image.active_sessions
+    );
+    if let Some(reason) = &image.reason {
+        println!("assessment:  {reason}");
+    }
     Ok(())
 }
 
@@ -230,7 +263,7 @@ fn handle_default(api_addr: &str, client: &MaltClient) -> Result<()> {
     let session_id = if sessions.is_empty() {
         // Create a new session
         eprintln!("creating session...");
-        let session = client.create_session(None, None, None)?;
+        let session = client.create_session(None, None, None, None)?;
         // Give shell a moment to start
         std::thread::sleep(std::time::Duration::from_millis(500));
         session.id
@@ -302,12 +335,14 @@ fn handle_new(
     name: Option<&str>,
     isolation: Option<IsolationTierArg>,
     isolation_policy: Option<IsolationPolicyArg>,
+    image: Option<&str>,
 ) -> Result<()> {
     let expected_tier = expected_isolation_tier(isolation);
     let session = client.create_session(
         name,
         isolation.map(IsolationTierArg::request_value),
         isolation_policy.map(IsolationPolicyArg::request_value),
+        image,
     )?;
     validate_created_session(&session, expected_tier)?;
     println!("{}", creation_message(&session));

@@ -67,7 +67,15 @@ pub struct IsolationCapabilityData {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct ImageData { pub id: String, pub manifest_digest: String, pub platform: String, pub os_version: Option<String>, pub ready: bool, pub reason: Option<String>, pub active_sessions: u32 }
+pub struct ImageData {
+    pub id: String,
+    pub manifest_digest: String,
+    pub platform: String,
+    pub os_version: Option<String>,
+    pub ready: bool,
+    pub reason: Option<String>,
+    pub active_sessions: u32,
+}
 
 /// Payload sent to the existing create-session endpoint.
 #[derive(Debug, Serialize)]
@@ -78,6 +86,8 @@ struct CreateSessionRequest<'a> {
     isolation: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     isolation_policy: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image: Option<&'a str>,
 }
 
 impl<'a> CreateSessionRequest<'a> {
@@ -85,11 +95,13 @@ impl<'a> CreateSessionRequest<'a> {
         name: Option<&'a str>,
         isolation: Option<&'a str>,
         isolation_policy: Option<&'a str>,
+        image: Option<&'a str>,
     ) -> Self {
         Self {
             name,
             isolation,
             isolation_policy,
+            image,
         }
     }
 }
@@ -162,10 +174,53 @@ pub struct MaltClient {
 }
 
 impl MaltClient {
-    pub fn provision_image(&self, reference: &str) -> Result<ImageData> { let resp = self.authed(self.http.post(self.url("/images"))).json(&serde_json::json!({"reference":reference})).send().context("failed to reach daemon")?; resp.json::<ApiEnvelope<ImageData>>().context("invalid image provision response")?.into_data("image provision") }
-    pub fn list_images(&self) -> Result<Vec<ImageData>> { let resp = self.authed(self.http.get(self.url("/images"))).send().context("failed to reach daemon")?; resp.json::<ApiEnvelope<Vec<ImageData>>>().context("invalid image list response")?.into_data("image list") }
-    pub fn inspect_image(&self, id: &str) -> Result<ImageData> { let resp = self.authed(self.http.get(self.url(&format!("/images/{id}")))).send().context("failed to reach daemon")?; resp.json::<ApiEnvelope<ImageData>>().context("invalid image inspect response")?.into_data("image inspect") }
-    pub fn remove_image(&self, id: &str) -> Result<()> { let response = self.authed(self.http.delete(self.url(&format!("/images/{id}")))).send().context("failed to reach daemon")?; let envelope: ApiEnvelope<serde_json::Value> = response.json().context("invalid image remove response")?; if envelope.ok { Ok(()) } else { Err(anyhow::anyhow!("{}", envelope.error.map(ApiError::into_message).unwrap_or_else(|| "image remove failed".to_string()))) } }
+    pub fn provision_image(&self, reference: &str) -> Result<ImageData> {
+        let resp = self
+            .authed(self.http.post(self.url("/images")))
+            .json(&serde_json::json!({"reference":reference}))
+            .send()
+            .context("failed to reach daemon")?;
+        resp.json::<ApiEnvelope<ImageData>>()
+            .context("invalid image provision response")?
+            .into_data("image provision")
+    }
+    pub fn list_images(&self) -> Result<Vec<ImageData>> {
+        let resp = self
+            .authed(self.http.get(self.url("/images")))
+            .send()
+            .context("failed to reach daemon")?;
+        resp.json::<ApiEnvelope<Vec<ImageData>>>()
+            .context("invalid image list response")?
+            .into_data("image list")
+    }
+    pub fn inspect_image(&self, id: &str) -> Result<ImageData> {
+        let resp = self
+            .authed(self.http.get(self.url(&format!("/images/{id}"))))
+            .send()
+            .context("failed to reach daemon")?;
+        resp.json::<ApiEnvelope<ImageData>>()
+            .context("invalid image inspect response")?
+            .into_data("image inspect")
+    }
+    pub fn remove_image(&self, id: &str) -> Result<()> {
+        let response = self
+            .authed(self.http.delete(self.url(&format!("/images/{id}"))))
+            .send()
+            .context("failed to reach daemon")?;
+        let envelope: ApiEnvelope<serde_json::Value> =
+            response.json().context("invalid image remove response")?;
+        if envelope.ok {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "{}",
+                envelope
+                    .error
+                    .map(ApiError::into_message)
+                    .unwrap_or_else(|| "image remove failed".to_string())
+            ))
+        }
+    }
     pub fn new(addr: &str) -> Self {
         let addr = addr.trim_end_matches('/').to_owned();
         let token = std::fs::read_to_string(malt_gateway::auth::dirs_token_path())
@@ -236,6 +291,7 @@ impl MaltClient {
         name: Option<&str>,
         isolation: Option<&str>,
         isolation_policy: Option<&str>,
+        image: Option<&str>,
     ) -> Result<SessionData> {
         let req =
             self.authed(self.http.post(self.url("/sessions")))
@@ -243,6 +299,7 @@ impl MaltClient {
                     name,
                     isolation,
                     isolation_policy,
+                    image,
                 ));
         let resp = req.send().context("failed to reach daemon")?;
         let envelope: ApiEnvelope<SessionData> =
@@ -412,25 +469,41 @@ mod tests {
 
     #[test]
     fn create_session_payload_preserves_legacy_and_selected_tier_shapes() {
-        let empty = CreateSessionRequest::new(None, None, None);
+        let empty = CreateSessionRequest::new(None, None, None, None);
         assert_eq!(serde_json::to_value(empty).unwrap(), serde_json::json!({}));
 
-        let named = CreateSessionRequest::new(Some("build"), None, None);
+        let named = CreateSessionRequest::new(Some("build"), None, None, None);
         assert_eq!(
             serde_json::to_value(named).unwrap(),
             serde_json::json!({ "name": "build" })
         );
 
-        let tier_only = CreateSessionRequest::new(None, Some("restricted"), None);
+        let tier_only = CreateSessionRequest::new(None, Some("restricted"), None, None);
         assert_eq!(
             serde_json::to_value(tier_only).unwrap(),
             serde_json::json!({ "isolation": "restricted" })
         );
 
-        let named_tier = CreateSessionRequest::new(Some("build"), Some("capped"), None);
+        let named_tier = CreateSessionRequest::new(Some("build"), Some("capped"), None, None);
         assert_eq!(
             serde_json::to_value(named_tier).unwrap(),
             serde_json::json!({ "name": "build", "isolation": "capped" })
+        );
+
+        let contained = CreateSessionRequest::new(
+            Some("proof"),
+            Some("contained"),
+            Some("required"),
+            Some("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        );
+        assert_eq!(
+            serde_json::to_value(contained).unwrap(),
+            serde_json::json!({
+                "name": "proof",
+                "isolation": "contained",
+                "isolation_policy": "required",
+                "image": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            })
         );
     }
 
