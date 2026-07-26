@@ -1,0 +1,16 @@
+//! Authenticated local inter-process transport primitives.
+//!
+//! The implementation lives here because named-pipe creation and peer
+//! attribution are OS operations. Callers receive a normal `Read + Write`
+//! connection plus an OS-attributed peer process identifier.
+
+#[cfg(windows)]
+mod windows;
+
+#[cfg(windows)]
+pub use windows::{NamedPipeClient, NamedPipeConnection, NamedPipeServer, PeerIdentity};
+
+#[cfg(not(windows))]
+#[derive(Debug, thiserror::Error)]
+#[error("named-pipe IPC is only available on Windows")]
+pub struct UnsupportedPlatform;

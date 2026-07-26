@@ -6,10 +6,12 @@
 pub mod env;
 pub mod fs;
 pub mod io;
+pub mod ipc;
 pub mod isolation;
 pub mod process;
 pub mod pty;
 pub mod resource;
+pub mod service;
 pub mod signals;
 pub mod sockets;
 pub mod vfs;
