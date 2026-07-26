@@ -114,7 +114,11 @@ mod tests {
         // Remove if exists
         let _ = fs::remove_file(path);
 
-        let r = touch(&["-c".into(), path.into()], &mut &b""[..], &mut std::io::sink());
+        let r = touch(
+            &["-c".into(), path.into()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert!(!Path::new(path).exists());
     }

@@ -133,7 +133,10 @@ mod tests {
         let r = cat(&[], &mut &b"hello\n"[..], &mut out);
         assert_eq!(r.exit_code, 0);
         assert_eq!(r.stdout, b"hello\n");
-        assert_eq!(out, b"hello\n", "streamed bytes must match the returned buffer");
+        assert_eq!(
+            out, b"hello\n",
+            "streamed bytes must match the returned buffer"
+        );
     }
 
     #[test]
@@ -145,14 +148,22 @@ mod tests {
 
     #[test]
     fn cat_dash_reads_stdin() {
-        let r = cat(&["-".into()], &mut &b"from stdin\n"[..], &mut std::io::sink());
+        let r = cat(
+            &["-".into()],
+            &mut &b"from stdin\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(r.stdout, b"from stdin\n");
     }
 
     #[test]
     fn cat_number_lines() {
-        let r = cat(&["-n".into()], &mut &b"aaa\nbbb\n"[..], &mut std::io::sink());
+        let r = cat(
+            &["-n".into()],
+            &mut &b"aaa\nbbb\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("1\taaa"));

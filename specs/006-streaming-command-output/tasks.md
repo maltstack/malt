@@ -192,11 +192,15 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T038 Update `docs/BACKLOG.md`: close the "pushes one frame at completion, not incremental output" item with the test names that prove it, and close or re-scope the streaming-`ToolFn` item. Cite tests that **exist** — verify each name before writing it.
-- [ ] T039 [P] Update `AGENTS.md`: output streams during a command; `/exec` output is bounded and reports truncation; the new route and `malt watch --output`. Correct any "What's Implemented" claim this feature falsifies.
-- [ ] T040 [P] Amend `docs/design/architecture.md` where it describes output flow, if it describes something other than what now exists.
-- [ ] T041 Run the full quickstart manually against a live daemon — all eight scenarios including the 100 MB volume case and the stalled-subscriber case — and record the outcome, **including what it does not establish**, in a dated `docs/findings/` entry.
-- [ ] T042 Final verification: `cargo test --workspace`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and the Smoosh command from T037 (183 passed / 3 skipped). Update `specs/006-streaming-command-output/tasks.md` with the closing note. Commit. **Merge to main.**
+- [X] T038 Update `docs/BACKLOG.md`: close the "pushes one frame at completion, not incremental output" item with the test names that prove it, and close or re-scope the streaming-`ToolFn` item. Cite tests that **exist** — verify each name before writing it.
+  - Closed both layers of the "Gateway/agent-driven execution never notified..." item with the 9 test names (verified to exist via grep before writing), citing `output_stream.rs` and `output_sink.rs`.
+- [X] T039 [P] Update `AGENTS.md`: output streams during a command; `/exec` output is bounded and reports truncation; the new route and `malt watch --output`. Correct any "What's Implemented" claim this feature falsifies.
+  - Added the spec-006 streaming bullet to "What's Implemented", the `--output`/`--resume-from` and truncation notes to the CLI table, the new SSE output-stream route to the Gateway section, and corrected the stale "11 endpoints" count to 17 (recounted from `server.rs`).
+- [X] T040 [P] Amend `docs/design/architecture.md` where it describes output flow, if it describes something other than what now exists.
+  - Added an "Implementation status note" after the Priority Classes table: the actual mechanism (`OutputSink` → per-command forwarding → bounded `OutputLog` → SSE/VNP) does not go through the bus or a Structured Output Parser as the surrounding section describes; neither exists in the codebase.
+- [X] T041 Run the full quickstart manually against a live daemon — all eight scenarios including the 100 MB volume case and the stalled-subscriber case — and record the outcome, **including what it does not establish**, in a dated `docs/findings/` entry.
+  - `docs/findings/2026-07-26-spec-006-quickstart-verification.md`. Six of eight scenarios directly confirmed (1, 2, 3, 4, 7, byte-fidelity half of 8); scenarios 5/6 not driven by an actual interactive TUI (no TTY in this environment) but covered by the existing automated VNP-level tests; the volume half of scenario 8 surfaced two real, evidence-based findings now in `docs/BACKLOG.md` (a firehose command backlogs its own session's control operations and uses far more memory than the documented `OutputLog` bound during the run, though it does complete and memory recovers after; the pre-existing `/exec` JSON response is lossy for non-UTF-8 bytes while the new SSE stream is not). One apparent SC-005 violation (stalled subscriber slowing the command) was chased down and ruled out as noise from a heavily-used daemon process, not a real defect, via a clean-daemon re-run.
+- [X] T042 Final verification: `cargo test --workspace`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and the Smoosh command from T037 (183 passed / 3 skipped). Update `specs/006-streaming-command-output/tasks.md` with the closing note. Commit. **Merge to main.**
 
 ---
 
@@ -245,3 +249,40 @@ stream, and Smoosh is the only thing that reliably catches it.
 **Incremental delivery**: merge at each checkpoint, as in 003–005. Each story
 is independently valuable — US1 alone makes a long command observable; US3
 alone makes an agent able to follow it; US2 alone makes a human able to watch.
+
+---
+
+## Closing note (2026-07-26)
+
+All 42 tasks complete. All four user stories implemented and gated:
+
+- **Gates**: `cargo test --workspace` (0 failed across the full workspace,
+  re-run clean after `cargo fmt`), `cargo fmt --all -- --check` (clean),
+  `cargo clippy --workspace --all-targets -- -D warnings` (clean, zero
+  warnings), Smoosh (183 passed, 3 skipped unsupported, 0 harness/shell
+  failures) — run three times across this phase (T006-era, T037, and again
+  here after Phase 7's `cargo fmt` reformatting), clean every time.
+- **Manual quickstart verification**: `docs/findings/2026-07-26-spec-006-quickstart-verification.md`.
+  Six of eight scenarios directly confirmed against a live daemon; scenarios
+  5/6 covered by existing automated VNP-level tests rather than an actual
+  interactive TUI (no TTY available in this environment); the volume half of
+  scenario 8 surfaced two real, evidence-based findings, now recorded in
+  `docs/BACKLOG.md` rather than fixed here (a firehose command backlogs its
+  own session's control operations and exceeds the documented `OutputLog`
+  memory bound during the run, though it does complete and memory recovers
+  afterward; the pre-existing `/exec` JSON response is lossy for non-UTF-8
+  bytes while the new SSE stream is not — not a regression from this
+  feature, but directly relevant to its FR-011).
+- **Docs updated**: `docs/BACKLOG.md` (closed the streaming item with real
+  test names, added two new evidence-based findings), `AGENTS.md` (What's
+  Implemented, CLI table, Gateway route count), `docs/design/architecture.md`
+  (implementation-status note where it describes an output flow the code
+  doesn't actually use).
+
+Not fixed in this feature, by design (see the two BACKLOG items above and
+Principle IX): the firehose-command control-actor backlog, the `/exec`
+JSON response's lossy UTF-8 handling, `head`'s missing `-c` flag, mash's
+`printf` octal-escape-to-UTF-8-encoding quirk, and the pre-existing
+terminal-grid "staircase" rendering defect. All four are either out of this
+feature's scope or larger than a polish-pass change, and are recorded rather
+than silently absorbed or silently deferred.

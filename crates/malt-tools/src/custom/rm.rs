@@ -140,7 +140,11 @@ mod tests {
         // Ensure doesn't exist
         let _ = fs::remove_file(path);
 
-        let r = rm(&["-f".into(), path.into()], &mut &b""[..], &mut std::io::sink());
+        let r = rm(
+            &["-f".into(), path.into()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
     }
 
@@ -152,7 +156,11 @@ mod tests {
         fs::create_dir_all(path).unwrap();
         fs::write(&nested, "content").unwrap();
 
-        let r = rm(&["-rf".into(), path.display().to_string()], &mut &b""[..], &mut std::io::sink());
+        let r = rm(
+            &["-rf".into(), path.display().to_string()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(
             r.exit_code,
             0,
@@ -186,7 +194,11 @@ mod tests {
 
         fs::remove_file(&target).unwrap();
 
-        let result = rm(&[link.display().to_string()], &mut &b""[..], &mut std::io::sink());
+        let result = rm(
+            &[link.display().to_string()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(
             result.exit_code,
             0,

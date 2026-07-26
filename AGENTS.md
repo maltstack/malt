@@ -179,10 +179,12 @@ malt new [--name N] [--isolation <bare|restricted|capped|contained>]
                                # Create session (spawns in-process mash shell)
 malt list                     # List sessions
 malt attach [ID]              # Open TUI connected to session (VNP + HTTP fallback)
-malt exec ID "command"        # Run command via mash, return output
+malt exec ID "command"        # Run command via mash, return output (reports truncation if the
+                               # reply exceeds the 1 MiB cap)
 malt output ID                # Print session's current output as plain text
 malt history ID               # List the session's command execution history
-malt watch ID                 # Stream the session's lifecycle events live (SSE)
+malt watch ID [--output]      # Stream the session's lifecycle events live (SSE); --output
+                               # streams the command's raw stdout/stderr chunks instead
 malt send ID "input"          # Send raw bytes to whatever is reading (NOT a command)
 malt eof ID                   # Signal end-of-input to the current reader (Ctrl-D)
 malt kill ID                  # Destroy session
@@ -209,6 +211,7 @@ doesn't have a token mechanism yet.
 - **VNP listener:** TCP socket on port+1, **authenticated** VNP handshake, typed bitpack envelope dispatch post-handshake — KeyEvent/Resize/FrameAck/InputClaim inbound, RenderBatch/InitialState/InputAuthorityChanged outbound. No JSON in the message loop.
 - **VNP authentication (2026-07-25, spec 005 US1):** the transport used to accept every connection and send the session inventory during the handshake, before establishing any identity — audit A-01. It now validates the same bearer token as the HTTP surface *before* disclosing anything; the inventory is passed to the handshake as a `FnOnce`, so "authenticate first" is structural rather than a convention someone has to remember. A 10 s deadline applies before the first blocking read (set on the stream, not the write-side clone — a receive timeout is per-descriptor on Windows), and `MAX_PENDING_HANDSHAKES` bounds unidentified connections.
 - **Raw input + input authority (2026-07-25, spec 005):** `send` writes raw bytes to whatever is reading — it no longer submits them as a command to execute, which had made it impossible to answer a prompt and possible to run text the caller never intended. Input carries an `InputOrigin`; at most one attached client holds authority, non-holders are refused with a reason naming the holder rather than silently dropped, and authority releases on disconnect (clean or abrupt) with no timeout. `GET /sessions/{id}/authority` reports the holder at Read scope. `POST /sessions/{id}/eof` (`malt eof`) ends the current read so a command consuming to end-of-input can finish. See `specs/005-raw-input-authority/` and `docs/findings/2026-07-25-spec-005-quickstart-verification.md`.
+- **Streaming command output (2026-07-26, spec 006):** a running command's output used to reach anyone only once at completion. `mash`'s `Env` now carries an `OutputSink`; the session worker installs one per command, and every leaf dispatch point (builtins, in-process tools, external processes, pipelines) forwards output to it as produced rather than after the fact — including `cat`/`grep`/`sed`/`head`, whose `ToolFn` signature grew a writer alongside its reader so a tool emits as it works (`wc` still emits once: it has exactly one summary line, known only once input is exhausted). The control actor feeds the compat grid and dispatches a `RenderBatch` per chunk, and a bounded per-session `OutputLog` (4 MiB, byte- not count-bounded, with a reserved subscriber slot so a lagged consumer can always be told so rather than silently dropped) lets both VNP clients and `GET /sessions/{id}/output/stream` (SSE, `Last-Event-ID` resume) resume from a position instead of only seeing what arrives after they attach. `malt watch --output` is the first-party CLI consumer. Command substitution and pipeline stages explicitly clear the sink on their `env.clone()` (a captured value or an internal pipe must never leak to a live viewer), and redirected output still lands only in the file — the writer is an additional destination, never a replacement for the buffer `apply_output_redirects` acts on. See `specs/006-streaming-command-output/` and `docs/BACKLOG.md`'s now-closed "Gateway/agent-driven execution never notified" entry.
 - **Input bridge:** `input_bridge` module — `vnp_key_to_input_event` converts VNP `KeyEvent` → mash `InputEvent`
 - **RendererHost + Editor wiring:** Session executor owns a `RendererHost` and `Editor`; `RegisterVnpClient` returns `InitialState`, `KeyInput` drives the line editor, `dispatch_render` pushes `RenderBatch` to per-client `SyncSender<RenderBatch>(4)` channels
 - **Gateway backend:** GatewayBackend impl wrapping Coordinator, exec via RunCommand with reply channel
@@ -229,10 +232,11 @@ doesn't have a token mechanism yet.
 - **Known bug (2026-07-24):** output grid rendering has a cursor-position "staircase" bug — successive lines render with growing left-padding instead of resetting to column 0. P0 in `docs/BACKLOG.md`; the single biggest known gap to daily-driver usability.
 
 ### API Gateway (malt-gateway)
-- HTTP REST: axum 0.8, 11 endpoints + /shutdown
+- HTTP REST: axum 0.8, 17 endpoints + /shutdown
 - GatewayBackend trait (extractable subsystem)
 - Auth: scopes (Monitor < Read < Interact < Admin), TokenStore with bearer tokens, token file persistence
 - SSE event stream: `GET /sessions/{id}/events` (Read scope), `Last-Event-ID` resume, bounded per-subscriber delivery
+- SSE output stream (2026-07-26, spec 006): `GET /sessions/{id}/output/stream` (Read scope) — same `Last-Event-ID`/bounded-delivery shape as the event stream, but carrying base64-encoded stdout/stderr chunks instead of lifecycle events
 - Token bucket rate limiter
 - Shadow tree: FrameElement → semantic JSON (styled spans with RGB)
 

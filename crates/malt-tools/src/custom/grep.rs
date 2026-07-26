@@ -293,8 +293,8 @@ mod tests {
         let r = grep(
             &["hello".into()],
             &mut &b"hello world\ngoodbye\nhello again\n"[..],
-        &mut std::io::sink(),
-    );
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("hello world"));
@@ -304,7 +304,11 @@ mod tests {
 
     #[test]
     fn grep_no_match() {
-        let r = grep(&["xyz".into()], &mut &b"hello\nworld\n"[..], &mut std::io::sink());
+        let r = grep(
+            &["xyz".into()],
+            &mut &b"hello\nworld\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 1);
     }
 
@@ -313,8 +317,8 @@ mod tests {
         let r = grep(
             &["-i".into(), "hello".into()],
             &mut &b"Hello World\nhello world\nHELLO\n"[..],
-        &mut std::io::sink(),
-    );
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert_eq!(out.lines().count(), 3);
@@ -322,7 +326,11 @@ mod tests {
 
     #[test]
     fn grep_invert() {
-        let r = grep(&["-v".into(), "hello".into()], &mut &b"hello\nworld\n"[..], &mut std::io::sink());
+        let r = grep(
+            &["-v".into(), "hello".into()],
+            &mut &b"hello\nworld\n"[..],
+            &mut std::io::sink(),
+        );
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(!out.contains("hello"));
         assert!(out.contains("world"));
@@ -333,15 +341,19 @@ mod tests {
         let r = grep(
             &["-c".into(), "hello".into()],
             &mut &b"hello\nhello\nworld\n"[..],
-        &mut std::io::sink(),
-    );
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "2");
     }
 
     #[test]
     fn grep_line_numbers() {
-        let r = grep(&["-n".into(), "aaa".into()], &mut &b"aaa\nbbb\naaa\n"[..], &mut std::io::sink());
+        let r = grep(
+            &["-n".into(), "aaa".into()],
+            &mut &b"aaa\nbbb\naaa\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         assert!(out.contains("1:aaa"));
@@ -356,13 +368,21 @@ mod tests {
 
     #[test]
     fn grep_invalid_regex() {
-        let r = grep(&["[invalid".into()], &mut &b"test\n"[..], &mut std::io::sink());
+        let r = grep(
+            &["[invalid".into()],
+            &mut &b"test\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 2);
     }
 
     #[test]
     fn grep_e_option_uses_following_pattern() {
-        let r = grep(&["-e".into(), "^.$".into()], &mut &b".\n..\n"[..], &mut std::io::sink());
+        let r = grep(
+            &["-e".into(), "^.$".into()],
+            &mut &b".\n..\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), ".\n");
     }
@@ -372,8 +392,8 @@ mod tests {
         let r = grep(
             &["-in".into(), "-e".into(), "hello".into()],
             &mut &b"HELLO\n"[..],
-        &mut std::io::sink(),
-    );
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "1:HELLO\n");
     }

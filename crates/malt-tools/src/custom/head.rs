@@ -204,7 +204,11 @@ mod tests {
 
     #[test]
     fn head_stdin_short_form() {
-        let r = head(&["-3".into()], &mut &b"a\nb\nc\nd\ne\n"[..], &mut std::io::sink());
+        let r = head(
+            &["-3".into()],
+            &mut &b"a\nb\nc\nd\ne\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "a\nb\nc\n");
     }

@@ -154,6 +154,20 @@ always have authority on the session they target (agents are not observers).
 Note: InputEvent is not on the bus — it flows directly to the focused pane's
 owner (MASH, App, or Compat Translator).
 
+**Implementation status note (2026-07-26, spec 006):** the output flow this
+section describes — OutputChunk on the per-session bus, picked up by a
+Structured Output Parser — is not what shipped. There is no Structured
+Output Parser in the codebase, and the Bus still has zero consumers (see
+`docs/BACKLOG.md`). What actually delivers streaming output today: `mash`'s
+`Env` carries an `OutputSink` that the session worker installs per command;
+output is forwarded to it as produced (not batched onto a bus), the control
+actor feeds it straight into the compat grid and dispatches a `RenderBatch`
+per chunk, and a bounded per-session `OutputLog` (byte-bounded, not the
+priority-class ring buffer described above) is what `GET
+/sessions/{id}/output/stream` and VNP resume from. See
+`specs/006-streaming-command-output/` for the mechanism that exists, as
+opposed to the one diagrammed here.
+
 ### Message Flow Example — User Types `cargo build`
 
 ```

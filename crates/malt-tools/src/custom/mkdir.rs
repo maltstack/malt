@@ -93,7 +93,11 @@ mod tests {
         // Remove if exists
         let _ = fs::remove_dir_all("test_mkdir_parent");
 
-        let r = mkdir(&["-p".into(), path.into()], &mut &b""[..], &mut std::io::sink());
+        let r = mkdir(
+            &["-p".into(), path.into()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert!(Path::new(path).exists());
 

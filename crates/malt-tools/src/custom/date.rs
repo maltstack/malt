@@ -15,7 +15,10 @@ pub fn date(
             Ok(duration) => duration.as_secs(),
             Err(_) => 0,
         };
-        return emit(stdout, BuiltinResult::success(format!("{seconds}\n").into_bytes()));
+        return emit(
+            stdout,
+            BuiltinResult::success(format!("{seconds}\n").into_bytes()),
+        );
     }
 
     emit(

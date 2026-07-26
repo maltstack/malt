@@ -55,7 +55,11 @@ fn cat_file() {
 fn cat_missing_file() {
     let reg = Registry::new();
     let cat = reg.get("cat").unwrap();
-    let result = cat(&["/nonexistent/file".into()], &mut &[][..], &mut std::io::sink());
+    let result = cat(
+        &["/nonexistent/file".into()],
+        &mut &[][..],
+        &mut std::io::sink(),
+    );
     assert_ne!(result.exit_code, 0);
 }
 
@@ -79,7 +83,11 @@ fn grep_matches() {
 fn grep_no_match() {
     let reg = Registry::new();
     let grep = reg.get("grep").unwrap();
-    let result = grep(&["xyz".into()], &mut &b"hello\nworld\n"[..], &mut std::io::sink());
+    let result = grep(
+        &["xyz".into()],
+        &mut &b"hello\nworld\n"[..],
+        &mut std::io::sink(),
+    );
     assert_eq!(result.exit_code, 1);
 }
 
@@ -113,7 +121,11 @@ fn grep_count() {
 fn wc_stdin() {
     let reg = Registry::new();
     let wc = reg.get("wc").unwrap();
-    let result = wc(&[], &mut &b"hello world\ngoodbye\n"[..], &mut std::io::sink());
+    let result = wc(
+        &[],
+        &mut &b"hello world\ngoodbye\n"[..],
+        &mut std::io::sink(),
+    );
     assert_eq!(result.exit_code, 0);
     let output = String::from_utf8_lossy(&result.stdout);
     // Should contain line count (2), word count (3), byte count

@@ -397,21 +397,33 @@ mod tests {
 
     #[test]
     fn sed_substitute_first() {
-        let r = sed(&["s/foo/bar/".into()], &mut &b"foo foo foo\n"[..], &mut std::io::sink());
+        let r = sed(
+            &["s/foo/bar/".into()],
+            &mut &b"foo foo foo\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "bar foo foo\n");
     }
 
     #[test]
     fn sed_substitute_global() {
-        let r = sed(&["s/foo/bar/g".into()], &mut &b"foo foo foo\n"[..], &mut std::io::sink());
+        let r = sed(
+            &["s/foo/bar/g".into()],
+            &mut &b"foo foo foo\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "bar bar bar\n");
     }
 
     #[test]
     fn sed_substitute_nth() {
-        let r = sed(&["s/foo/bar/2".into()], &mut &b"foo foo foo\n"[..], &mut std::io::sink());
+        let r = sed(
+            &["s/foo/bar/2".into()],
+            &mut &b"foo foo foo\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout), "foo bar foo\n");
     }

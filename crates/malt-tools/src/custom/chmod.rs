@@ -193,7 +193,11 @@ mod tests {
         let path = "test_chmod.txt";
         fs::write(path, "content").unwrap();
 
-        let r = chmod(&["644".into(), path.into()], &mut &b""[..], &mut std::io::sink());
+        let r = chmod(
+            &["644".into(), path.into()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
         // On Windows this succeeds with no-op, on Unix it changes permissions
         assert_eq!(r.exit_code, 0);
 
@@ -206,7 +210,11 @@ mod tests {
         let path = "test_chmod_nonexistent.txt";
         let _ = fs::remove_file(path);
 
-        let r = chmod(&["644".into(), path.into()], &mut &b""[..], &mut std::io::sink());
+        let r = chmod(
+            &["644".into(), path.into()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 1);
     }
 

@@ -67,8 +67,11 @@ impl BuiltinResult {
 /// call before returning -- there is no framing decision to make for
 /// those, only for a tool that genuinely produces output incrementally
 /// (`cat`, `grep`, `sed`, `head`, `wc`).
-pub type ToolFn =
-    fn(args: &[String], stdin: &mut dyn std::io::Read, stdout: &mut dyn std::io::Write) -> BuiltinResult;
+pub type ToolFn = fn(
+    args: &[String],
+    stdin: &mut dyn std::io::Read,
+    stdout: &mut dyn std::io::Write,
+) -> BuiltinResult;
 
 /// Write a finished result's stdout to the streaming writer, then return the
 /// result unchanged.

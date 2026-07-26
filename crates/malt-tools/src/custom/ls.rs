@@ -154,7 +154,11 @@ mod tests {
 
     #[test]
     fn ls_nonexistent() {
-        let r = ls(&["/nonexistent".into()], &mut &b""[..], &mut std::io::sink());
+        let r = ls(
+            &["/nonexistent".into()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 1);
     }
 }

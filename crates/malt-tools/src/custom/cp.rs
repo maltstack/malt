@@ -205,7 +205,11 @@ mod tests {
         fs::write(src, "content").unwrap();
         let _ = fs::remove_file(dst);
 
-        let r = cp(&[src.into(), dst.into()], &mut &b""[..], &mut std::io::sink());
+        let r = cp(
+            &[src.into(), dst.into()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert!(Path::new(dst).exists());
 
@@ -221,7 +225,11 @@ mod tests {
         let _ = fs::remove_file(src);
         let _ = fs::remove_file(dst);
 
-        let r = cp(&[src.into(), dst.into()], &mut &b""[..], &mut std::io::sink());
+        let r = cp(
+            &[src.into(), dst.into()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 1);
     }
 }

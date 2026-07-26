@@ -178,7 +178,11 @@ mod tests {
 
     #[test]
     fn wc_stdin_default() {
-        let r = wc(&[], &mut &b"hello world\ngoodbye\n"[..], &mut std::io::sink());
+        let r = wc(
+            &[],
+            &mut &b"hello world\ngoodbye\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         let out = String::from_utf8_lossy(&r.stdout);
         // 2 lines, 3 words, some bytes
@@ -195,7 +199,11 @@ mod tests {
 
     #[test]
     fn wc_words_only() {
-        let r = wc(&["-w".into()], &mut &b"one two three\nfour\n"[..], &mut std::io::sink());
+        let r = wc(
+            &["-w".into()],
+            &mut &b"one two three\nfour\n"[..],
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "4");
     }
@@ -213,7 +221,11 @@ mod tests {
 
     #[test]
     fn wc_chars_only() {
-        let r = wc(&["-m".into()], &mut "hello\n".as_bytes(), &mut std::io::sink());
+        let r = wc(
+            &["-m".into()],
+            &mut "hello\n".as_bytes(),
+            &mut std::io::sink(),
+        );
         assert_eq!(r.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&r.stdout).trim(), "6");
     }

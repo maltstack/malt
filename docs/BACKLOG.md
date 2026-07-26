@@ -175,7 +175,7 @@ termination that only removes bookkeeping (A-06).
   replace-not-truncate semantics). See
   `docs/findings/2026-07-24-audit-input-concurrency.md` §3a.
 - **Gateway/agent-driven execution never notified attached VNP clients
-  that anything happened — PARTIAL FIX 2026-07-25.** `dispatch_render()`
+  that anything happened — CLOSED 2026-07-26 (partial fix 2026-07-25).** `dispatch_render()`
   was called only from `KeyInput`'s handler; `RunCommand` (the Gateway
   `/exec` path — ADR-0002's "canonical agent control plane"), `WriteInput`,
   and `PtyOutput` never called it, so if an agent ran `cargo test` via
@@ -188,33 +188,41 @@ termination that only removes bookkeeping (A-06).
   `run_command_triggers_render_to_attached_client`
   (`malt-daemon/tests/session_thread.rs`) proves an attached VNP client
   now receives a real `RenderBatch` after a gateway-driven `RunCommand`.
-  **Still partial, as scoped**: this pushes one frame at completion, not
-  incremental output during a long-running command. See
-  `docs/findings/2026-07-24-audit-input-concurrency.md` §3b (recommendation 2).
+  **CLOSED 2026-07-25/26 by `specs/006-streaming-command-output/`.** Both
+  layers below landed:
 
-  **Unblocked 2026-07-25.** This entry used to say true streaming needed 0b
-  first — the control actor could not push intermediate frames while blocked
-  inside `run_mash_command`. Feature 002 did exactly that decoupling: MASH now
-  runs on a dedicated worker and the control actor is free while a command
-  runs. So the stated prerequisite is met and this is now buildable, not
-  blocked.
-
-  It is a feature in its own right and belongs in its own spec, not folded
-  into 005 (input and authority). Two layers, in dependency order:
-
-  1. **Session output to clients.** The worker produces output continuously;
-     the control actor should feed the compat translator and dispatch render
-     batches as it arrives rather than once at finalization. This is what
-     ADR-0003's guiding demo means by "MALT reports structured progress", and
-     what makes a two-minute `cargo test` watchable instead of silent. It also
-     needs a decision on how incremental output reaches the Gateway — today
-     `/exec` returns one final payload, so an agent has the same blind spot.
-  2. **Tool output within mash.** `ToolFn` returns a buffered `BuiltinResult`,
-     so an interactive `cat` shows its echo only when the command ends. Needs
-     a writer-based signature and a different result type; note the output
-     redirect machinery (`apply_output_redirects`) currently operates on that
-     buffer, so it changes with it. Smaller than (1) and largely falls out of
-     it.
+  1. **Session output to clients — closed.** `mash`'s `Env` now carries an
+     `OutputSink`; the session worker installs one per command and every
+     leaf dispatch point forwards to it as bytes are produced (never from a
+     nested/aggregating result, so nothing is double-forwarded — see
+     `forward_to_sink` and `read_stream_incrementally` in
+     `crates/mash/src/executor.rs`). The control actor feeds the compat
+     grid and dispatches a `RenderBatch` per chunk instead of once at
+     finalization, and a bounded per-session `OutputLog` (4 MiB, byte- not
+     count-bounded) lets a client resume from a position instead of only
+     getting what arrived after it attached. The Gateway's blind spot is
+     also closed: `GET /sessions/{id}/output/stream` (SSE, `Last-Event-ID`
+     resume) and `malt watch --output` give an agent the same incremental
+     view a human gets over VNP. Proven by
+     `crates/malt-daemon/tests/output_stream.rs` (`output_arrives_and_is_retrievable_while_the_command_is_still_running`,
+     `an_attached_client_receives_more_than_one_render_during_a_running_command`,
+     `two_attached_clients_converge_on_identical_content`,
+     `resuming_after_disconnect_reproduces_the_full_output_byte_for_byte`,
+     `a_stalled_subscriber_is_told_it_lagged_and_dropped_without_affecting_others`)
+     and `crates/mash/tests/output_sink.rs`.
+  2. **Tool output within mash — closed.** `ToolFn` now takes a writer
+     alongside its reader (`crates/malt-tools/src/lib.rs`); `cat`, `grep`,
+     `sed`, and `head` emit each chunk/line as produced (`wc` still emits
+     once, since it has exactly one summary line that is only known once
+     input is exhausted). `apply_output_redirects`/
+     `apply_builtin_output_redirects` are unchanged and still operate on the
+     buffered result — the writer is an additional destination, not a
+     replacement, so redirection behaves exactly as before (FR-014,
+     verified by `a_tool_redirected_to_a_file_writes_the_full_output_there_and_not_to_the_sink`
+     in `output_sink.rs`). Proven by
+     `cat_streams_each_chunk_as_it_is_read_not_only_at_the_end`,
+     `sed_streams_each_transformed_line_as_it_is_read_not_only_at_the_end`,
+     and `a_built_in_utility_copying_input_makes_each_line_observable_before_the_next_is_sent`.
 
 
 ### From the 2026-07-25 architecture/spec/codebase audit
@@ -316,6 +324,59 @@ then credentials/rate limiting, then process termination and raw input.
   the process (or its isolation group) before removal, invoke it on
   destroy/shutdown, and test with a real PID that actually dies.
 
+### From the 2026-07-26 spec 006 quickstart verification
+
+Full evidence in `docs/findings/2026-07-26-spec-006-quickstart-verification.md`.
+
+- **A firehose command makes its own session's control operations
+  unresponsive for the command's full duration, and memory use during the
+  run is far above the documented bound.** Live-run evidence: `yes hello |
+  head -n 16666667` (~100 MB, the quickstart's own volume scenario)
+  completed successfully after 211.6s, but `malt history` against the *same*
+  session returned `internal error: session history timed out` while it was
+  running, and combined daemon working set peaked at ~332 MB against a
+  stated 4 MiB `OutputLog` retention bound
+  (`crates/malt-daemon/src/executor/output_log.rs`) — roughly 80x. Memory
+  came back down after completion (~219 MB), so this reads as a large
+  transient rather than a permanent leak. **Other sessions and the daemon's
+  own health/list endpoints stayed fully responsive throughout** (isolated
+  per-session backpressure, not a daemon-wide outage — confirmed by running
+  `echo` against an unrelated session mid-flood and getting an immediate
+  reply). Likely, not yet confirmed by profiling: 16.6 million separate
+  `OutputChunk` publishes each also call `self.compat.feed()` (the VT grid,
+  not subject to the 4 MiB bound) and `dispatch_render()`
+  (`session_thread.rs`), and `history`'s reply shares the same per-session
+  `cmd_tx`/control-actor queue that `OutputChunk` handling occupies — a
+  request queued behind millions of chunk-handler invocations would see
+  exactly this symptom. Needs profiling to confirm the account before
+  designing a fix (candidates: coalescing/batching chunks before
+  `dispatch_render`, bounding compat-grid scrollback independently of
+  `OutputLog`, or giving session-management requests priority over queued
+  `OutputChunk`s) — deliberately not attempted here, this is bigger than a
+  polish-pass change.
+- **`POST /sessions/{id}/exec`'s JSON response corrupts non-UTF-8 output;
+  the new SSE output stream does not.** `command_worker.rs`'s `run_command`
+  builds `CommandOutput` via `String::from_utf8_lossy(&result.stdout)` —
+  `CommandOutput.output`/`stderr` have been `String`, not bytes, since before
+  this feature (likely since spec 003). Live-run evidence: streaming a file
+  containing `0xFF 0xFE` through `cat`, the SSE stream
+  (`GET /sessions/{id}/output/stream`) reproduced it byte-for-byte, while the
+  same command's `malt exec` output showed `0xEF 0xBF 0xBD` (the UTF-8
+  replacement character) twice in its place. Not a regression from 006 — the
+  lossy conversion predates it — but directly relevant to this feature's own
+  FR-011 ("delivery must not corrupt output that is not valid text"), which
+  now holds for the streaming surface and not for the more commonly used
+  one-shot summary. Fix would mean widening `CommandOutput`/`ExecResult`'s
+  `output`/`stderr` fields to something byte-safe (e.g. base64, matching what
+  the SSE path already does) — a breaking change to an existing JSON
+  contract, worth its own decision rather than a quiet field-type change.
+- **`malt stop` reported success while the daemon process was still
+  running.** Observed once, not yet root-caused or reproduced in isolation:
+  after `malt stop` printed `daemon stopped` and a 1-second wait, the
+  daemon's `malt.exe` process was still present (confirmed via
+  `Get-CimInstance Win32_Process`) and had to be force-killed. Noted here
+  rather than silently dropped; needs a dedicated repro before it's
+  actionable.
 
 ## P1 — real gaps, worth fixing soon
 

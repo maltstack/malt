@@ -73,7 +73,11 @@ mod tests {
     #[test]
     fn sleep_sums_multiple_operands() {
         let start = Instant::now();
-        let result = sleep(&["0.02".into(), "0.03".into()], &mut &b""[..], &mut std::io::sink());
+        let result = sleep(
+            &["0.02".into(), "0.03".into()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
         let elapsed = start.elapsed();
 
         assert_eq!(result.exit_code, 0);
