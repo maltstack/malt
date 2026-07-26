@@ -19,8 +19,8 @@ existing authenticated elevation boundary.
 **Purpose**: Establish the owned crate, protocol generation surface, and test
 fixtures without adding a direct daemon-to-HCS route.
 
-- [ ] T001 Add the ADR-required `malt-image` L1 member and its minimal crate skeleton to `Cargo.toml` and `crates/malt-image/Cargo.toml` after explicit dependency approval.
-- [ ] T002 Define public image-domain error, digest, platform, descriptor, and immutable manifest types in `crates/malt-image/src/lib.rs` and `crates/malt-image/src/model.rs`.
+- [X] T001 Add the ADR-required `malt-image` L1 member and its minimal crate skeleton to `Cargo.toml` and `crates/malt-image/Cargo.toml` after explicit dependency approval.
+- [X] T002 Define public image-domain error, digest, platform, descriptor, and immutable manifest types in `crates/malt-image/src/lib.rs` and `crates/malt-image/src/model.rs`.
 - [ ] T003 [P] Add feature-local fixture manifests and intentionally corrupt descriptor samples in `crates/malt-image/tests/fixtures/`.
 - [ ] T004 [P] Add typed opaque image-ID, readiness, and image-operation messages to `schemas/elevate.vexil` and regenerate/update `malt-protocol` exports in `crates/malt-protocol/src/`.
 - [ ] T005 Add VNP round-trip and rejection tests for the new opaque image messages in `crates/malt-protocol/tests/roundtrip.rs`.
@@ -35,11 +35,11 @@ every image command and contained session needs.
 **⚠️ CRITICAL**: No contained session may use an image record before all
 verification, ownership, and HCS transaction tests in this phase pass.
 
-- [ ] T006 Implement immutable SHA-256 digest parsing, canonical formatting, and streaming verification in `crates/malt-image/src/digest.rs` with tests in `crates/malt-image/src/digest.rs`.
+- [X] T006 Implement immutable SHA-256 digest parsing, canonical formatting, and streaming verification in `crates/malt-image/src/digest.rs` with tests in `crates/malt-image/src/digest.rs`.
 - [ ] T007 [P] Implement Windows/amd64 manifest-list selection and host-version-policy inputs in `crates/malt-image/src/manifest.rs` with malformed, non-Windows, wrong-architecture, and ambiguous-selection tests.
 - [ ] T008 [P] Implement bounded public-registry manifest/blob retrieval and size-aware descriptor verification in `crates/malt-image/src/registry.rs` with local fixture-server tests in `crates/malt-image/tests/registry.rs`.
-- [ ] T009 Implement safe OCI layer archive validation/extraction that rejects traversal, duplicate entries, links, and special files in `crates/malt-image/src/archive.rs` with adversarial tests in `crates/malt-image/tests/archive.rs`.
-- [ ] T010 Implement atomic helper-owned blob/image-record publication and transaction rollback in `crates/malt-image/src/store.rs` with interrupted/corrupt-state tests in `crates/malt-image/tests/store.rs`.
+- [ ] T009 Implement safe OCI layer archive validation/extraction that rejects traversal, duplicate entries, links, and special files in `crates/malt-image/src/archive.rs` with adversarial tests in `crates/malt-image/src/archive.rs`.
+- [ ] T010 Implement atomic helper-owned blob/image-record publication and transaction rollback in `crates/malt-image/src/store.rs` with interrupted/corrupt-state tests in `crates/malt-image/src/store.rs`.
 - [ ] T011 Add owned-root, owner-marker, and canonical-containment validation in `crates/malt-platform/src/isolation/layers.rs` with unit tests beside the module.
 - [ ] T012 Implement Windows HCS parent-layer import/materialization, asynchronous operation-result checking, and rollback in `crates/malt-platform/src/isolation/layers.rs` with a deterministic fake backend test seam in that module.
 - [ ] T013 Implement session-scoped writable-layer initialization, storage-filter attach/detach, and owner-checked cleanup in `crates/malt-platform/src/isolation/layers.rs` with ordered rollback tests beside the module.
@@ -199,4 +199,3 @@ must share the final typed helper protocol, not invent a second transport.
 2. Ready-image contained process execution.
 3. Safe lifecycle/removal and host-change diagnosis.
 4. Live evidence and exact return to Spec 008.
-
