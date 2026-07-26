@@ -421,11 +421,14 @@ impl FdRegistry {
         Some(FdBacking::TempFile { path: temp_path })
     }
 
-    fn is_pipe(_file: &std::fs::File) -> bool {
+    fn is_pipe(file: &std::fs::File) -> bool {
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
             let fd = file.as_raw_fd();
+            // SAFETY: `fd` is borrowed from `file`, which outlives this call,
+            // so it is open for the duration. `stat` is zeroed before use and
+            // is only read after `fstat` reports success.
             unsafe {
                 let mut stat: libc::stat = std::mem::zeroed();
                 if libc::fstat(fd, &mut stat) == 0 {
@@ -440,6 +443,7 @@ impl FdRegistry {
 
         #[cfg(windows)]
         {
+            let _ = file;
             // On Windows, we can't easily detect pipes from File handles
             // without using native APIs. For now, assume all files could be pipes.
             false // Default to temp file backing for reliability
@@ -447,6 +451,7 @@ impl FdRegistry {
 
         #[cfg(not(any(unix, windows)))]
         {
+            let _ = file;
             false
         }
     }
