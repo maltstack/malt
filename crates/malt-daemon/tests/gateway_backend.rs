@@ -178,6 +178,55 @@ fn create_session_rejects_unrecognized_isolation_string() {
 }
 
 #[test]
+fn required_contained_refusal_leaves_no_session() {
+    let backend = make_backend();
+    let error = backend
+        .create_session_with_policy(
+            Some("must-not-exist".to_string()),
+            Some("contained".to_string()),
+            Some("required".to_string()),
+        )
+        .unwrap_err();
+    assert!(matches!(error, GatewayError::IsolationUnavailable(_)));
+    assert!(
+        backend.list_sessions().unwrap().is_empty(),
+        "a required failure must not leave a runnable session"
+    );
+}
+
+#[test]
+fn preferred_contained_request_returns_visible_bare_downgrade() {
+    let backend = make_backend();
+    let created = backend
+        .create_session_with_policy(
+            None,
+            Some("contained".to_string()),
+            Some("preferred".to_string()),
+        )
+        .unwrap();
+    assert_eq!(created.isolation.requested, "contained");
+    assert_eq!(created.isolation.effective, "bare");
+    assert_eq!(created.isolation.basis, "none");
+    assert!(created.isolation.detail.is_some());
+}
+
+#[test]
+fn disabled_isolation_attempts_nothing_and_reports_none() {
+    let backend = make_backend();
+    let created = backend
+        .create_session_with_policy(
+            None,
+            Some("contained".to_string()),
+            Some("disabled".to_string()),
+        )
+        .unwrap();
+    assert_eq!(created.isolation.effective, "bare");
+    assert_eq!(created.isolation.requested, "contained");
+    assert_eq!(created.isolation.basis, "none");
+    assert!(created.isolation.detail.as_deref().unwrap_or_default().contains("disabled"));
+}
+
+#[test]
 fn get_output_text_returns_plain_text_matching_executed_output() {
     let backend = make_backend();
     let created = backend.create_session(None, None).unwrap();
