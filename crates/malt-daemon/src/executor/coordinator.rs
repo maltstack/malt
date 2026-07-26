@@ -690,20 +690,7 @@ impl Coordinator {
     /// Destroy a session. Sends shutdown and joins the thread.
     pub fn destroy_session(&mut self, id: SessionId) {
         if let Some(handle) = self.sessions.remove(&id.0) {
-            #[cfg(windows)]
-            let contained_teardown = handle
-                .isolation_context
-                .as_ref()
-                .and_then(|context| match context.container_id() {
-                    Ok(Some(container_id)) => Some((handle.id.clone(), container_id)),
-                    Ok(None) => None,
-                    Err(error) => {
-                        warn!(%error, session_id = ?handle.id, "unable to read contained session identity during teardown");
-                        None
-                    }
-                });
-            #[cfg(not(windows))]
-            let contained_teardown: Option<(SessionId, String)> = None;
+            let contained_teardown = contained_teardown_for_handle(&handle);
             match handle.lifecycle {
                 SessionLifecycle::Active {
                     cmd_tx,
@@ -1264,7 +1251,7 @@ impl Coordinator {
     /// If the control actor reports work or does not reply promptly, the
     /// session is left Active. Detach is never cancellation.
     fn go_dormant(&mut self, id: SessionId) {
-        let (cmd_tx_clone, ingress, session_name, session_isolation) = {
+        let (cmd_tx_clone, ingress, session_name, session_isolation, contained_teardown) = {
             let handle = match self.sessions.get(&id.0) {
                 Some(h) => h,
                 None => return,
@@ -1277,6 +1264,7 @@ impl Coordinator {
                     ingress.clone(),
                     handle.name.clone(),
                     handle.current_isolation().effective,
+                    contained_teardown_for_handle(handle),
                 ),
                 SessionLifecycle::Dormant { .. } => return,
             }
@@ -1337,8 +1325,15 @@ impl Coordinator {
                     let _ = t.join();
                 }
             }
+        }
+        let contained_teardown_complete = tear_down_contained_session(contained_teardown);
+        if let Some(handle) = self.sessions.get_mut(&id.0) {
             handle.lifecycle = SessionLifecycle::Dormant { persisted };
-            handle.isolation_context = None;
+            if contained_teardown_complete {
+                handle.isolation_context = None;
+            } else {
+                warn!(?id, "contained teardown was not confirmed; retaining the isolation context for a retry before restore");
+            }
         }
 
         self.persist_daemon_state();
@@ -1401,10 +1396,32 @@ fn spawn_session_reaper_after_worker(
 }
 
 #[cfg(windows)]
-fn tear_down_contained_session(contained_teardown: Option<(SessionId, String)>) {
+fn contained_teardown_for_handle(handle: &SessionHandle) -> Option<(SessionId, String)> {
+    handle
+        .isolation_context
+        .as_ref()
+        .and_then(|context| match context.container_id() {
+            Ok(Some(container_id)) => Some((handle.id.clone(), container_id)),
+            Ok(None) => None,
+            Err(error) => {
+                warn!(%error, session_id = ?handle.id, "unable to read contained session identity during teardown");
+                None
+            }
+        })
+}
+
+#[cfg(not(windows))]
+fn contained_teardown_for_handle(_handle: &SessionHandle) -> Option<(SessionId, String)> {
+    None
+}
+
+#[cfg(windows)]
+fn tear_down_contained_session(contained_teardown: Option<(SessionId, String)>) -> bool {
     if let Some((session_id, container_id)) = contained_teardown {
         match crate::elevate_client::terminate_hcs_container(session_id.clone(), container_id) {
-            Ok(response) if response.kind == malt_protocol::elevate::OutcomeKind::Performed => {}
+            Ok(response) if response.kind == malt_protocol::elevate::OutcomeKind::Performed => {
+                return true
+            }
             Ok(response) => warn!(
                 ?session_id,
                 ?response,
@@ -1416,11 +1433,16 @@ fn tear_down_contained_session(contained_teardown: Option<(SessionId, String)>) 
                 "contained compute-system teardown request failed"
             ),
         }
+        false
+    } else {
+        true
     }
 }
 
 #[cfg(not(windows))]
-fn tear_down_contained_session(_contained_teardown: Option<(SessionId, String)>) {}
+fn tear_down_contained_session(_contained_teardown: Option<(SessionId, String)>) -> bool {
+    true
+}
 
 /// Read a spawned process's PTY output in a loop and forward each chunk as
 /// a `SessionCommand::PtyOutput` to the owning session's command channel.
