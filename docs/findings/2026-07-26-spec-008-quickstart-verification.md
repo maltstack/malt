@@ -21,9 +21,9 @@ reported `not installed` before it was installed again.
 | 5: unauthorised local request | Passed | Real named-pipe test sends a well-formed request from an unenrolled local process and observes refusal. |
 | 6: replay | Passed | Real named-pipe test re-sends the authenticated envelope and observes replay refusal. |
 | 7: entitlement escape | Passed | Owner, parent-traversal, and symlink-escape refusals are covered against canonicalized paths. |
-| 8: privilege boundary | Passed | `elevate_boundary` observed direct `HCS_E_ACCESS_DENIED`; the same entitled helper request was not refused for that reason. |
+| 8: privilege boundary | Passed | The opt-in live `elevate_boundary` scenario passed on 2026-07-27 after UAC authorization. It observed direct `HCS_E_ACCESS_DENIED`; the same entitled helper request was not refused for that reason. |
 | 9: teardown absence | Partial | Fake HCS lifecycle test enumerates the removed system; no live helper-created system was available because image layers are out of scope. |
-| 10: helper death during session operation | Blocked | A real contained MASH child does not yet exist; see the HCS spawn survey. |
+| 10: helper death during session operation | Partial | A real temporary named-pipe peer accepted the authenticated request then disappeared; the client returned `Indeterminate` and its `IsolationContext` remained unestablished. A live contained MASH child does not yet exist; see the HCS spawn survey. |
 | 11: one isolation carrier | Passed | The MASH environment has one `IsolationContext` field and the targeted test passed. |
 
 ## Gates run
