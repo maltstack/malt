@@ -59,6 +59,31 @@ predictable/leaked Gateway credentials (A-03); the clean-machine CLI
 startup regression (A-04); lifetime-counter rate limiting (A-05); process
 termination that only removes bookkeeping (A-06).
 
+## Deferred: audit vexil-v2's low-level layer for vendorable material
+
+Raised 2026-07-26 while surveying isolation prior art
+(`docs/findings/2026-07-26-isolation-prior-art-survey.md`). vexil-v2 is
+plausibly **more mature than MALT at the low level** — it has backends MALT
+has no equivalent of (macOS Seatbelt, Windows AppContainer), a
+`ContainedBackend` enum spanning five platform mechanisms, and a
+`ContainedCapability` report carrying a separate reason per degraded facet.
+
+Worth a deliberate audit of `vexil-platform/` as a whole — not only
+isolation — to identify what is genuinely ahead of MALT and worth vendoring.
+Candidates seen in passing: `seatbelt.rs`, `appcontainer.rs`, `hcs.rs` (1,378
+lines vs MALT's 843), `network.rs`, `seccomp.rs`, and the checkpoint/CRIU
+work behind `CheckpointMode`.
+
+**Constraints on any such port** (ADR-0001, Constitution VIII): vendored as
+owned source, rewritten to these invariants, never a path or git dependency.
+vexil-v2's engineering standards are poor and its code must not be taken
+verbatim — it is a reference for logic and OS-call sequences.
+
+**Not urgent.** Spec 007 is expected to need mostly wiring of what
+`malt-platform` already has; this audit matters for what comes after, and for
+US4-class platform coverage. Do it as its own piece of work rather than
+folding it into a feature (Principle IX).
+
 ## P0 — blocks daily-driver usability and safe agent use
 
 - **Gateway auth was not enforced anywhere — FIXED 2026-07-25.** Added

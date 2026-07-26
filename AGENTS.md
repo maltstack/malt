@@ -34,7 +34,49 @@ a fourth:
    rethink mid-task, write that down as a proposal (an ADR draft is fine)
    instead of silently pivoting into it.
 
-## What is MALT?
+## Survey Before Building (added 2026-07-26)
+
+**The most common defect in this repo is not a missing mechanism. It is a
+mechanism that exists, is tested, and is called by nothing.** Five instances
+so far, each found only after someone started building a replacement:
+
+| What existed | What was missing |
+|---|---|
+| `TokenStore`/`AuthContext`/`RateLimiter`, fully unit-tested | never wired into `build_router` — every route open |
+| `AuthorityTracker`, complete with tests | driven only by `AttachClient`, which only a *test* ever sent |
+| `InputClaim`/`InputAuthorityChanged` schema + codec constants | no handler anywhere |
+| `OutputChunk` in `schemas/shell.vexil`, doc saying "MASH sets it at emission time" | nothing ever emitted one |
+| 12 of 14 `malt-platform::isolation` modules, 13–17 tests each | zero callers outside their own crate |
+
+So a survey that answers *"does this exist?"* is the wrong survey. It has
+returned "no, build it" five times when the answer was "yes, wire it".
+
+**What a survey must establish, in this order:**
+
+1. **Does the thing exist?** Search schemas, codec constants, and type
+   definitions — not just function names. `OutputChunk` was found only by
+   reading `schemas/`, and its `@type` constant was already allocated.
+2. **Is it called from production code?** Grep for callers and **exclude the
+   defining crate and all test files**. This is the step that keeps getting
+   skipped. A definition with no external caller is the signature of this
+   defect.
+3. **If it is called, is the caller reachable?** `AttachClient` had exactly
+   one sender and it was a test, which made the tracker look wired for
+   months. "Has a caller" is not "is reachable from a real request."
+4. **Do its tests exercise real behaviour, or construct types?** Two real
+   `job_objects.rs` bugs survived because tests built structs instead of
+   calling Win32. Test *count* is not evidence of function — see Principle IV.
+5. **Only then**: check sibling projects (`vexil-v2` especially) for a
+   working equivalent, per the note under Project Relationships.
+
+**Record the survey.** If it changes the shape of the work, it belongs in
+`docs/findings/` before planning proceeds — see
+`docs/findings/2026-07-26-isolation-prior-art-survey.md` for the shape,
+including its "what this survey did not establish" section. A survey that
+only records what was found, and not what remains unverified, invites the
+next person to over-trust it.
+
+## What is MALT?## What is MALT?
 
 MALT (structured terminal platform) inverts the traditional terminal model: the daemon is the authority, not the renderer. The daemon owns session state, layout, pane identity, and structured output. Clients are interchangeable consumers of a typed RenderCommand stream. All inter-component communication uses VNP (Vexil Native Protocol) — typed, schema-defined, bitpack-encoded messages.
 
