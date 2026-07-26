@@ -146,7 +146,9 @@ crates/
   malt-tools/                  # L1: In-process POSIX utilities (80 tests)
   malt-layout/                 # L1: Layout engine — n-ary tree, resolution, focus (48 tests)
   malt-session/                # L1: Session lifecycle, pane runtime, groups (23 tests)
-  malt-elevate/                # Elevated helper binary (17 tests; only CreateSymlink is real, other ops stub)
+  malt-elevate/                # Elevated Windows service helper: VNP named-pipe lifecycle and
+                                # honest operation outcomes. Privileged operations stay refused
+                                # until helper-owned session entitlement validation exists.
   malt-daemon/                 # L2: Daemon core (126 tests)
   malt-compat/                 # L2: VT emulator — vte 0.15 parser + grid (26 tests)
   malt-renderer/               # L2: Renderer host — walker, dirty, client state (29 tests;
@@ -412,7 +414,10 @@ as-is.
   keep it that way; guarding them individually is how two were once missed.
 - mash `Env` created per session thread via `Env::from_os()` + `set_interactive(true)`
 - mash `execute_list` is synchronous — perfect for session executor's thread model
-- `Env` carries an `Option<Arc<isolation::job_objects::JobObject>>` on Windows (added 2026-07-24) — shared across `Env::clone()` (subshells) so a session's whole process tree lives in one job
+- `Env` carries one `IsolationContext`; its shared established state holds the
+  Windows Job Object (or, when implemented, HCS container identity). Clones
+  share that carrier with coordinator status, so reports cannot name a
+  different mechanism from the MASH spawn path.
 
 ## Testing
 

@@ -27,6 +27,11 @@ confirmation.
 ## Not written up, and why
 
 - **A-02 (isolation)** — being delivered now as `specs/007-fail-closed-isolation/`.
+- **Helper-owned privileged-operation entitlement** — discovered while
+  implementing `specs/008-privileged-helper/`. The service boundary is live,
+  but a helper-verifiable session owner/PID/storage-root authority is a
+  security architecture decision, not a bounded brief. It remains explicitly
+  fail-closed and is recorded in `docs/BACKLOG.md`.
 - **A-08 (pre-handshake exhaustion)** — already closed by spec 005; the
   backlog says so. Listed here because a stale reading of the backlog
   headings suggested otherwise.

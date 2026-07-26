@@ -983,18 +983,16 @@ Full evidence in `docs/findings/2026-07-26-spec-006-quickstart-verification.md`.
   the same "how does a spawned-outside-mash process get containment"
   question. See `docs/findings/2026-07-24-audit-isolation-safety.md`
   item 5.
-- **`malt-elevate` has 9 of 10 privileged operations that actively report
-  success while doing nothing** (audit finding **A-12**; `stub_success()`,
-  `crates/malt-elevate/src/dispatch.rs:44-65`) — only `CreateSymlink` is
-  real. This is categorically worse than fail-open (it's not an attempt
-  that failed, it's a lie), but confirmed **unreachable from any live code
-  path today** — no crate depends on `malt-elevate`, nothing spawns it as
-  a subprocess. Latent risk, becomes live the moment anything wires
-  elevation-requiring isolation operations (real Linux namespace/cgroup/
-  seccomp support, unprivileged restricted-token issuance) through it —
-  should be fixed or explicitly gated before that wiring lands, not
-  treated as urgent today. See
-  `docs/findings/2026-07-24-audit-isolation-safety.md` item 4.
+- **Privileged helper entitlement authority is not designed yet — fail-closed
+  since 2026-07-26.** `malt-elevate` now runs as an explicit-UAC Windows
+  service with an authenticated VNP named pipe, but every operation request
+  returns `Refused{NotEntitled}`. The pipe's peer SID authenticates a Windows
+  user, not an authorised MALT daemon or its session resources; persisted
+  sessions currently record no helper-verifiable owner, PID membership, or
+  canonical storage root. Before enabling `ManageHcsContainer` or
+  `CreateSymlink` over this boundary, decide and implement a helper-owned
+  enrollment authority that can validate those claims independently. This is
+  the security prerequisite for spec 008 US2/US3, not an available fallback.
 - **Restricted tokens and HCS bindings are genuinely fail-closed and
   well-tested at the function level, but completely unreferenced by any
   live spawn path** — lower urgency than the P0 Windows Job Object items
