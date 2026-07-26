@@ -56,11 +56,7 @@ pub fn send_request(
         let _ = sender.send(send_once(envelope));
     });
     match receiver.recv_timeout(Duration::from_secs(30)) {
-        Ok(Ok(response)) => Ok(response),
-        Ok(Err(error)) => Ok(indeterminate(
-            request_id,
-            format!("helper request may have started but no response was received: {error}"),
-        )),
+        Ok(result) => complete_request_attempt(request_id, result),
         Err(mpsc::RecvTimeoutError::Timeout) => Ok(indeterminate(
             request_id,
             "helper request timed out after 30 seconds; its outcome is unknown".to_string(),
@@ -68,6 +64,24 @@ pub fn send_request(
         Err(mpsc::RecvTimeoutError::Disconnected) => Ok(indeterminate(
             request_id,
             "helper request worker exited without reporting an outcome".to_string(),
+        )),
+    }
+}
+
+/// Preserve the distinction between a helper refusal and an interrupted
+/// request after it crossed the privilege boundary.  Keeping this conversion
+/// in one place lets the actual named-pipe loss test exercise the exact path
+/// production uses after its worker returns.
+#[cfg(windows)]
+fn complete_request_attempt(
+    request_id: u32,
+    result: io::Result<malt_protocol::elevate::ElevateResponse>,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    match result {
+        Ok(response) => Ok(response),
+        Err(error) => Ok(indeterminate(
+            request_id,
+            format!("helper request may have started but no response was received: {error}"),
         )),
     }
 }
@@ -474,6 +488,84 @@ mod tests {
         );
         server.join().expect("version mismatch server thread");
     }
+
+    #[test]
+    fn lost_helper_after_receiving_request_is_indeterminate_and_cannot_establish_containment() {
+        use malt_platform::ipc::NamedPipeServer;
+        use malt_platform::isolation::{EstablishedKind, IsolationContext};
+        use malt_protocol::common::SessionId;
+        use malt_protocol::elevate::{
+            ContainerOperation, ElevateHello, ElevateHelloAck, ElevateRequest,
+            ElevateRequestEnvelope, OutcomeKind,
+        };
+        use malt_protocol::elevate_channel::{HELLO, HELLO_ACK, REQUEST};
+        use malt_protocol::vexil_runtime::{BitWriter, Pack};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after Unix epoch")
+            .as_nanos();
+        let pipe_name = format!("malt-elevate-loss-test-{}-{suffix}", std::process::id());
+        let server_pipe = pipe_name.clone();
+        let server = std::thread::spawn(move || {
+            let server = NamedPipeServer::create(&server_pipe).expect("create loss test pipe");
+            let mut connection = server.accept().expect("accept loss test client");
+            let hello =
+                read_tagged::<ElevateHello>(&mut connection, HELLO).expect("read loss test hello");
+            let acknowledgement = ElevateHelloAck {
+                nonce: hello.nonce,
+                version: HELPER_PROTOCOL_VERSION,
+                accepted: true,
+                reason: None,
+                _unknown: Vec::new(),
+            };
+            let mut writer = BitWriter::new();
+            acknowledgement
+                .pack(&mut writer)
+                .expect("pack loss test acknowledgement");
+            let mut payload = vec![HELLO_ACK];
+            payload.extend(writer.finish());
+            write_frame(&mut connection, payload).expect("write loss test acknowledgement");
+            let request = read_tagged::<ElevateRequestEnvelope>(&mut connection, REQUEST)
+                .expect("receive request before helper loss");
+            assert_eq!(request.request_id, 88);
+            // Drop the connection after consuming the request, which is the
+            // observable client-side effect of the helper dying mid-operation.
+        });
+
+        let envelope = ElevateRequestEnvelope {
+            request_id: 88,
+            request: ElevateRequest::ManageHcsContainer {
+                operation: ContainerOperation::Create {
+                    memory_limit_mb: None,
+                    hostname: None,
+                },
+            },
+            session_id: SessionId(88),
+            nonce: 8_800,
+            _unknown: Vec::new(),
+        };
+        let result = (0..100)
+            .find_map(|_| match send_once_at(&pipe_name, envelope.clone()) {
+                Err(error) if error.raw_os_error() == Some(2) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    None
+                }
+                result => Some(result),
+            })
+            .expect("fake helper never accepted the request");
+        let response = complete_request_attempt(88, result).expect("classify helper loss");
+        assert_eq!(response.kind, OutcomeKind::Indeterminate);
+
+        let context = IsolationContext::contained();
+        assert_eq!(
+            context.established_kind().expect("read isolation carrier"),
+            EstablishedKind::Nothing,
+            "an indeterminate helper outcome must not alter the session carrier"
+        );
+        server.join().expect("loss test server thread");
+    }
 }
 
 #[cfg(windows)]
@@ -613,12 +705,23 @@ fn probe_once_at(pipe_name: &str, nonce: u64) -> io::Result<ProbeResult> {
 fn send_once(
     envelope: malt_protocol::elevate::ElevateRequestEnvelope,
 ) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    send_once_at(HELPER_PIPE_NAME, envelope)
+}
+
+/// Execute one authenticated request against a named pipe.  Production uses
+/// the fixed helper pipe; the explicit parameter gives tests a real transport
+/// boundary where the peer can disappear after consuming the request.
+#[cfg(windows)]
+fn send_once_at(
+    pipe_name: &str,
+    envelope: malt_protocol::elevate::ElevateRequestEnvelope,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
     use malt_platform::ipc::NamedPipeClient;
     use malt_protocol::elevate::{ElevateHello, ElevateHelloAck, ElevateResponse};
     use malt_protocol::elevate_channel::{HELLO, HELLO_ACK, REQUEST, RESPONSE};
     use malt_protocol::vexil_runtime::{BitWriter, Pack};
 
-    let mut connection = NamedPipeClient::connect(HELPER_PIPE_NAME)?;
+    let mut connection = NamedPipeClient::connect(pipe_name)?;
     let hello = ElevateHello {
         nonce: envelope.nonce,
         version: HELPER_PROTOCOL_VERSION,
