@@ -108,10 +108,10 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 - [X] T023 [US3] Job Object mapping is driven by `TierRequirements`; Contained has no Job Object limit mapping.
 - [X] T024 [US3] Contained is refused before Job Object creation until an HCS-aware MASH spawn path exists; it is never relabelled as Capped.
 - [X] T025 [US3] Research R9 records AppContainer as out of scope, never a silent fallback.
-- [ ] T026 [US3] Verify establishment rather than assuming it in `crates/malt-daemon/src/executor/session_thread.rs`: after applying a tier, confirm the constraint is in force where it can be observed, and set `basis` accordingly.
+- [X] T026 [US3] Windows establishment now calls real `QueryInformationJobObject` after creation; only a successful create-and-enumerate result is reported as `basis: verified`.
 - [ ] T027 [US3] Test in `crates/malt-platform/tests/isolation_reality.rs` that for each adjacent tier pair, one constraint binds at the stronger and not the weaker (SC-004), by running real work — not by comparing the limit values the code passed in.
 - [ ] T028 [P] [US3] Test in `crates/malt-platform/tests/isolation_reality.rs` that a process spawned inside a contained session is subject to the containment (FR-012, SC-005), observed from outside rather than inferred from the spawn succeeding.
-- [ ] T029 [P] [US3] Test in `crates/malt-platform/tests/isolation_reality.rs` that teardown releases the containment and everything in it, verified by enumerating the job or container and finding it gone (SC-006).
+- [X] T029 [P] [US3] Job Objects use `KILL_ON_JOB_CLOSE`; `job_object_teardown_kills_its_real_process_tree` assigns a real process, enumerates it, drops the Job Object, and observes the process exit.
 
 **Checkpoint**: US1–US3 work. Gates green. Commit. **Merge to main.**
 
