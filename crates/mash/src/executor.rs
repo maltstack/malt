@@ -1395,7 +1395,7 @@ fn execute_simple_with_io(
     add_runtime_spawn_env(&mut config, env);
 
     // Spawn.
-    let mut child = match malt_platform::process::spawn(config) {
+    let mut child = match env.spawn_external_process(config) {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("mash: {resolved_cmd_name}: {e}\n");
@@ -1764,7 +1764,7 @@ fn execute_simple(
     add_runtime_spawn_env(&mut config, env);
 
     // Spawn the process.
-    let mut child = match malt_platform::process::spawn(config) {
+    let mut child = match env.spawn_external_process(config) {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("mash: {cmd_name}: {e}\n");
@@ -3667,7 +3667,7 @@ fn builtin_command(
         for (k, v) in env.exported_vars() {
             config.env.push((k.into(), v.into()));
         }
-        match malt_platform::process::spawn(config) {
+        match env.spawn_external_process(config) {
             Ok(mut child) => {
                 assign_child_to_session_job(env, &child);
                 let mut stdout_bytes = Vec::new();
@@ -5844,7 +5844,7 @@ fn execute_shell_script_with_io(
     config.env_clear = true;
     add_runtime_spawn_env(&mut config, env);
 
-    let mut child = match malt_platform::process::spawn(config) {
+    let mut child = match env.spawn_external_process(config) {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("mash: {cmd_name}: {e}\n");
@@ -6040,7 +6040,7 @@ fn execute_expanded_command(
     config.env_clear = true;
     add_runtime_spawn_env(&mut config, env);
 
-    let mut child = match malt_platform::process::spawn(config) {
+    let mut child = match env.spawn_external_process(config) {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("mash: {cmd_name}: {e}\n");

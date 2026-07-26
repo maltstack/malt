@@ -178,6 +178,7 @@ fn serve_connection(
                         envelope.request_id,
                         envelope.session_id.0,
                         &storage_root,
+                        peer.process_id,
                         &envelope.request,
                         &mut containers,
                     )

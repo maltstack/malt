@@ -134,6 +134,7 @@ pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
         stdin,
         stdout,
         stderr,
+        io_workers: Vec::new(),
     })
 }
 

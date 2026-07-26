@@ -30,6 +30,210 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tracing::{info, warn};
 
+#[cfg(windows)]
+#[derive(Debug)]
+struct HcsProcessSpawner {
+    session_id: SessionId,
+    container_id: String,
+}
+
+#[cfg(windows)]
+impl mash::env::ExternalProcessSpawner for HcsProcessSpawner {
+    fn spawn(
+        &self,
+        config: malt_platform::process::SpawnConfig,
+    ) -> Result<malt_platform::process::Child, malt_platform::process::SpawnError> {
+        validate_hcs_stdio(&config)?;
+        let request = hcs_process_request(&self.container_id, &config)?;
+        let launch = crate::elevate_client::start_hcs_process(self.session_id.clone(), request)
+            .map_err(malt_platform::process::SpawnError::Io)?;
+        let mut child = malt_platform::process::child_from_hcs_process(
+            launch.process_id,
+            launch.process_handle,
+            launch.stdin_handle,
+            launch.stdout_handle,
+            launch.stderr_handle,
+        )?;
+        install_hcs_stdio_relays(&mut child, config)?;
+        Ok(child)
+    }
+}
+
+#[cfg(windows)]
+fn hcs_process_request(
+    container_id: &str,
+    config: &malt_platform::process::SpawnConfig,
+) -> Result<malt_protocol::elevate::HcsProcessRequest, malt_platform::process::SpawnError> {
+    use malt_protocol::elevate::HcsEnvironmentEntry;
+
+    let unicode = |value: &std::ffi::OsStr, field: &str| {
+        value.to_str().map(str::to_owned).ok_or_else(|| {
+            malt_platform::process::SpawnError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("HCS process {field} is not valid Unicode"),
+            ))
+        })
+    };
+    Ok(malt_protocol::elevate::HcsProcessRequest {
+        id: container_id.to_string(),
+        program: config.program.to_str().map(str::to_owned).ok_or_else(|| {
+            malt_platform::process::SpawnError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "HCS process program is not valid Unicode",
+            ))
+        })?,
+        arguments: config
+            .args
+            .iter()
+            .map(|argument| unicode(argument, "argument"))
+            .collect::<Result<_, _>>()?,
+        working_directory: config
+            .cwd
+            .as_ref()
+            .map(|cwd| {
+                cwd.to_str().map(str::to_owned).ok_or_else(|| {
+                    malt_platform::process::SpawnError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "HCS process working directory is not valid Unicode",
+                    ))
+                })
+            })
+            .transpose()?,
+        environment: config
+            .env
+            .iter()
+            .map(|(key, value)| {
+                Ok(HcsEnvironmentEntry {
+                    key: unicode(key, "environment key")?,
+                    value: unicode(value, "environment value")?,
+                    _unknown: Vec::new(),
+                })
+            })
+            .collect::<Result<_, malt_platform::process::SpawnError>>()?,
+        argv0: config
+            .argv0
+            .as_ref()
+            .map(|argv0| unicode(argv0, "argv0"))
+            .transpose()?,
+        _unknown: Vec::new(),
+    })
+}
+
+#[cfg(windows)]
+fn validate_hcs_stdio(
+    config: &malt_platform::process::SpawnConfig,
+) -> Result<(), malt_platform::process::SpawnError> {
+    for (name, io) in [
+        ("stdin", &config.stdin),
+        ("stdout", &config.stdout),
+        ("stderr", &config.stderr),
+    ] {
+        if matches!(io, malt_platform::process::Io::Handle(_)) {
+            return Err(malt_platform::process::SpawnError::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("HCS process {name} does not support a raw Win32 handle"),
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn install_hcs_stdio_relays(
+    child: &mut malt_platform::process::Child,
+    config: malt_platform::process::SpawnConfig,
+) -> Result<(), malt_platform::process::SpawnError> {
+    use malt_platform::process::Io;
+
+    match config.stdin {
+        Io::Pipe => {}
+        Io::File(mut source) => {
+            let mut destination = child.take_stdin().ok_or_else(missing_hcs_stream)?;
+            child.add_io_worker(thread::spawn(move || {
+                copy_ignoring_broken_pipe(&mut source, &mut destination)
+            }));
+        }
+        Io::Null => drop(child.take_stdin()),
+        Io::Inherit => {
+            let mut destination = child.take_stdin().ok_or_else(missing_hcs_stream)?;
+            child.add_io_worker(thread::spawn(move || {
+                let stdin = std::io::stdin();
+                copy_ignoring_broken_pipe(&mut stdin.lock(), &mut destination)
+            }));
+        }
+        Io::Handle(_) => unreachable!("validated before the helper launch"),
+        _ => return Err(unsupported_hcs_stdio("stdin")),
+    }
+    install_hcs_output_relay(child, config.stdout, true)?;
+    install_hcs_output_relay(child, config.stderr, false)
+}
+
+#[cfg(windows)]
+fn install_hcs_output_relay(
+    child: &mut malt_platform::process::Child,
+    io: malt_platform::process::Io,
+    stdout: bool,
+) -> Result<(), malt_platform::process::SpawnError> {
+    use malt_platform::process::Io;
+
+    if matches!(io, Io::Pipe) {
+        return Ok(());
+    }
+    let mut source: Box<dyn std::io::Read + Send> = if stdout {
+        Box::new(child.take_stdout().ok_or_else(missing_hcs_stream)?)
+    } else {
+        Box::new(child.take_stderr().ok_or_else(missing_hcs_stream)?)
+    };
+    match io {
+        Io::File(mut destination) => child.add_io_worker(thread::spawn(move || {
+            copy_ignoring_broken_pipe(&mut source, &mut destination)
+        })),
+        Io::Null => child.add_io_worker(thread::spawn(move || {
+            copy_ignoring_broken_pipe(&mut source, &mut std::io::sink())
+        })),
+        Io::Inherit if stdout => child.add_io_worker(thread::spawn(move || {
+            let stdout = std::io::stdout();
+            copy_ignoring_broken_pipe(&mut source, &mut stdout.lock())
+        })),
+        Io::Inherit => child.add_io_worker(thread::spawn(move || {
+            let stderr = std::io::stderr();
+            copy_ignoring_broken_pipe(&mut source, &mut stderr.lock())
+        })),
+        Io::Pipe => unreachable!("returned before taking the HCS stream"),
+        Io::Handle(_) => unreachable!("validated before the helper launch"),
+        _ => return Err(unsupported_hcs_stdio("output")),
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn missing_hcs_stream() -> malt_platform::process::SpawnError {
+    malt_platform::process::SpawnError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "helper reported an HCS launch without the required standard stream",
+    ))
+}
+
+#[cfg(windows)]
+fn unsupported_hcs_stdio(name: &str) -> malt_platform::process::SpawnError {
+    malt_platform::process::SpawnError::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("HCS process {name} uses an unsupported standard-stream mode"),
+    ))
+}
+
+#[cfg(windows)]
+fn copy_ignoring_broken_pipe(
+    reader: &mut dyn std::io::Read,
+    writer: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    match std::io::copy(reader, writer) {
+        Ok(_) => writer.flush(),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Placeholder Job Object resource caps for the Capped tier,
 /// pending a real per-session/group configuration surface (see
 /// `docs/BACKLOG.md`'s isolation-policy item). Deliberately conservative-but-
@@ -79,24 +283,15 @@ pub(crate) fn now_epoch_ms() -> u64 {
 /// the required policy can refuse session creation before either thread is
 /// made reachable.
 ///
-/// Bare tier does nothing (no job object needed). Restricted gets an
-/// uncapped Job Object (group-kill only). Capped and Contained get the same
-/// Job Object with real memory/CPU limits — previously all three non-Bare
-/// tiers got an identical, uncapped Job Object, so Capped's "resource
-/// enforcement" promise and Contained's went unfulfilled even on the
-/// success path (see `docs/BACKLOG.md`).
+/// Bare tier does nothing. Restricted gets an uncapped Job Object (group-kill
+/// only), while Capped gets a Job Object with real memory/CPU limits. Contained
+/// is not a Job Object tier and is handled by the helper/HCS branch below.
 ///
-/// This does **not** yet give Contained anything beyond Capped-level Job
-/// Object containment. Real HCS container isolation for Contained requires
-/// launching processes *inside* the compute system
-/// (`malt_platform::isolation::hcs::create_process`), not just creating one
-/// — that needs the actual process spawn path
-/// (`malt_platform::process::spawn`, `mash`'s external-command call sites)
-/// to become HCS-aware, which is real design work, not a parameter change.
-/// Creating an HCS compute system here that no process ever actually runs
-/// inside would be exactly the "looks done but isn't" pattern this project
-/// is trying to stop repeating — tracked as a separate, larger item in
-/// `docs/BACKLOG.md` rather than half-wired here.
+/// Contained is different: it receives an authenticated helper-owned HCS
+/// compute system and an injected MASH spawner that asks that helper to create
+/// every external command inside it. The context is established only after
+/// both entitlement registration and compute-system creation report
+/// `Performed`.
 fn apply_session_isolation(
     env: &mut Env,
     session_id: SessionId,
@@ -111,10 +306,53 @@ fn apply_session_isolation(
             return Ok(context);
         }
         if isolation == IsolationTier::Contained {
-            return Err(DaemonError::IsolationUnavailable(
-                "contained requires an HCS-aware MASH spawn path; a Job Object is not a container"
-                    .to_string(),
-            ));
+            let storage_root = malt_config::paths::data_dir();
+            crate::elevate_client::register_session_entitlement(
+                session_id.clone(),
+                &storage_root,
+                &[std::process::id()],
+            )
+            .map_err(|error| {
+                DaemonError::IsolationUnavailable(format!(
+                    "contained session entitlement was not registered: {error}"
+                ))
+            })?;
+            let response = crate::elevate_client::manage_hcs_container(
+                session_id.clone(),
+                None,
+                Some(format!("malt-{}", session_id.0)),
+            )
+            .map_err(|error| {
+                DaemonError::IsolationUnavailable(format!(
+                    "contained HCS creation request did not complete: {error}"
+                ))
+            })?;
+            if response.kind != malt_protocol::elevate::OutcomeKind::Performed {
+                return Err(DaemonError::IsolationUnavailable(
+                    response.detail.unwrap_or_else(|| {
+                        "contained HCS creation was not performed by the helper".to_string()
+                    }),
+                ));
+            }
+            let container_id = String::from_utf8(response.payload.ok_or_else(|| {
+                DaemonError::IsolationUnavailable(
+                    "helper performed contained HCS creation without a container id".to_string(),
+                )
+            })?)
+            .map_err(|error| {
+                DaemonError::IsolationUnavailable(format!(
+                    "helper returned a non-UTF-8 contained HCS id: {error}"
+                ))
+            })?;
+            context
+                .establish_container(container_id.clone())
+                .map_err(|error| DaemonError::IsolationUnavailable(error.to_string()))?;
+            env.set_external_process_spawner(std::sync::Arc::new(HcsProcessSpawner {
+                session_id,
+                container_id,
+            }));
+            env.set_isolation_context(context.clone());
+            return Ok(context);
         }
         let (memory_limit_mb, cpu_rate) =
             job_object_limits_for_tier(isolation).ok_or_else(|| {

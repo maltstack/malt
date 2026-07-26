@@ -67,6 +67,15 @@ impl HcsProcess {
     }
 }
 
+impl Drop for HcsProcess {
+    fn drop(&mut self) {
+        // HCS process handles are not ordinary Win32 process handles. The
+        // dedicated HCS close path is required even when the caller retained
+        // the process only long enough to duplicate it into the daemon.
+        let _ = close_process_handle(self.handle);
+    }
+}
+
 /// Result of launching a process, including its I/O pipe handles if requested.
 #[derive(Debug)]
 pub struct HcsProcessLaunch {
@@ -74,6 +83,64 @@ pub struct HcsProcessLaunch {
     pub stdin_handle: Option<isize>,
     pub stdout_handle: Option<isize>,
     pub stderr_handle: Option<isize>,
+}
+
+/// HCS process resources duplicated into the authenticated daemon process.
+/// The numeric handle values are meaningful only in that destination process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HcsDuplicatedProcessLaunch {
+    pub process_id: u32,
+    pub process_handle: u64,
+    pub stdin_handle: u64,
+    pub stdout_handle: u64,
+    pub stderr_handle: u64,
+}
+
+impl Drop for HcsProcessLaunch {
+    fn drop(&mut self) {
+        for handle in [self.stdin_handle, self.stdout_handle, self.stderr_handle]
+            .into_iter()
+            .flatten()
+        {
+            let _ = close_stream_handle(handle);
+        }
+    }
+}
+
+impl HcsProcessLaunch {
+    /// Duplicate this launch's process and standard handles into one daemon.
+    /// The privileged helper obtains the target PID from the authenticated
+    /// named-pipe peer; it is deliberately not supplied by the request.
+    pub fn duplicate_into_process(
+        &self,
+        target_process_id: u32,
+    ) -> Result<HcsDuplicatedProcessLaunch, IsolationError> {
+        let stdin_handle = self.stdin_handle.ok_or_else(|| {
+            IsolationError::HcsError("HCS launch did not return a stdin pipe".to_string())
+        })?;
+        let stdout_handle = self.stdout_handle.ok_or_else(|| {
+            IsolationError::HcsError("HCS launch did not return a stdout pipe".to_string())
+        })?;
+        let stderr_handle = self.stderr_handle.ok_or_else(|| {
+            IsolationError::HcsError("HCS launch did not return a stderr pipe".to_string())
+        })?;
+        duplicate_handles_into_process(
+            target_process_id,
+            [
+                self.process.raw_handle(),
+                stdin_handle,
+                stdout_handle,
+                stderr_handle,
+            ],
+        )
+        .map(|handles| HcsDuplicatedProcessLaunch {
+            process_id: self.process.process_id,
+            process_handle: handles[0] as u64,
+            stdin_handle: handles[1] as u64,
+            stdout_handle: handles[2] as u64,
+            stderr_handle: handles[3] as u64,
+        })
+    }
 }
 
 /// Cheap, always-on check for whether HCS is available on this machine.
@@ -102,6 +169,118 @@ fn hcs_fake_mode_from_env(value: Option<&str>) -> bool {
         value.map(|v| v.to_ascii_lowercase()),
         Some(v) if v == "1" || v == "true" || v == "yes"
     )
+}
+
+#[cfg(windows)]
+fn close_stream_handle(handle: isize) -> Result<(), IsolationError> {
+    if hcs_fake_mode_enabled() {
+        return Ok(());
+    }
+    // SAFETY: `handle` is a Win32 standard-stream handle returned by HCS for
+    // this launch and owned by the caller until it is closed exactly once.
+    let closed = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle as _) };
+    if closed == 0 {
+        return Err(IsolationError::IoError(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn close_stream_handle(_handle: isize) -> Result<(), IsolationError> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn duplicate_handles_into_process(
+    target_process_id: u32,
+    sources: [isize; 4],
+) -> Result<[isize; 4], IsolationError> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, DuplicateHandle, DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, HANDLE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
+    };
+
+    // Fake mode has no kernel handles to duplicate. Retaining the opaque
+    // sentinels lets the helper's request/response contract be tested without
+    // claiming that a real cross-process transfer occurred.
+    if hcs_fake_mode_enabled() {
+        return Ok(sources);
+    }
+
+    // SAFETY: The target PID is the authenticated helper pipe peer. The
+    // helper opens only that process with the minimal access needed to copy
+    // the HCS handles it just created.
+    let target = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, target_process_id) };
+    if target.is_null() {
+        return Err(IsolationError::IoError(std::io::Error::last_os_error()));
+    }
+    // SAFETY: GetCurrentProcess returns this helper's always-valid pseudo-handle.
+    let current = unsafe { GetCurrentProcess() };
+    let mut duplicated = Vec::<HANDLE>::with_capacity(sources.len());
+    for source in sources {
+        let mut destination: HANDLE = std::ptr::null_mut();
+        // SAFETY: source is a helper-owned live HCS or stream handle and
+        // target was opened above with PROCESS_DUP_HANDLE.
+        let copied = unsafe {
+            DuplicateHandle(
+                current,
+                source as HANDLE,
+                target,
+                &mut destination,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if copied == 0 {
+            let error = std::io::Error::last_os_error();
+            for remote in duplicated {
+                let mut local: HANDLE = std::ptr::null_mut();
+                // SAFETY: remote is a handle in `target` that this function
+                // created. DUPLICATE_CLOSE_SOURCE releases it in that target;
+                // any local duplicate returned solely to satisfy the API is
+                // immediately closed below.
+                let closed = unsafe {
+                    DuplicateHandle(
+                        target,
+                        remote,
+                        current,
+                        &mut local,
+                        0,
+                        0,
+                        DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS,
+                    )
+                };
+                if closed != 0 && !local.is_null() {
+                    // SAFETY: local is the temporary current-process handle
+                    // returned by DuplicateHandle above.
+                    unsafe { CloseHandle(local) };
+                }
+            }
+            // SAFETY: target was opened successfully above and is owned here.
+            unsafe { CloseHandle(target) };
+            return Err(IsolationError::IoError(error));
+        }
+        duplicated.push(destination);
+    }
+    // SAFETY: target was opened successfully above and is owned here.
+    unsafe { CloseHandle(target) };
+    let handles: [HANDLE; 4] = duplicated.try_into().map_err(|_| {
+        IsolationError::HcsError("internal HCS handle duplication count mismatch".to_string())
+    })?;
+    Ok(handles.map(|handle| handle as isize))
+}
+
+#[cfg(not(windows))]
+fn duplicate_handles_into_process(
+    _target_process_id: u32,
+    _sources: [isize; 4],
+) -> Result<[isize; 4], IsolationError> {
+    Err(IsolationError::UnsupportedPlatform(
+        "HCS handle duplication requires Windows".to_string(),
+    ))
 }
 
 /// Verify the HCS backend is actually usable before attempting real calls:
@@ -254,6 +433,25 @@ pub fn wait_process_exit(handle: isize) -> Result<i32, IsolationError> {
     }
 }
 
+/// Check whether a process inside a compute system has exited without blocking.
+/// `Ok(None)` means the process is still running.
+pub fn try_wait_process_exit(handle: isize) -> Result<Option<i32>, IsolationError> {
+    if hcs_fake_mode_enabled() {
+        return fake::try_wait_process_exit(handle);
+    }
+    ensure_hcs_runtime()?;
+    #[cfg(feature = "hcs")]
+    {
+        native::try_wait_process_exit(handle)
+    }
+    #[cfg(not(feature = "hcs"))]
+    {
+        Err(IsolationError::HcsError(
+            "HCS native backend not compiled in (build with --features hcs)".to_string(),
+        ))
+    }
+}
+
 /// Close a process handle obtained from `create_process`.
 pub fn close_process_handle(handle: isize) -> Result<(), IsolationError> {
     if hcs_fake_mode_enabled() {
@@ -394,6 +592,10 @@ mod fake {
             .ok_or_else(|| {
                 IsolationError::HcsError(format!("unknown fake process handle `{handle}`"))
             })
+    }
+
+    pub fn try_wait_process_exit(handle: isize) -> Result<Option<i32>, IsolationError> {
+        Ok(Some(wait_process_exit(handle)?))
     }
 
     pub fn close_process_handle(handle: isize) -> Result<(), IsolationError> {
@@ -659,11 +861,29 @@ mod native {
     }
 
     pub fn wait_process_exit(handle: isize) -> Result<i32, IsolationError> {
+        wait_for_process_exit(handle, u32::MAX)?.ok_or_else(|| {
+            IsolationError::HcsError(
+                "infinite HCS process wait returned without an exit result".to_string(),
+            )
+        })
+    }
+
+    pub fn try_wait_process_exit(handle: isize) -> Result<Option<i32>, IsolationError> {
+        wait_for_process_exit(handle, 0)
+    }
+
+    fn wait_for_process_exit(
+        handle: isize,
+        timeout_ms: u32,
+    ) -> Result<Option<i32>, IsolationError> {
         let mut result: PWSTR = std::ptr::null_mut();
         // SAFETY: handle is expected to be a valid HCS_PROCESS from
-        // create_process above; u32::MAX requests an indefinite wait;
-        // result is an out-parameter.
-        let hr = unsafe { HcsWaitForProcessExit(handle as HCS_PROCESS, u32::MAX, &mut result) };
+        // create_process above; `timeout_ms` is either zero for polling or
+        // u32::MAX for an indefinite wait; result is an out-parameter.
+        let hr = unsafe { HcsWaitForProcessExit(handle as HCS_PROCESS, timeout_ms, &mut result) };
+        if hr == HCS_E_OPERATION_TIMEOUT {
+            return Ok(None);
+        }
         if hr != 0 {
             return Err(IsolationError::HcsError(format!(
                 "HcsWaitForProcessExit {}",
@@ -671,14 +891,14 @@ mod native {
             )));
         }
         if result.is_null() {
-            return Ok(0);
+            return Ok(Some(0));
         }
-        let json = widestr_to_string(result);
+        let json = take_result_document(result);
         let exit_code = serde_json::from_str::<serde_json::Value>(&json)
             .ok()
             .and_then(|v| v.get("ExitCode").and_then(|x| x.as_i64()))
             .unwrap_or(0);
-        Ok(exit_code as i32)
+        Ok(Some(exit_code as i32))
     }
 
     pub fn close_process_handle(handle: isize) -> Result<(), IsolationError> {
@@ -1071,7 +1291,9 @@ mod tests {
         assert!(launch.stdin_handle.is_some());
         assert!(launch.stdout_handle.is_some());
         assert!(launch.stderr_handle.is_some());
-        close_process_handle(launch.process.raw_handle()).expect("close fake process");
+        // Drop while fake mode remains enabled: `HcsProcess` owns the process
+        // handle and closes it through the matching HCS backend.
+        drop(launch);
         terminate_compute_system(system.raw_handle()).expect("terminate fake compute system");
         // SAFETY: paired with the serialized test-only mutation above.
         unsafe {

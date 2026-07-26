@@ -75,6 +75,7 @@ pub struct SessionTierCapability {
 }
 
 pub fn session_tier_capabilities() -> Vec<SessionTierCapability> {
+    #[cfg(not(windows))]
     let unavailable = |tier, detail: &str| SessionTierCapability {
         tier,
         available: false,
@@ -105,7 +106,16 @@ pub fn session_tier_capabilities() -> Vec<SessionTierCapability> {
             mechanism: Some(IsolationMechanism::JobObject),
             detail: Some("Job Object establishment is checked during session creation".to_string()),
         });
-        tiers.push(unavailable(IsolationTier::Contained, "HCS is not wired to MASH's process spawn path; Job Objects are not reported as containers"));
+        tiers.push(SessionTierCapability {
+            tier: IsolationTier::Contained,
+            available: false,
+            basis: super::CapabilityBasis::None,
+            mechanism: None,
+            detail: Some(
+                "the helper-owned HCS spawn route is wired, but no validated HCS image/layer configuration is available for session compute systems"
+                    .to_string(),
+            ),
+        });
     }
     #[cfg(not(windows))]
     {

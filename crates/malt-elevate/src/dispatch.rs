@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::protocol::{
-    ContainerOperation, ElevateRequest, ElevateResponse, OutcomeKind, ReasonCode,
+    ContainerOperation, ElevateRequest, ElevateResponse, HcsProcessLaunch, HcsProcessRequest,
+    OutcomeKind, ReasonCode,
 };
 
 /// Dispatch a request to the operation handler.
@@ -82,13 +83,19 @@ pub fn dispatch_entitled_request(
     request_id: u32,
     session_id: u32,
     storage_root: &Path,
+    target_process_id: u32,
     request: &ElevateRequest,
     containers: &mut HcsContainerRegistry,
 ) -> ElevateResponse {
     match request {
-        ElevateRequest::ManageHcsContainer { operation } => {
-            dispatch_hcs_container(request_id, session_id, storage_root, operation, containers)
-        }
+        ElevateRequest::ManageHcsContainer { operation } => dispatch_hcs_container(
+            request_id,
+            session_id,
+            storage_root,
+            target_process_id,
+            operation,
+            containers,
+        ),
         ElevateRequest::CreateSymlink { target, link } => {
             let target = Path::new(target);
             let link = Path::new(link);
@@ -185,6 +192,7 @@ fn dispatch_hcs_container(
     request_id: u32,
     session_id: u32,
     storage_root: &Path,
+    target_process_id: u32,
     operation: &ContainerOperation,
     containers: &mut HcsContainerRegistry,
 ) -> ElevateResponse {
@@ -232,6 +240,13 @@ fn dispatch_hcs_container(
         ContainerOperation::Terminate { id } => {
             terminate_hcs_container(request_id, session_id, id, containers)
         }
+        ContainerOperation::StartProcess { request } => start_hcs_process(
+            request_id,
+            session_id,
+            target_process_id,
+            request,
+            containers,
+        ),
         _ => refused(
             request_id,
             ReasonCode::InvalidParameters,
@@ -303,6 +318,153 @@ fn create_hcs_container(
             format!("ManageHcsContainer failed: {error}"),
         ),
     }
+}
+
+fn start_hcs_process(
+    request_id: u32,
+    session_id: u32,
+    target_process_id: u32,
+    request: &HcsProcessRequest,
+    containers: &mut HcsContainerRegistry,
+) -> ElevateResponse {
+    if let Err(detail) = validate_hcs_process_request(request) {
+        return refused(request_id, ReasonCode::InvalidParameters, detail);
+    }
+    let Some(container) = containers.containers.get(&request.id) else {
+        return refused(
+            request_id,
+            ReasonCode::NotEntitled,
+            "compute-system id is not owned by this session",
+        );
+    };
+    if container.session_id != session_id {
+        return refused(
+            request_id,
+            ReasonCode::NotEntitled,
+            "compute-system id is not owned by this session",
+        );
+    }
+    let parameters = malt_platform::isolation::hcs::HcsProcessParameters {
+        application_name: Some(request.program.clone()),
+        command_line: malt_platform::process::windows_command_line(
+            request.argv0.as_deref().unwrap_or(&request.program),
+            &request.arguments,
+        ),
+        working_directory: request.working_directory.clone(),
+        environment: request
+            .environment
+            .iter()
+            .map(|entry| (entry.key.clone(), entry.value.clone()))
+            .collect(),
+        create_stdin_pipe: true,
+        create_stdout_pipe: true,
+        create_stderr_pipe: true,
+    };
+    let launch = match malt_platform::isolation::hcs::create_process(
+        container.system.raw_handle(),
+        &parameters,
+    ) {
+        Ok(launch) => launch,
+        Err(error) => {
+            return refused(
+                request_id,
+                ReasonCode::OsError,
+                format!("ManageHcsContainer StartProcess failed: {error}"),
+            )
+        }
+    };
+    let handoff = match launch.duplicate_into_process(target_process_id) {
+        Ok(handoff) => handoff,
+        Err(error) => {
+            return tear_down_after_process_launch_failure(
+                request_id,
+                &request.id,
+                containers,
+                format!(
+                "could not duplicate HCS process handles into the authenticated daemon: {error}"
+            ),
+            )
+        }
+    };
+    let mut writer = malt_protocol::vexil_runtime::BitWriter::new();
+    let result = HcsProcessLaunch {
+        process_id: handoff.process_id,
+        process_handle: handoff.process_handle,
+        stdin_handle: handoff.stdin_handle,
+        stdout_handle: handoff.stdout_handle,
+        stderr_handle: handoff.stderr_handle,
+        _unknown: Vec::new(),
+    };
+    if let Err(error) = malt_protocol::vexil_runtime::Pack::pack(&result, &mut writer) {
+        return tear_down_after_process_launch_failure(
+            request_id,
+            &request.id,
+            containers,
+            format!("could not encode duplicated HCS process handles: {error}"),
+        );
+    }
+    ElevateResponse {
+        request_id,
+        kind: OutcomeKind::Performed,
+        reason: None,
+        detail: Some(format!(
+            "ManageHcsContainer started a helper-owned process in {} for the authenticated daemon",
+            request.id
+        )),
+        payload: Some(writer.finish()),
+        _unknown: Vec::new(),
+    }
+}
+
+fn validate_hcs_process_request(request: &HcsProcessRequest) -> Result<(), String> {
+    if request.id.trim().is_empty() {
+        return Err("HCS process request has an empty compute-system id".to_string());
+    }
+    if request.program.trim().is_empty() {
+        return Err("HCS process request has an empty program".to_string());
+    }
+    let mut fields = request
+        .arguments
+        .iter()
+        .chain(request.working_directory.iter())
+        .chain(request.argv0.iter())
+        .chain(
+            request
+                .environment
+                .iter()
+                .flat_map(|entry| [&entry.key, &entry.value]),
+        );
+    if request.id.contains('\0')
+        || request.program.contains('\0')
+        || fields.any(|field| field.contains('\0'))
+    {
+        return Err("HCS process request contains a NUL byte".to_string());
+    }
+    if request
+        .environment
+        .iter()
+        .any(|entry| entry.key.is_empty() || entry.key.contains('='))
+    {
+        return Err("HCS environment keys must be non-empty and cannot contain '='".to_string());
+    }
+    Ok(())
+}
+
+fn tear_down_after_process_launch_failure(
+    request_id: u32,
+    id: &str,
+    containers: &mut HcsContainerRegistry,
+    detail: String,
+) -> ElevateResponse {
+    let cleanup = containers.containers.remove(id).map(|container| {
+        malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle())
+    });
+    let detail = match cleanup {
+        Some(Ok(())) => format!("{detail}; the affected compute system was terminated"),
+        Some(Err(error)) => format!("{detail}; compute-system teardown also failed: {error}"),
+        None => format!("{detail}; the helper lost the compute-system record before teardown"),
+    };
+    refused(request_id, ReasonCode::OsError, detail)
 }
 
 fn terminate_hcs_container(
@@ -502,8 +664,14 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
         };
-        let response =
-            dispatch_entitled_request(44, 7, &root, &request, &mut HcsContainerRegistry::default());
+        let response = dispatch_entitled_request(
+            44,
+            7,
+            &root,
+            std::process::id(),
+            &request,
+            &mut HcsContainerRegistry::default(),
+        );
         assert_eq!(response.kind, OutcomeKind::Refused);
         assert_eq!(response.reason, Some(ReasonCode::NotEntitled));
     }
@@ -533,7 +701,14 @@ mod tests {
             },
         };
         let mut containers = HcsContainerRegistry::default();
-        let created = dispatch_entitled_request(31, 7, root.path(), &create, &mut containers);
+        let created = dispatch_entitled_request(
+            31,
+            7,
+            root.path(),
+            std::process::id(),
+            &create,
+            &mut containers,
+        );
         assert_eq!(created.kind, OutcomeKind::Performed, "{created:?}");
         let id = String::from_utf8(created.payload.expect("container id payload"))
             .expect("container id is UTF-8");
@@ -545,13 +720,117 @@ mod tests {
         let terminate = ElevateRequest::ManageHcsContainer {
             operation: ContainerOperation::Terminate { id: id.clone() },
         };
-        let terminated = dispatch_entitled_request(32, 7, root.path(), &terminate, &mut containers);
+        let terminated = dispatch_entitled_request(
+            32,
+            7,
+            root.path(),
+            std::process::id(),
+            &terminate,
+            &mut containers,
+        );
         assert_eq!(terminated.kind, OutcomeKind::Performed);
         assert!(
             malt_platform::isolation::hcs::open_compute_system(&id).is_err(),
             "performed teardown must leave no compute system behind"
         );
 
+        // SAFETY: paired with the serialized test-only mutation above.
+        unsafe {
+            std::env::remove_var("MALT_HCS_FAKE");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn helper_hands_hcs_process_handles_only_to_the_authenticated_peer() {
+        let _guard = hcs_environment_lock();
+        // SAFETY: process-local environment mutation is serialized by the
+        // helper test mutex.
+        unsafe {
+            std::env::set_var("MALT_HCS_FAKE", "1");
+        }
+        let root = tempfile::tempdir().expect("create entitled storage root");
+        let mut containers = HcsContainerRegistry::default();
+        let created = dispatch_entitled_request(
+            41,
+            7,
+            root.path(),
+            std::process::id(),
+            &ElevateRequest::ManageHcsContainer {
+                operation: ContainerOperation::Create {
+                    memory_limit_mb: Some(256),
+                    hostname: Some("malt-test".to_string()),
+                },
+            },
+            &mut containers,
+        );
+        let id = String::from_utf8(created.payload.expect("container id payload"))
+            .expect("container id is UTF-8");
+
+        let response = dispatch_entitled_request(
+            42,
+            7,
+            root.path(),
+            std::process::id(),
+            &ElevateRequest::ManageHcsContainer {
+                operation: ContainerOperation::StartProcess {
+                    request: HcsProcessRequest {
+                        id: id.clone(),
+                        program: r"C:\\Windows\\System32\\cmd.exe".to_string(),
+                        arguments: vec!["/c".to_string(), "exit 0".to_string()],
+                        working_directory: None,
+                        environment: Vec::new(),
+                        argv0: None,
+                        _unknown: Vec::new(),
+                    },
+                },
+            },
+            &mut containers,
+        );
+        assert_eq!(response.kind, OutcomeKind::Performed, "{response:?}");
+        let payload = response.payload.expect("HCS process payload");
+        let mut reader = malt_protocol::vexil_runtime::BitReader::new(&payload);
+        let launch =
+            <HcsProcessLaunch as malt_protocol::vexil_runtime::Unpack>::unpack(&mut reader)
+                .expect("decode HCS process payload");
+        assert_ne!(launch.process_handle, 0);
+        assert_ne!(launch.stdin_handle, 0);
+        assert_ne!(launch.stdout_handle, 0);
+        assert_ne!(launch.stderr_handle, 0);
+
+        let other_session = dispatch_entitled_request(
+            43,
+            8,
+            root.path(),
+            std::process::id(),
+            &ElevateRequest::ManageHcsContainer {
+                operation: ContainerOperation::StartProcess {
+                    request: HcsProcessRequest {
+                        id: id.clone(),
+                        program: r"C:\\Windows\\System32\\cmd.exe".to_string(),
+                        arguments: Vec::new(),
+                        working_directory: None,
+                        environment: Vec::new(),
+                        argv0: None,
+                        _unknown: Vec::new(),
+                    },
+                },
+            },
+            &mut containers,
+        );
+        assert_eq!(other_session.kind, OutcomeKind::Refused);
+        assert_eq!(other_session.reason, Some(ReasonCode::NotEntitled));
+
+        let _ = dispatch_entitled_request(
+            44,
+            7,
+            root.path(),
+            std::process::id(),
+            &ElevateRequest::ManageHcsContainer {
+                operation: ContainerOperation::Terminate { id },
+            },
+            &mut containers,
+        );
         // SAFETY: paired with the serialized test-only mutation above.
         unsafe {
             std::env::remove_var("MALT_HCS_FAKE");

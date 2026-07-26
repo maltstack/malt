@@ -332,6 +332,42 @@ pub fn terminate_hcs_container(
     )
 }
 
+/// Start one process inside an already helper-owned HCS compute system and
+/// decode the handles duplicated into this authenticated daemon process.
+/// Only a `Performed` outcome with a complete payload becomes a usable launch;
+/// refused and indeterminate outcomes remain ordinary errors for the caller to
+/// contain and clean up.
+#[cfg(windows)]
+pub fn start_hcs_process(
+    session_id: malt_protocol::common::SessionId,
+    request: malt_protocol::elevate::HcsProcessRequest,
+) -> io::Result<malt_protocol::elevate::HcsProcessLaunch> {
+    use malt_protocol::elevate::OutcomeKind;
+    use malt_protocol::vexil_runtime::{BitReader, Unpack};
+
+    let response = send_hcs_container_operation(
+        session_id,
+        malt_protocol::elevate::ContainerOperation::StartProcess { request },
+    )?;
+    if response.kind != OutcomeKind::Performed {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            response
+                .detail
+                .unwrap_or_else(|| "helper did not perform HCS process launch".to_string()),
+        ));
+    }
+    let payload = response.payload.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "helper performed HCS process launch without a handle payload",
+        )
+    })?;
+    let mut reader = BitReader::new(&payload);
+    malt_protocol::elevate::HcsProcessLaunch::unpack(&mut reader)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+}
+
 #[cfg(windows)]
 fn send_hcs_container_operation(
     session_id: malt_protocol::common::SessionId,

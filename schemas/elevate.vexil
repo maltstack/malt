@@ -1,4 +1,4 @@
-@version("0.5.0")
+@version("0.6.0")
 namespace malt.elevate
 
 import malt.common
@@ -42,6 +42,31 @@ message SessionEntitlementResponse {
     reason   @1 : optional<string>
 }
 
+@doc("One environment entry for a helper-owned HCS process launch.")
+message HcsEnvironmentEntry {
+    key   @0 : string
+    value @1 : string
+}
+
+@doc("A command that the authenticated daemon asks its entitled helper to run inside an HCS compute system.")
+message HcsProcessRequest {
+    id                @0 : string
+    program           @1 : string
+    arguments         @2 : array<string>
+    working_directory @3 : optional<string>
+    environment       @4 : array<HcsEnvironmentEntry>
+    argv0             @5 : optional<string>
+}
+
+@doc("HCS process and standard-stream handles duplicated into the authenticated daemon process.")
+message HcsProcessLaunch {
+    process_id     @0 : u32
+    process_handle @1 : u64
+    stdin_handle   @2 : u64
+    stdout_handle  @3 : u64
+    stderr_handle  @4 : u64
+}
+
 @doc("Wrapper carrying correlation ID for request/response pairing.")
 message ElevateRequestEnvelope {
     request_id @0 : u32
@@ -56,6 +81,7 @@ union ContainerOperation {
     Create    @0 { memory_limit_mb @0 : optional<u32>  hostname @1 : optional<string> }
     Start     @1 { id @0 : string }
     Terminate @2 { id @0 : string }
+    StartProcess @3 { request @0 : HcsProcessRequest }
 }
 
 @non_exhaustive

@@ -302,6 +302,46 @@ impl std::fmt::Debug for SpawnConfig {
     }
 }
 
+/// Render a Windows command line using the same quoting rules as the native
+/// process-spawn path. HCS accepts one command-line string, while MASH owns a
+/// program plus argument vector; keeping this conversion in `malt-platform`
+/// prevents helper and host spawning from drifting on spaces, quotes, or
+/// trailing backslashes.
+pub fn windows_command_line(program: &str, arguments: &[String]) -> String {
+    let mut command_line = quote_windows_argument(program);
+    for argument in arguments {
+        command_line.push(' ');
+        command_line.push_str(&quote_windows_argument(argument));
+    }
+    command_line
+}
+
+fn quote_windows_argument(argument: &str) -> String {
+    if !argument.is_empty() && !argument.contains([' ', '\t', '"']) {
+        return argument.to_string();
+    }
+    let mut quoted = String::from("\"");
+    let mut backslashes = 0usize;
+    for character in argument.chars() {
+        match character {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.push_str(&"\\".repeat(backslashes * 2 + 1));
+                quoted.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                quoted.push_str(&"\\".repeat(backslashes));
+                backslashes = 0;
+                quoted.push(character);
+            }
+        }
+    }
+    quoted.push_str(&"\\".repeat(backslashes * 2));
+    quoted.push('"');
+    quoted
+}
+
 // ── Stdio handle types ─────────────────────────────────────────────────
 //
 // On Windows there are two distinct pipe-creation paths with different I/O
@@ -409,6 +449,9 @@ pub struct Child {
     pub stdout: Option<ChildStdoutHandle>,
     /// Pipe connected to the child's stderr (read end), if `Io::Pipe` was used.
     pub stderr: Option<ChildStderrHandle>,
+    /// Relay tasks installed by an alternate launcher to preserve requested
+    /// file/null/inherited stdio while the child itself exposes HCS pipes.
+    io_workers: Vec<std::thread::JoinHandle<std::io::Result<()>>>,
 }
 
 impl std::fmt::Debug for Child {
@@ -458,17 +501,31 @@ impl Drop for ChildInner {
 }
 
 #[cfg(windows)]
-struct ChildInner {
-    handle: ::windows_sys::Win32::Foundation::HANDLE,
+enum ChildInner {
+    Native {
+        handle: ::windows_sys::Win32::Foundation::HANDLE,
+    },
+    Hcs {
+        handle: isize,
+    },
 }
 
 #[cfg(windows)]
 impl Drop for ChildInner {
     fn drop(&mut self) {
-        // SAFETY: self.handle is a valid process handle obtained from
-        // DuplicateHandle that we own exclusively.
-        unsafe {
-            ::windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        match self {
+            Self::Native { handle } => {
+                // SAFETY: handle is a valid process handle obtained from
+                // DuplicateHandle that we own exclusively.
+                unsafe {
+                    ::windows_sys::Win32::Foundation::CloseHandle(*handle);
+                }
+            }
+            Self::Hcs { handle } => {
+                if let Err(error) = crate::isolation::hcs::close_process_handle(*handle) {
+                    tracing::warn!(%error, "failed to close HCS process handle");
+                }
+            }
         }
     }
 }
@@ -494,34 +551,44 @@ impl Child {
     /// from `GetExitCodeProcess` is returned.
     pub fn wait(&mut self) -> Result<ExitStatus, SpawnError> {
         #[cfg(unix)]
-        {
-            unix::wait_blocking(self.inner.pid)
-        }
+        let status = { unix::wait_blocking(self.inner.pid) };
         #[cfg(windows)]
-        {
-            windows::wait_blocking(self.inner.handle)
-        }
+        let status = {
+            match self.inner {
+                ChildInner::Native { handle } => windows::wait_blocking(handle),
+                ChildInner::Hcs { handle } => crate::isolation::hcs::wait_process_exit(handle)
+                    .map(ExitStatus::from_raw)
+                    .map_err(|error| SpawnError::Io(std::io::Error::other(error.to_string()))),
+            }
+        };
         #[cfg(not(any(unix, windows)))]
-        {
-            Ok(ExitStatus::from_raw(0))
-        }
+        let status = Ok(ExitStatus::from_raw(0));
+        let status = status?;
+        self.join_io_workers()?;
+        Ok(status)
     }
 
     /// Non-blocking check: returns `Some(ExitStatus)` if the child has exited,
     /// `None` if still running.
     pub fn try_wait(&mut self) -> Result<Option<ExitStatus>, SpawnError> {
         #[cfg(unix)]
-        {
-            unix::try_wait(self.inner.pid)
-        }
+        let result = { unix::try_wait(self.inner.pid) };
         #[cfg(windows)]
-        {
-            windows::try_wait(self.inner.handle)
-        }
+        let result = {
+            match self.inner {
+                ChildInner::Native { handle } => windows::try_wait(handle),
+                ChildInner::Hcs { handle } => crate::isolation::hcs::try_wait_process_exit(handle)
+                    .map(|result| result.map(ExitStatus::from_raw))
+                    .map_err(|error| SpawnError::Io(std::io::Error::other(error.to_string()))),
+            }
+        };
         #[cfg(not(any(unix, windows)))]
-        {
-            Ok(None)
+        let result = Ok(None);
+        let result = result?;
+        if result.is_some() {
+            self.join_io_workers()?;
         }
+        Ok(result)
     }
 
     /// Take ownership of the child's stdin pipe, if one was created.
@@ -537,6 +604,28 @@ impl Child {
     /// Take ownership of the child's stderr pipe, if one was created.
     pub fn take_stderr(&mut self) -> Option<ChildStderrHandle> {
         self.stderr.take()
+    }
+
+    /// Attach a stdio relay task installed by an alternate process launcher.
+    /// The task is joined after the child exits, so relay failures are never
+    /// silently discarded.
+    pub fn add_io_worker(&mut self, worker: std::thread::JoinHandle<std::io::Result<()>>) {
+        self.io_workers.push(worker);
+    }
+
+    fn join_io_workers(&mut self) -> Result<(), SpawnError> {
+        for worker in std::mem::take(&mut self.io_workers) {
+            match worker.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(SpawnError::Io(error)),
+                Err(_) => {
+                    return Err(SpawnError::Io(std::io::Error::other(
+                        "child stdio relay task panicked",
+                    )))
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -560,6 +649,26 @@ pub fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
             "unsupported platform",
         )))
     }
+}
+
+/// Adopt HCS process and standard-stream handles already duplicated into this
+/// process by the privileged helper. The helper authenticates the daemon peer
+/// before duplication; this function takes ownership only after that transfer.
+#[cfg(windows)]
+pub fn child_from_hcs_process(
+    process_id: u32,
+    process_handle: u64,
+    stdin_handle: u64,
+    stdout_handle: u64,
+    stderr_handle: u64,
+) -> Result<Child, SpawnError> {
+    windows::child_from_hcs_process(
+        process_id,
+        process_handle,
+        stdin_handle,
+        stdout_handle,
+        stderr_handle,
+    )
 }
 
 /// Return the current process's parent PID when the platform can provide it.

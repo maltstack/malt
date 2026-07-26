@@ -6,6 +6,6 @@
 pub use malt_protocol::elevate::{
     ContainerOperation, DaemonEnrollmentRequest, DaemonEnrollmentResponse, ElevateCapabilities,
     ElevateHello, ElevateHelloAck, ElevateRequest, ElevateRequestEnvelope, ElevateResponse,
-    ElevateShutdown, OperationCapability, OutcomeKind, ReasonCode, SessionEntitlementRequest,
-    SessionEntitlementResponse, SCHEMA_VERSION,
+    ElevateShutdown, HcsEnvironmentEntry, HcsProcessLaunch, HcsProcessRequest, OperationCapability,
+    OutcomeKind, ReasonCode, SessionEntitlementRequest, SessionEntitlementResponse, SCHEMA_VERSION,
 };

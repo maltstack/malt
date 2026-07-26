@@ -26,7 +26,7 @@ fn failed_required_containment_leaves_no_session_or_named_job_object() {
 
     assert!(
         result.is_err(),
-        "contained must be refused without HCS wiring"
+        "contained must be refused when the helper-backed HCS path cannot establish it"
     );
     assert!(
         coordinator.list_sessions().is_empty(),

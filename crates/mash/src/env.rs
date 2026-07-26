@@ -284,6 +284,16 @@ pub trait OutputSink: Send + Sync {
     fn write_stderr(&self, data: &[u8]);
 }
 
+/// Session-owned external process launcher. The daemon installs this only when
+/// a session has a live containment mechanism; every MASH production spawn
+/// flows through it rather than selecting a second, weaker path locally.
+pub trait ExternalProcessSpawner: Send + Sync {
+    fn spawn(
+        &self,
+        config: malt_platform::process::SpawnConfig,
+    ) -> Result<malt_platform::process::Child, malt_platform::process::SpawnError>;
+}
+
 // ── Env struct ──
 
 pub struct Env {
@@ -312,6 +322,7 @@ pub struct Env {
     /// Opaque isolation context token passed through from daemon.
     /// MASH does not interpret this; it's passed to platform spawn traits.
     isolation_context: Option<malt_platform::isolation::IsolationContext>,
+    external_process_spawner: Option<Arc<dyn ExternalProcessSpawner>>,
     /// Windows Job Object every externally-spawned child in this session gets
     /// assigned to, if the session's isolation tier is above Bare. Shared
     /// (`Arc`) across `Env::clone()` (subshells) so the whole session's
@@ -367,6 +378,7 @@ impl Clone for Env {
             jobs: self.jobs.clone(),
             job_tasks: self.job_tasks.clone(),
             isolation_context: self.isolation_context.clone(),
+            external_process_spawner: self.external_process_spawner.clone(),
             fd_registry,
             fd_aliases: Arc::new(Mutex::new(self.fd_aliases_lock().clone())),
             fd_snapshots: Arc::new(Mutex::new(self.fd_snapshots_lock().clone())),
@@ -404,6 +416,7 @@ impl Env {
             jobs: Arc::new(Mutex::new(Vec::new())),
             job_tasks: Arc::new(Mutex::new(HashMap::new())),
             isolation_context: None,
+            external_process_spawner: None,
             fd_registry: malt_platform::vfs::SharedFdRegistry::new(),
             fd_aliases: Arc::new(Mutex::new(HashMap::new())),
             fd_snapshots: Arc::new(Mutex::new(HashMap::new())),
@@ -1288,6 +1301,23 @@ impl Env {
     /// Get a reference to the isolation context token, if any.
     pub fn isolation_context(&self) -> Option<&malt_platform::isolation::IsolationContext> {
         self.isolation_context.as_ref()
+    }
+
+    /// Install the authoritative process launcher for this session.
+    pub fn set_external_process_spawner(&mut self, spawner: Arc<dyn ExternalProcessSpawner>) {
+        self.external_process_spawner = Some(spawner);
+    }
+
+    /// Spawn an external command through the session-owned launcher when one
+    /// exists, otherwise through the platform's ordinary process entry point.
+    pub fn spawn_external_process(
+        &self,
+        config: malt_platform::process::SpawnConfig,
+    ) -> Result<malt_platform::process::Child, malt_platform::process::SpawnError> {
+        match &self.external_process_spawner {
+            Some(spawner) => spawner.spawn(config),
+            None => malt_platform::process::spawn(config),
+        }
     }
 
     /// Take the isolation context token (used when spawning processes).

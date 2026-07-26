@@ -112,7 +112,10 @@ fn isolation_status(
             requested,
             IsolationBasis::Verified,
             Some("hcs-container".to_string()),
-            Some("HCS container identity is established in the shared isolation carrier".to_string()),
+            Some(
+                "helper-owned HCS container creation was confirmed; MASH routes every external command through its HCS launcher"
+                    .to_string(),
+            ),
         ),
     };
     Ok(IsolationStatus {
@@ -674,6 +677,20 @@ impl Coordinator {
     /// Destroy a session. Sends shutdown and joins the thread.
     pub fn destroy_session(&mut self, id: SessionId) {
         if let Some(handle) = self.sessions.remove(&id.0) {
+            #[cfg(windows)]
+            let contained_teardown = handle
+                .isolation_context
+                .as_ref()
+                .and_then(|context| match context.container_id() {
+                    Ok(Some(container_id)) => Some((handle.id.clone(), container_id)),
+                    Ok(None) => None,
+                    Err(error) => {
+                        warn!(%error, session_id = ?handle.id, "unable to read contained session identity during teardown");
+                        None
+                    }
+                });
+            #[cfg(not(windows))]
+            let contained_teardown: Option<(SessionId, String)> = None;
             match handle.lifecycle {
                 SessionLifecycle::Active {
                     cmd_tx,
@@ -688,10 +705,16 @@ impl Coordinator {
                     // The reaper shuts down the control actor only after the
                     // worker has stopped; `destroy_session` itself never
                     // joins under the coordinator.
-                    spawn_session_reaper_after_worker(cmd_tx, control_thread, worker_thread);
+                    spawn_session_reaper_after_worker(
+                        cmd_tx,
+                        control_thread,
+                        worker_thread,
+                        contained_teardown,
+                    );
                 }
                 SessionLifecycle::Dormant { .. } => {
                     // No thread to shut down.
+                    tear_down_contained_session(contained_teardown);
                 }
             }
             let _ = self.store.delete_session(&id);
@@ -1348,6 +1371,7 @@ fn spawn_session_reaper_after_worker(
     control_tx: mpsc::SyncSender<SessionCommand>,
     control_thread: Option<std::thread::JoinHandle<()>>,
     worker_thread: Option<std::thread::JoinHandle<()>>,
+    contained_teardown: Option<(SessionId, String)>,
 ) {
     let _ = std::thread::Builder::new()
         .name("malt-session-reaper".to_string())
@@ -1359,8 +1383,31 @@ fn spawn_session_reaper_after_worker(
             if let Some(thread) = control_thread {
                 let _ = thread.join();
             }
+            tear_down_contained_session(contained_teardown);
         });
 }
+
+#[cfg(windows)]
+fn tear_down_contained_session(contained_teardown: Option<(SessionId, String)>) {
+    if let Some((session_id, container_id)) = contained_teardown {
+        match crate::elevate_client::terminate_hcs_container(session_id.clone(), container_id) {
+            Ok(response) if response.kind == malt_protocol::elevate::OutcomeKind::Performed => {}
+            Ok(response) => warn!(
+                ?session_id,
+                ?response,
+                "helper did not confirm contained compute-system teardown"
+            ),
+            Err(error) => warn!(
+                ?session_id,
+                %error,
+                "contained compute-system teardown request failed"
+            ),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn tear_down_contained_session(_contained_teardown: Option<(SessionId, String)>) {}
 
 /// Read a spawned process's PTY output in a loop and forward each chunk as
 /// a `SessionCommand::PtyOutput` to the owning session's command channel.

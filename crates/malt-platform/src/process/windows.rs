@@ -156,13 +156,54 @@ pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
 
     Ok(Child {
         pid,
-        inner: ChildInner {
+        inner: ChildInner::Native {
             handle: owned_handle,
         },
         stdin,
         stdout,
         stderr,
+        io_workers: Vec::new(),
     })
+}
+
+pub(super) fn child_from_hcs_process(
+    process_id: u32,
+    process_handle: u64,
+    stdin_handle: u64,
+    stdout_handle: u64,
+    stderr_handle: u64,
+) -> Result<Child, SpawnError> {
+    let process_handle = checked_handle(process_handle, "HCS process")?;
+    let stdin_handle = checked_handle(stdin_handle, "HCS stdin")?;
+    let stdout_handle = checked_handle(stdout_handle, "HCS stdout")?;
+    let stderr_handle = checked_handle(stderr_handle, "HCS stderr")?;
+    // SAFETY: each handle was duplicated into this daemon by the authenticated
+    // elevated helper. The new OwnedHandle/File owners close them exactly once.
+    let stdin = unsafe { std::fs::File::from_raw_handle(stdin_handle as RawHandle) };
+    // SAFETY: see the ownership statement for stdin above.
+    let stdout = unsafe { std::fs::File::from_raw_handle(stdout_handle as RawHandle) };
+    // SAFETY: see the ownership statement for stdin above.
+    let stderr = unsafe { std::fs::File::from_raw_handle(stderr_handle as RawHandle) };
+    Ok(Child {
+        pid: process_id,
+        inner: ChildInner::Hcs {
+            handle: process_handle as isize,
+        },
+        stdin: Some(super::ChildStdinHandle::Sync(stdin)),
+        stdout: Some(super::ChildStdoutHandle::Sync(stdout)),
+        stderr: Some(super::ChildStderrHandle::Sync(stderr)),
+        io_workers: Vec::new(),
+    })
+}
+
+fn checked_handle(value: u64, name: &str) -> Result<HANDLE, SpawnError> {
+    if value == 0 || value > isize::MAX as u64 {
+        return Err(SpawnError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{name} handle is invalid"),
+        )));
+    }
+    Ok(value as HANDLE)
 }
 
 fn spawn_with_create_process(config: SpawnConfig) -> Result<Child, SpawnError> {
@@ -235,12 +276,13 @@ fn spawn_with_create_process(config: SpawnConfig) -> Result<Child, SpawnError> {
 
     Ok(Child {
         pid: process_info.dwProcessId,
-        inner: ChildInner {
+        inner: ChildInner::Native {
             handle: process_info.hProcess,
         },
         stdin: parent_pipes.stdin.map(super::ChildStdinHandle::Sync),
         stdout: parent_pipes.stdout.map(super::ChildStdoutHandle::Sync),
         stderr: parent_pipes.stderr.map(super::ChildStderrHandle::Sync),
+        io_workers: Vec::new(),
     })
 }
 
