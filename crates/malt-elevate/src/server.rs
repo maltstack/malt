@@ -414,6 +414,9 @@ impl From<io::Error> for ElevateError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use malt_platform::ipc::{NamedPipeClient, NamedPipeServer};
+    use malt_protocol::elevate::{ElevateRequest, OutcomeKind};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn concurrent_client_limit_is_bounded() {
@@ -421,5 +424,198 @@ mod tests {
         assert!(try_acquire_client_slot(&active));
         assert_eq!(active.load(Ordering::Acquire), MAX_CONCURRENT_CLIENTS);
         assert!(!try_acquire_client_slot(&active));
+    }
+
+    #[test]
+    fn well_formed_request_from_unenrolled_local_process_is_refused() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let pipe_name = format!("malt-elevate-server-test-{}-{suffix}", std::process::id());
+        let server_name = pipe_name.clone();
+        let server = std::thread::spawn(move || {
+            let server = NamedPipeServer::create(&server_name).expect("create test pipe");
+            let connection = server.accept().expect("accept test client");
+            let peer = connection.peer_identity().expect("observe test client");
+            let guard = ReplayGuard::new(16).expect("create replay guard");
+            let enrollments = std::sync::Mutex::new(EnrollmentRegistry::default());
+            let containers = std::sync::Mutex::new(HcsContainerRegistry::default());
+            let _ = serve_connection(connection, peer, &guard, &enrollments, &containers);
+        });
+
+        let mut client = loop {
+            match NamedPipeClient::connect(&pipe_name) {
+                Ok(client) => break client,
+                Err(error) if error.raw_os_error() == Some(2) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                Err(error) => panic!("connect test pipe: {error}"),
+            }
+        };
+        let nonce = request_nonce_for_test();
+        write_test_message(
+            &mut client,
+            HELLO,
+            &ElevateHello {
+                nonce,
+                version: PROTOCOL_VERSION,
+                _unknown: Vec::new(),
+            },
+        );
+        let acknowledgement = read_test_message::<ElevateHelloAck>(&mut client, HELLO_ACK);
+        assert!(acknowledgement.accepted);
+        let request_nonce = request_nonce_for_test();
+        write_test_message(
+            &mut client,
+            REQUEST,
+            &ElevateRequestEnvelope {
+                request_id: 88,
+                request: ElevateRequest::BindPort {
+                    port: 8080,
+                    socket_path: "unused".to_string(),
+                },
+                session_id: malt_protocol::common::SessionId(1),
+                nonce: request_nonce,
+                _unknown: Vec::new(),
+            },
+        );
+        let response = read_test_message::<ElevateResponse>(&mut client, RESPONSE);
+        assert_eq!(response.kind, OutcomeKind::Refused);
+        assert_eq!(response.reason, Some(ReasonCode::NotEntitled));
+        drop(client);
+        server.join().expect("server thread");
+    }
+
+    #[test]
+    fn replayed_authenticated_envelope_is_refused_over_a_real_pipe() {
+        let root = tempfile::tempdir().expect("create session root");
+        let root_path = root.path().to_path_buf();
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let pipe_name = format!("malt-elevate-replay-test-{}-{suffix}", std::process::id());
+        let server_name = pipe_name.clone();
+        let server = std::thread::spawn(move || {
+            let server = NamedPipeServer::create(&server_name).expect("create test pipe");
+            let connection = server.accept().expect("accept test client");
+            let peer = connection.peer_identity().expect("observe test client");
+            let guard = ReplayGuard::new(16).expect("create replay guard");
+            let mut registry = EnrollmentRegistry::default();
+            registry
+                .enroll(&peer, true, peer.process_id)
+                .expect("enrol current process for replay test");
+            registry
+                .register_session(&peer, 1, root_path.to_str().expect("test root UTF-8"), &[])
+                .expect("register test entitlement");
+            let enrollments = std::sync::Mutex::new(registry);
+            let containers = std::sync::Mutex::new(HcsContainerRegistry::default());
+            let _ = serve_connection(connection, peer, &guard, &enrollments, &containers);
+        });
+
+        let mut client = connect_test_client(&pipe_name);
+        hello_test_client(&mut client);
+        let envelope = ElevateRequestEnvelope {
+            request_id: 89,
+            request: ElevateRequest::BindPort {
+                port: 8080,
+                socket_path: "unused".to_string(),
+            },
+            session_id: malt_protocol::common::SessionId(1),
+            nonce: request_nonce_for_test(),
+            _unknown: Vec::new(),
+        };
+        write_test_message(&mut client, REQUEST, &envelope);
+        let first = read_test_message::<ElevateResponse>(&mut client, RESPONSE);
+        assert_eq!(first.reason, Some(ReasonCode::NotImplemented));
+        write_test_message(&mut client, REQUEST, &envelope);
+        let replay = read_test_message::<ElevateResponse>(&mut client, RESPONSE);
+        assert_eq!(replay.kind, OutcomeKind::Refused);
+        assert_eq!(replay.reason, Some(ReasonCode::InvalidParameters));
+        assert!(replay
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("already been consumed"));
+        drop(client);
+        server.join().expect("server thread");
+    }
+
+    fn connect_test_client(pipe_name: &str) -> malt_platform::ipc::NamedPipeConnection {
+        loop {
+            match NamedPipeClient::connect(pipe_name) {
+                Ok(client) => return client,
+                Err(error) if error.raw_os_error() == Some(2) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                Err(error) => panic!("connect test pipe: {error}"),
+            }
+        }
+    }
+
+    fn hello_test_client(connection: &mut malt_platform::ipc::NamedPipeConnection) {
+        let nonce = request_nonce_for_test();
+        write_test_message(
+            connection,
+            HELLO,
+            &ElevateHello {
+                nonce,
+                version: PROTOCOL_VERSION,
+                _unknown: Vec::new(),
+            },
+        );
+        let acknowledgement = read_test_message::<ElevateHelloAck>(connection, HELLO_ACK);
+        assert!(acknowledgement.accepted);
+    }
+
+    fn request_nonce_for_test() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let issued_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_secs();
+        (issued_at << 32) | NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn write_test_message<T>(
+        connection: &mut malt_platform::ipc::NamedPipeConnection,
+        tag: u8,
+        message: &T,
+    ) where
+        T: Pack,
+    {
+        let mut writer = BitWriter::new();
+        message.pack(&mut writer).expect("pack test message");
+        let mut payload = vec![tag];
+        payload.extend(writer.finish());
+        FrameWriter::new(connection.file())
+            .write_frame(&Frame {
+                flags: FrameFlags::new(),
+                payload,
+            })
+            .expect("write test frame");
+    }
+
+    fn read_test_message<T>(
+        connection: &mut malt_platform::ipc::NamedPipeConnection,
+        expected_tag: u8,
+    ) -> T
+    where
+        T: Unpack,
+    {
+        use malt_protocol::framing::FrameReader;
+
+        let frame = FrameReader::new(connection.file())
+            .read_frame()
+            .expect("read test frame");
+        let Some((&tag, body)) = frame.payload.split_first() else {
+            panic!("test response had empty payload");
+        };
+        assert_eq!(tag, expected_tag);
+        let mut reader = BitReader::new(body);
+        T::unpack(&mut reader).expect("unpack test message")
     }
 }

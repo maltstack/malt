@@ -172,6 +172,7 @@ impl EnrollmentRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn non_elevated_enrollment_is_refused_before_pid_inspection() {
@@ -181,5 +182,97 @@ mod tests {
             principal: "S-1-5-21-test".to_string(),
         };
         assert!(registry.enroll(&requester, false, 1).is_err());
+    }
+
+    #[test]
+    fn entitlement_refuses_another_principals_session_and_parent_escape() {
+        let directory = tempfile::tempdir().expect("create entitlement fixture");
+        let root = directory.path().join("root");
+        let outside = directory.path().join("outside.txt");
+        fs::create_dir(&root).expect("create root");
+        fs::write(root.join("inside.txt"), "inside").expect("create inside file");
+        fs::write(&outside, "outside").expect("create outside file");
+        let mut registry = EnrollmentRegistry::default();
+        registry.sessions.insert(
+            7,
+            SessionEntitlement {
+                owner: "S-1-5-21-owner".to_string(),
+                storage_root: fs::canonicalize(&root).expect("canonical root"),
+                pids: HashMap::new(),
+            },
+        );
+        let owner = PeerIdentity {
+            process_id: 1,
+            principal: "S-1-5-21-owner".to_string(),
+        };
+        let other = PeerIdentity {
+            process_id: 2,
+            principal: "S-1-5-21-other".to_string(),
+        };
+        assert!(!registry
+            .allows_path(&other, 7, &root.join("inside.txt"))
+            .expect("other principal check"));
+        assert!(!registry
+            .allows_path(&owner, 7, &root.join("..").join("outside.txt"))
+            .expect("parent escape check"));
+    }
+
+    #[test]
+    fn entitlement_refuses_symlink_escape_when_host_allows_symlinks() {
+        let directory = tempfile::tempdir().expect("create entitlement fixture");
+        let root = directory.path().join("root");
+        let outside = directory.path().join("outside.txt");
+        fs::create_dir(&root).expect("create root");
+        fs::write(&outside, "outside").expect("create outside file");
+        let link = root.join("outside-link");
+        match malt_platform::fs::create_symlink(&outside, &link) {
+            Ok(()) => {}
+            Err(error) if error.raw_os_error() == Some(1314) => {
+                eprintln!(
+                    "skipping symlink entitlement assertion: Windows symlink privilege unavailable"
+                );
+                return;
+            }
+            Err(error) => panic!("create test symlink: {error}"),
+        }
+        let mut registry = EnrollmentRegistry::default();
+        registry.sessions.insert(
+            8,
+            SessionEntitlement {
+                owner: "S-1-5-21-owner".to_string(),
+                storage_root: fs::canonicalize(&root).expect("canonical root"),
+                pids: HashMap::new(),
+            },
+        );
+        let owner = PeerIdentity {
+            process_id: 1,
+            principal: "S-1-5-21-owner".to_string(),
+        };
+        assert!(!registry
+            .allows_path(&owner, 8, &link)
+            .expect("symlink containment check"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn entitlement_rechecks_pid_membership_against_live_os_identity() {
+        let identity = process_identity(std::process::id()).expect("inspect current process");
+        let directory = tempfile::tempdir().expect("create entitlement fixture");
+        let mut registry = EnrollmentRegistry::default();
+        registry.sessions.insert(
+            9,
+            SessionEntitlement {
+                owner: identity.principal.clone(),
+                storage_root: fs::canonicalize(directory.path()).expect("canonical root"),
+                pids: HashMap::from([(identity.process_id, identity.clone())]),
+            },
+        );
+        let peer = PeerIdentity {
+            process_id: identity.process_id,
+            principal: identity.principal,
+        };
+        assert!(registry
+            .allows_pid(&peer, 9, std::process::id())
+            .expect("live PID identity check"));
     }
 }

@@ -116,9 +116,9 @@ No container operation needed.
 
 - [ ] T029 [P] [US2] Test all four helper states — `NotInstalled`, `InstalledStopped`, `Reachable`, `VersionMismatch` — are produced and reported distinctly with distinct guidance (SC-003). Skip loudly with a reason if the host cannot install a service.
 - [ ] T030 [P] [US2] Test declined elevation leaves nothing installed, **verified by inspecting for each artefact installation would have created**, not by the command reporting an error (SC-010). A partial install that reports failure is still a partial install.
-- [ ] T031 [P] [US2] Test an unauthorised local process sending a well-formed request is refused (SC-004). **Verified by making the request**, not by reviewing the design. This is the scenario that decides whether this feature shipped a helper or a local privilege-escalation primitive.
-- [ ] T032 [P] [US2] Test a captured valid request replayed is refused (SC-005). Note this asserts a property two documents claimed and no code implemented before T023.
-- [ ] T033 [P] [US2] Test entitlement refusals (SC-006): another principal's session; a path outside `storage_root` via `..`; **a path outside it via a symlink**. The symlink case is the one a naive prefix comparison passes — test it explicitly.
+- [X] T031 [P] [US2] Test an unauthorised local process sending a well-formed request is refused (SC-004). **Verified by making the request**, not by reviewing the design. This is the scenario that decides whether this feature shipped a helper or a local privilege-escalation primitive.
+- [X] T032 [P] [US2] Test a captured valid request replayed is refused (SC-005). Note this asserts a property two documents claimed and no code implemented before T023.
+- [X] T033 [P] [US2] Test entitlement refusals (SC-006): another principal's session; a path outside `storage_root` via `..`; **a path outside it via a symlink**. The symlink case is the one a naive prefix comparison passes — test it explicitly.
 
 **Checkpoint**: US1 and US2 both work. The boundary exists and is crossed by
 authenticated requests. Gates green, commit, merge.
