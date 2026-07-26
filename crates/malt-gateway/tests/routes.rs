@@ -29,7 +29,7 @@ impl MockBackend {
                 id: 1,
                 name: Some("main".to_string()),
                 pane_count: 1,
-                isolation: "Bare".to_string(),
+                isolation: malt_gateway::types::IsolationStatusResponse { effective: "bare".to_string(), requested: "bare".to_string(), basis: "none".to_string(), mechanism: None, detail: None },
                 state: "Active".to_string(),
             }],
         }
@@ -50,7 +50,7 @@ impl GatewayBackend for MockBackend {
             id: 2,
             name,
             pane_count: 1,
-            isolation: isolation.unwrap_or_else(|| "Bare".to_string()),
+            isolation: malt_gateway::types::IsolationStatusResponse { effective: isolation.clone().unwrap_or_else(|| "bare".to_string()), requested: isolation.unwrap_or_else(|| "bare".to_string()), basis: "none".to_string(), mechanism: None, detail: None },
             state: "Active".to_string(),
         })
     }
