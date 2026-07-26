@@ -21,6 +21,8 @@ pub mod elevate_channel {
     pub const HELLO_ACK: u8 = 2;
     pub const REQUEST: u8 = 3;
     pub const RESPONSE: u8 = 4;
+    pub const DAEMON_ENROLLMENT_REQUEST: u8 = 5;
+    pub const DAEMON_ENROLLMENT_RESPONSE: u8 = 6;
 }
 
 // Envelope: hand-written helpers wrapping the generated type

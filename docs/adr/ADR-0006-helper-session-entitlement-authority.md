@@ -1,7 +1,7 @@
 # ADR-0006: Establish a User-Approved, Helper-Owned Session Entitlement Authority
 
 Date: 2026-07-26
-Status: Proposed
+Status: Accepted
 
 ## Context
 

@@ -8,16 +8,20 @@ const MAX_CONCURRENT_CLIENTS: usize = 16;
 
 use malt_platform::ipc::{NamedPipeConnection, NamedPipeServer, PeerIdentity};
 use malt_platform::service::StopSignal;
-use malt_protocol::elevate_channel::{HELLO, HELLO_ACK, REQUEST, RESPONSE};
+use malt_protocol::elevate_channel::{
+    DAEMON_ENROLLMENT_REQUEST, DAEMON_ENROLLMENT_RESPONSE, HELLO, HELLO_ACK, REQUEST, RESPONSE,
+};
 use malt_protocol::framing::{Frame, FrameFlags, FrameReader, FrameWriter};
 use malt_protocol::vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
 use crate::auth::ReplayGuard;
 use crate::capability::PROTOCOL_VERSION;
 use crate::dispatch::refused;
+use crate::entitlement::EnrollmentRegistry;
 use crate::error::ElevateError;
 use crate::protocol::{
-    ElevateHello, ElevateHelloAck, ElevateRequestEnvelope, ElevateResponse, ReasonCode,
+    DaemonEnrollmentRequest, DaemonEnrollmentResponse, ElevateHello, ElevateHelloAck,
+    ElevateRequestEnvelope, ElevateResponse, ReasonCode,
 };
 
 /// Configuration for one authorised daemon connection.
@@ -33,6 +37,7 @@ pub struct ServerConfig {
 pub fn serve(config: &ServerConfig, stop: &StopSignal) -> Result<(), ElevateError> {
     let guard = Arc::new(ReplayGuard::new(config.replay_capacity)?);
     let active_clients = Arc::new(AtomicUsize::new(0));
+    let enrollments = Arc::new(std::sync::Mutex::new(EnrollmentRegistry::default()));
     loop {
         if stop.is_requested() {
             return Ok(());
@@ -47,7 +52,7 @@ pub fn serve(config: &ServerConfig, stop: &StopSignal) -> Result<(), ElevateErro
         let identity = connection
             .peer_identity()
             .map_err(ElevateError::Connection)?;
-        if let Err(error) = authorize(identity, &config.authorized_principal) {
+        if let Err(error) = authorize(&identity, &config.authorized_principal) {
             tracing::warn!(error = %error, "refused unauthorised helper pipe client");
             continue;
         }
@@ -60,13 +65,14 @@ pub fn serve(config: &ServerConfig, stop: &StopSignal) -> Result<(), ElevateErro
         }
         let guard = Arc::clone(&guard);
         let active_clients_for_thread = Arc::clone(&active_clients);
+        let enrollments = Arc::clone(&enrollments);
         if let Err(error) = std::thread::Builder::new()
             .name("malt-elevate-client".to_string())
             .spawn(move || {
                 let _slot = ClientSlot {
                     active_clients: active_clients_for_thread,
                 };
-                if let Err(error) = serve_connection(connection, &guard) {
+                if let Err(error) = serve_connection(connection, identity, &guard, &enrollments) {
                     tracing::warn!(error = %error, "helper pipe client session ended without a valid completion");
                 }
             })
@@ -97,7 +103,9 @@ impl Drop for ClientSlot {
 
 fn serve_connection(
     mut connection: NamedPipeConnection,
+    peer: PeerIdentity,
     guard: &ReplayGuard,
+    enrollments: &std::sync::Mutex<EnrollmentRegistry>,
 ) -> Result<(), ElevateError> {
     let hello = decode_hello(&read_frame(&mut connection)?)?;
     let accepted = hello.version == PROTOCOL_VERSION;
@@ -121,9 +129,34 @@ fn serve_connection(
     }
     loop {
         let frame = read_frame(&mut connection)?;
+        let Some((&tag, _)) = frame.payload.split_first() else {
+            return Err(ElevateError::Protocol("empty elevate frame".to_string()));
+        };
+        if tag == DAEMON_ENROLLMENT_REQUEST {
+            let response = enroll_daemon(&frame, &peer, enrollments)?;
+            let frame = encode_enrollment_response(&response)?;
+            FrameWriter::new(connection.file())
+                .write_frame(&frame)
+                .map_err(frame_error)?;
+            continue;
+        }
         let response = match decode_request(&frame) {
             Ok(envelope) if guard.consume(envelope.nonce) => {
-                refuse_without_entitlement_authority(envelope.request_id)
+                let enrolled = enrollments
+                    .lock()
+                    .map_err(|_| {
+                        ElevateError::AuthFailed("enrollment registry lock poisoned".to_string())
+                    })?
+                    .is_currently_enrolled(&peer)?;
+                if enrolled {
+                    refuse_without_entitlement_authority(envelope.request_id)
+                } else {
+                    refused(
+                        envelope.request_id,
+                        ReasonCode::NotEntitled,
+                        "caller is not an explicitly enrolled daemon process",
+                    )
+                }
             }
             Ok(envelope) => refused(
                 envelope.request_id,
@@ -132,11 +165,46 @@ fn serve_connection(
             ),
             Err(error) => return Err(error),
         };
-        let frame = encode_response(&response)?;
         FrameWriter::new(connection.file())
-            .write_frame(&frame)
+            .write_frame(&encode_response(&response)?)
             .map_err(frame_error)?;
     }
+}
+
+fn enroll_daemon(
+    frame: &Frame,
+    peer: &PeerIdentity,
+    enrollments: &std::sync::Mutex<EnrollmentRegistry>,
+) -> Result<DaemonEnrollmentResponse, ElevateError> {
+    let Some((&tag, body)) = frame.payload.split_first() else {
+        return Err(ElevateError::Protocol("empty elevate frame".to_string()));
+    };
+    if tag != DAEMON_ENROLLMENT_REQUEST {
+        return Err(ElevateError::Protocol(format!(
+            "unexpected enrollment message tag {tag}"
+        )));
+    }
+    let mut reader = BitReader::new(body);
+    let request = DaemonEnrollmentRequest::unpack(&mut reader)
+        .map_err(|error| ElevateError::Protocol(format!("invalid enrollment request: {error}")))?;
+    let requester =
+        malt_platform::ipc::process_identity(peer.process_id).map_err(ElevateError::Connection)?;
+    let result = enrollments
+        .lock()
+        .map_err(|_| ElevateError::AuthFailed("enrollment registry lock poisoned".to_string()))?
+        .enroll(peer, requester.elevated, request.pid);
+    Ok(match result {
+        Ok(()) => DaemonEnrollmentResponse {
+            accepted: true,
+            reason: None,
+            _unknown: Vec::new(),
+        },
+        Err(error) => DaemonEnrollmentResponse {
+            accepted: false,
+            reason: Some(error.to_string()),
+            _unknown: Vec::new(),
+        },
+    })
 }
 
 /// Refuse privileged operations until the helper can verify the envelope's
@@ -177,7 +245,7 @@ fn read_frame(connection: &mut NamedPipeConnection) -> Result<Frame, ElevateErro
     }
 }
 
-fn authorize(peer: PeerIdentity, expected_principal: &str) -> Result<(), ElevateError> {
+fn authorize(peer: &PeerIdentity, expected_principal: &str) -> Result<(), ElevateError> {
     if peer.principal == expected_principal {
         Ok(())
     } else {
@@ -240,6 +308,19 @@ fn encode_response(response: &ElevateResponse) -> Result<Frame, ElevateError> {
         .pack(&mut writer)
         .map_err(|error| ElevateError::Protocol(format!("encode elevate response: {error}")))?;
     let mut payload = vec![RESPONSE];
+    payload.extend(writer.finish());
+    Ok(Frame {
+        flags: FrameFlags::new(),
+        payload,
+    })
+}
+
+fn encode_enrollment_response(response: &DaemonEnrollmentResponse) -> Result<Frame, ElevateError> {
+    let mut writer = BitWriter::new();
+    response
+        .pack(&mut writer)
+        .map_err(|error| ElevateError::Protocol(format!("encode enrollment response: {error}")))?;
+    let mut payload = vec![DAEMON_ENROLLMENT_RESPONSE];
     payload.extend(writer.finish());
     Ok(Frame {
         flags: FrameFlags::new(),

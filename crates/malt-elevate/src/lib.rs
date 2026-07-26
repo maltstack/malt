@@ -12,6 +12,7 @@
 pub mod auth;
 pub mod capability;
 pub mod dispatch;
+pub mod entitlement;
 pub mod error;
 pub mod protocol;
 pub mod server;
