@@ -17,7 +17,7 @@ pub fn capabilities() -> ElevateCapabilities {
             unavailable("ApplySeccomp", linux_reason()),
             available("CreateSymlink"),
             unavailable("CreateRestrictedToken", windows_reason()),
-            unavailable("ManageHcsContainer", windows_reason()),
+            hcs_capability(),
             unavailable("ApplySeatbelt", macos_reason()),
             unavailable(
                 "BindPort",
@@ -81,6 +81,28 @@ fn windows_reason() -> (ReasonCode, &'static str) {
             ReasonCode::UnsupportedPlatform,
             "unsupported on this platform",
         )
+    }
+}
+
+fn hcs_capability() -> OperationCapability {
+    if !cfg!(windows) {
+        return unavailable(
+            "ManageHcsContainer",
+            (
+                ReasonCode::UnsupportedPlatform,
+                "unsupported on this platform",
+            ),
+        );
+    }
+    match malt_platform::isolation::hcs::ensure_hcs_runtime() {
+        Ok(()) => available("ManageHcsContainer"),
+        Err(error) => OperationCapability {
+            operation: "ManageHcsContainer".into(),
+            available: false,
+            reason: Some(ReasonCode::OsError),
+            detail: Some(format!("HCS runtime is unavailable: {error}")),
+            _unknown: Vec::new(),
+        },
     }
 }
 

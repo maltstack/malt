@@ -289,6 +289,25 @@ pub fn canonical_path_within(root: &Path, candidate: &Path) -> io::Result<bool> 
     Ok(candidate.starts_with(root))
 }
 
+/// Validate a not-yet-created leaf path against a canonical authority root.
+///
+/// A symlink destination normally does not exist yet, so canonicalizing the
+/// full path would reject every legitimate creation. Canonicalize its parent
+/// instead, after rejecting empty, dot, and traversal leaf names; this still
+/// resolves every existing symlink and parent traversal before the check.
+pub fn canonical_creation_path_within(root: &Path, candidate: &Path) -> io::Result<bool> {
+    let Some(name) = candidate.file_name() else {
+        return Ok(false);
+    };
+    if name == "." || name == ".." {
+        return Ok(false);
+    }
+    let Some(parent) = candidate.parent() else {
+        return Ok(false);
+    };
+    canonical_path_within(root, parent)
+}
+
 /// Resolve a filesystem path once at an authority boundary.
 pub fn canonicalize_path(path: &Path) -> io::Result<PathBuf> {
     fs::canonicalize(path)
@@ -471,6 +490,17 @@ mod tests {
 
         assert!(canonical_path_within(&root, &root.join("inside.txt")).unwrap());
         assert!(!canonical_path_within(&root, &root.join("..").join("outside.txt")).unwrap());
+    }
+
+    #[test]
+    fn canonical_creation_path_within_accepts_new_leaf_and_refuses_escape() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("root");
+        fs::create_dir(&root).unwrap();
+
+        assert!(canonical_creation_path_within(&root, &root.join("new-link")).unwrap());
+        assert!(!canonical_creation_path_within(&root, &parent.path().join("new-link")).unwrap());
+        assert!(!canonical_creation_path_within(&root, &root.join("..")).unwrap());
     }
 
     #[test]

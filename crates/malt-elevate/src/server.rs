@@ -17,7 +17,7 @@ use malt_protocol::vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
 use crate::auth::{ReplayDecision, ReplayGuard};
 use crate::capability::PROTOCOL_VERSION;
-use crate::dispatch::refused;
+use crate::dispatch::{dispatch_entitled_request, refused, HcsContainerRegistry};
 use crate::entitlement::EnrollmentRegistry;
 use crate::error::ElevateError;
 use crate::protocol::{
@@ -40,6 +40,7 @@ pub fn serve(config: &ServerConfig, stop: &StopSignal) -> Result<(), ElevateErro
     let guard = Arc::new(ReplayGuard::new(config.replay_capacity)?);
     let active_clients = Arc::new(AtomicUsize::new(0));
     let enrollments = Arc::new(std::sync::Mutex::new(EnrollmentRegistry::default()));
+    let containers = Arc::new(std::sync::Mutex::new(HcsContainerRegistry::default()));
     loop {
         if stop.is_requested() {
             return Ok(());
@@ -68,13 +69,16 @@ pub fn serve(config: &ServerConfig, stop: &StopSignal) -> Result<(), ElevateErro
         let guard = Arc::clone(&guard);
         let active_clients_for_thread = Arc::clone(&active_clients);
         let enrollments = Arc::clone(&enrollments);
+        let containers = Arc::clone(&containers);
         if let Err(error) = std::thread::Builder::new()
             .name("malt-elevate-client".to_string())
             .spawn(move || {
                 let _slot = ClientSlot {
                     active_clients: active_clients_for_thread,
                 };
-                if let Err(error) = serve_connection(connection, identity, &guard, &enrollments) {
+                if let Err(error) =
+                    serve_connection(connection, identity, &guard, &enrollments, &containers)
+                {
                     tracing::warn!(error = %error, "helper pipe client session ended without a valid completion");
                 }
             })
@@ -108,6 +112,7 @@ fn serve_connection(
     peer: PeerIdentity,
     guard: &ReplayGuard,
     enrollments: &std::sync::Mutex<EnrollmentRegistry>,
+    containers: &std::sync::Mutex<HcsContainerRegistry>,
 ) -> Result<(), ElevateError> {
     let hello = decode_hello(&read_frame(&mut connection)?)?;
     let accepted = hello.version == PROTOCOL_VERSION;
@@ -152,19 +157,34 @@ fn serve_connection(
         let envelope = decode_request(&frame)?;
         let response = match guard.consume(envelope.nonce) {
             ReplayDecision::Accepted => {
-                let enrolled = enrollments
-                    .lock()
-                    .map_err(|_| {
-                        ElevateError::AuthFailed("enrollment registry lock poisoned".to_string())
-                    })?
-                    .is_currently_enrolled(&peer)?;
-                if enrolled {
-                    refuse_without_entitlement_authority(envelope.request_id)
-                } else {
+                let mut registry = enrollments.lock().map_err(|_| {
+                    ElevateError::AuthFailed("enrollment registry lock poisoned".to_string())
+                })?;
+                if !registry.is_currently_enrolled(&peer)? {
                     refused(
                         envelope.request_id,
                         ReasonCode::NotEntitled,
                         "caller is not an explicitly enrolled daemon process",
+                    )
+                } else if let Some(storage_root) =
+                    registry.storage_root_for_session(&peer, envelope.session_id.0)
+                {
+                    drop(registry);
+                    let mut containers = containers.lock().map_err(|_| {
+                        ElevateError::AuthFailed("HCS container registry lock poisoned".to_string())
+                    })?;
+                    dispatch_entitled_request(
+                        envelope.request_id,
+                        envelope.session_id.0,
+                        &storage_root,
+                        &envelope.request,
+                        &mut containers,
+                    )
+                } else {
+                    refused(
+                        envelope.request_id,
+                        ReasonCode::NotEntitled,
+                        "the helper has no session entitlement for this authenticated daemon",
                     )
                 }
             }
@@ -259,26 +279,6 @@ fn register_session(
             _unknown: Vec::new(),
         },
     })
-}
-
-/// Refuse privileged operations until the helper can verify the envelope's
-/// session, process, and path claims from helper-owned authority.
-///
-/// A named-pipe SID only identifies the Windows user.  It does not establish
-/// that the connecting process is MALT's daemon, nor does it entitle that
-/// process to act on an arbitrary session.  Dispatching an operation before
-/// those claims are independently verified would turn the elevated service
-/// into a same-user privilege-escalation primitive.
-fn refuse_without_entitlement_authority(request_id: u32) -> ElevateResponse {
-    tracing::warn!(
-        request_id,
-        "refused privileged operation without helper-side entitlement authority"
-    );
-    refused(
-        request_id,
-        ReasonCode::NotEntitled,
-        "the helper has no independent authority for this session, process, or path; refusing operation",
-    )
 }
 
 fn read_frame(connection: &mut NamedPipeConnection) -> Result<Frame, ElevateError> {
@@ -413,17 +413,6 @@ impl From<io::Error> for ElevateError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::OutcomeKind;
-
-    #[test]
-    fn operations_are_refused_without_helper_side_entitlement_authority() {
-        let response = refuse_without_entitlement_authority(41);
-
-        assert_eq!(response.request_id, 41);
-        assert_eq!(response.kind, OutcomeKind::Refused);
-        assert_eq!(response.reason, Some(ReasonCode::NotEntitled));
-        assert!(response.payload.is_none());
-    }
 
     #[test]
     fn concurrent_client_limit_is_bounded() {

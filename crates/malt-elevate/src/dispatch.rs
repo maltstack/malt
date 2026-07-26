@@ -3,9 +3,12 @@
 //! An outcome is only `Performed` after its handler completes the requested
 //! effect. Everything else is an explicit refusal or an indeterminate result.
 
+use std::collections::HashMap;
 use std::path::Path;
 
-use crate::protocol::{ElevateRequest, ElevateResponse, OutcomeKind, ReasonCode};
+use crate::protocol::{
+    ContainerOperation, ElevateRequest, ElevateResponse, OutcomeKind, ReasonCode,
+};
 
 /// Dispatch a request to the operation handler.
 pub fn dispatch_request(request_id: u32, request: &ElevateRequest) -> ElevateResponse {
@@ -26,18 +29,30 @@ pub fn dispatch_request(request_id: u32, request: &ElevateRequest) -> ElevateRes
             unsupported_or_unimplemented(request_id, "ApplySeccomp", cfg!(target_os = "linux"))
         }
         ElevateRequest::CreateSymlink { target, link } => {
-            dispatch_create_symlink(request_id, target, link)
+            dispatch_create_symlink(request_id, Path::new(target), Path::new(link))
         }
         ElevateRequest::CreateRestrictedToken { .. } => unsupported_or_unimplemented(
             request_id,
             "CreateRestrictedToken",
             cfg!(target_os = "windows"),
         ),
-        ElevateRequest::ManageHcsContainer { .. } => unsupported_or_unimplemented(
-            request_id,
-            "ManageHcsContainer",
-            cfg!(target_os = "windows"),
-        ),
+        ElevateRequest::ManageHcsContainer { .. } => {
+            if !cfg!(windows) {
+                unsupported_or_unimplemented(request_id, "ManageHcsContainer", false)
+            } else if let Err(error) = malt_platform::isolation::hcs::ensure_hcs_runtime() {
+                refused(
+                    request_id,
+                    ReasonCode::OsError,
+                    format!("ManageHcsContainer is unavailable on this host: {error}"),
+                )
+            } else {
+                refused(
+                    request_id,
+                    ReasonCode::NotEntitled,
+                    "ManageHcsContainer requires helper-owned session entitlement authority",
+                )
+            }
+        }
         ElevateRequest::ApplySeatbelt { .. } => {
             unsupported_or_unimplemented(request_id, "ApplySeatbelt", cfg!(target_os = "macos"))
         }
@@ -57,6 +72,58 @@ pub fn dispatch_request(request_id: u32, request: &ElevateRequest) -> ElevateRes
             "unrecognized elevate operation cannot be validated",
         ),
     }
+}
+
+/// Dispatch an operation after the server has resolved the request's session
+/// to helper-owned authority. This deliberately has no arbitrary config or
+/// path argument: the only filesystem location HCS receives comes from the
+/// entitlement record the service already verified.
+pub fn dispatch_entitled_request(
+    request_id: u32,
+    session_id: u32,
+    storage_root: &Path,
+    request: &ElevateRequest,
+    containers: &mut HcsContainerRegistry,
+) -> ElevateResponse {
+    match request {
+        ElevateRequest::ManageHcsContainer { operation } => {
+            dispatch_hcs_container(request_id, session_id, storage_root, operation, containers)
+        }
+        ElevateRequest::CreateSymlink { target, link } => {
+            let target = Path::new(target);
+            let link = Path::new(link);
+            match (
+                malt_platform::fs::canonical_path_within(storage_root, target),
+                malt_platform::fs::canonical_creation_path_within(storage_root, link),
+            ) {
+                (Ok(true), Ok(true)) => dispatch_create_symlink(request_id, target, link),
+                (Ok(_), Ok(_)) => refused(
+                    request_id,
+                    ReasonCode::NotEntitled,
+                    "CreateSymlink target and link must remain within the session storage root",
+                ),
+                (Err(error), _) | (_, Err(error)) => refused(
+                    request_id,
+                    ReasonCode::InvalidParameters,
+                    format!("CreateSymlink path validation failed: {error}"),
+                ),
+            }
+        }
+        _ => dispatch_request(request_id, request),
+    }
+}
+
+/// Helper-owned compute-system handles. The daemon sees only a generated id
+/// and can use it only through its own session entitlement.
+#[derive(Debug, Default)]
+pub struct HcsContainerRegistry {
+    containers: HashMap<String, ManagedContainer>,
+}
+
+#[derive(Debug)]
+struct ManagedContainer {
+    session_id: u32,
+    system: malt_platform::isolation::hcs::HcsComputeSystem,
 }
 
 /// Construct a refusal for an operation the current host cannot perform.
@@ -91,9 +158,13 @@ pub fn refused(request_id: u32, reason: ReasonCode, detail: impl Into<String>) -
     }
 }
 
-fn dispatch_create_symlink(request_id: u32, target: &str, link: &str) -> ElevateResponse {
-    tracing::info!(target, link, "creating symlink through malt-platform");
-    match malt_platform::fs::create_symlink(Path::new(target), Path::new(link)) {
+fn dispatch_create_symlink(request_id: u32, target: &Path, link: &Path) -> ElevateResponse {
+    tracing::info!(
+        target = %target.display(),
+        link = %link.display(),
+        "creating symlink through malt-platform"
+    );
+    match malt_platform::fs::create_symlink(target, link) {
         Ok(()) => ElevateResponse {
             request_id,
             kind: OutcomeKind::Performed,
@@ -110,11 +181,225 @@ fn dispatch_create_symlink(request_id: u32, target: &str, link: &str) -> Elevate
     }
 }
 
+fn dispatch_hcs_container(
+    request_id: u32,
+    session_id: u32,
+    storage_root: &Path,
+    operation: &ContainerOperation,
+    containers: &mut HcsContainerRegistry,
+) -> ElevateResponse {
+    if !cfg!(windows) {
+        return unsupported_or_unimplemented(request_id, "ManageHcsContainer", false);
+    }
+    if let Err(error) = malt_platform::isolation::hcs::ensure_hcs_runtime() {
+        return refused(
+            request_id,
+            ReasonCode::OsError,
+            format!("ManageHcsContainer is unavailable on this host: {error}"),
+        );
+    }
+    match operation {
+        ContainerOperation::Create {
+            memory_limit_mb,
+            hostname,
+        } => create_hcs_container(
+            request_id,
+            session_id,
+            storage_root,
+            *memory_limit_mb,
+            hostname.as_deref(),
+            containers,
+        ),
+        ContainerOperation::Start { id } => {
+            if containers
+                .containers
+                .get(id)
+                .is_some_and(|container| container.session_id == session_id)
+            {
+                refused(
+                    request_id,
+                    ReasonCode::InvalidParameters,
+                    "ManageHcsContainer Start is invalid because helper-created compute systems are already started",
+                )
+            } else {
+                refused(
+                    request_id,
+                    ReasonCode::NotEntitled,
+                    "compute-system id is not owned by this session",
+                )
+            }
+        }
+        ContainerOperation::Terminate { id } => {
+            terminate_hcs_container(request_id, session_id, id, containers)
+        }
+        _ => refused(
+            request_id,
+            ReasonCode::InvalidParameters,
+            "unknown container operation cannot be validated",
+        ),
+    }
+}
+
+fn create_hcs_container(
+    request_id: u32,
+    session_id: u32,
+    storage_root: &Path,
+    memory_limit_mb: Option<u32>,
+    hostname: Option<&str>,
+    containers: &mut HcsContainerRegistry,
+) -> ElevateResponse {
+    let hostname =
+        match hostname {
+            Some(value) if is_valid_hostname(value) => value,
+            Some(_) => return refused(
+                request_id,
+                ReasonCode::InvalidParameters,
+                "ManageHcsContainer hostname may contain only ASCII letters, digits, and hyphens",
+            ),
+            None => "malt",
+        };
+    let root = match storage_root.to_str() {
+        Some(root) => root,
+        None => {
+            return refused(
+                request_id,
+                ReasonCode::InvalidParameters,
+                "session storage root is not valid UTF-8",
+            )
+        }
+    };
+    let id = format!("malt-session-{session_id}-{request_id}");
+    if containers.containers.contains_key(&id) {
+        return refused(
+            request_id,
+            ReasonCode::InvalidParameters,
+            "compute-system id is already registered for this helper lifetime",
+        );
+    }
+    let config = hcs_config(&id, hostname, root, memory_limit_mb);
+    let config = malt_platform::isolation::hcs::HcsConfig {
+        id: id.clone(),
+        config_json: config,
+    };
+    match malt_platform::isolation::hcs::create_compute_system(&config) {
+        Ok(system) => {
+            containers
+                .containers
+                .insert(id.clone(), ManagedContainer { session_id, system });
+            ElevateResponse {
+                request_id,
+                kind: OutcomeKind::Performed,
+                reason: None,
+                detail: Some(format!(
+                    "ManageHcsContainer created and started helper-owned compute system {id}"
+                )),
+                payload: Some(id.into_bytes()),
+                _unknown: Vec::new(),
+            }
+        }
+        Err(error) => refused(
+            request_id,
+            ReasonCode::OsError,
+            format!("ManageHcsContainer failed: {error}"),
+        ),
+    }
+}
+
+fn terminate_hcs_container(
+    request_id: u32,
+    session_id: u32,
+    id: &str,
+    containers: &mut HcsContainerRegistry,
+) -> ElevateResponse {
+    let Some(container) = containers.containers.get(id) else {
+        return refused(
+            request_id,
+            ReasonCode::NotEntitled,
+            "compute-system id is not owned by this session",
+        );
+    };
+    if container.session_id != session_id {
+        return refused(
+            request_id,
+            ReasonCode::NotEntitled,
+            "compute-system id is not owned by this session",
+        );
+    }
+    let Some(container) = containers.containers.remove(id) else {
+        return refused(
+            request_id,
+            ReasonCode::OsError,
+            "helper lost the managed compute-system record before teardown",
+        );
+    };
+    match malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle()) {
+        Ok(()) => ElevateResponse {
+            request_id,
+            kind: OutcomeKind::Performed,
+            reason: None,
+            detail: Some(format!("ManageHcsContainer terminated compute system {id}")),
+            payload: Some(id.as_bytes().to_vec()),
+            _unknown: Vec::new(),
+        },
+        Err(error) => refused(
+            request_id,
+            ReasonCode::OsError,
+            format!("ManageHcsContainer teardown failed: {error}"),
+        ),
+    }
+}
+
+fn is_valid_hostname(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 63
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn hcs_config(
+    id: &str,
+    hostname: &str,
+    storage_root: &str,
+    memory_limit_mb: Option<u32>,
+) -> String {
+    let storage_root = json_escape(storage_root);
+    let memory = memory_limit_mb
+        .map(|limit| format!(r#","Memory":{{"SizeInMB":{limit}}}"#))
+        .unwrap_or_default();
+    format!(
+        r#"{{"SchemaVersion":{{"Major":2,"Minor":1}},"Owner":"malt-session-{id}","ShouldTerminateOnLastHandleClosed":true,"Container":{{"Storage":{{"Path":"{storage_root}","Layers":[]}},"GuestOs":{{"HostName":"{hostname}"}}{memory}}}}}"#
+    )
+}
+
+fn json_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str(r#"\""#),
+            '\\' => escaped.push_str(r#"\\"#),
+            '\u{08}' => escaped.push_str(r#"\b"#),
+            '\u{0C}' => escaped.push_str(r#"\f"#),
+            '\n' => escaped.push_str(r#"\n"#),
+            '\r' => escaped.push_str(r#"\r"#),
+            '\t' => escaped.push_str(r#"\t"#),
+            character if character.is_control() => {
+                use std::fmt::Write;
+                let _ = write!(escaped, r#"\u{:04x}"#, character as u32);
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use malt_protocol::common::IsolationTier;
     use malt_protocol::elevate::ContainerOperation;
+    #[cfg(windows)]
+    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn unimplemented_operations_are_refused_not_reported_as_success() {
@@ -179,5 +464,97 @@ mod tests {
             socket_path: "/s".into(),
         };
         assert_eq!(dispatch_request(42, &request).request_id, 42);
+    }
+
+    #[test]
+    fn hcs_configuration_comes_only_from_typed_fields_and_entitled_root() {
+        let json = hcs_config("malt-session-7-8", "malt", r"C:\session-root", Some(512));
+        assert!(json.contains(r#""Owner":"malt-session-malt-session-7-8""#));
+        assert!(json.contains(r#""Path":"C:\\session-root""#));
+        assert!(json.contains(r#""SizeInMB":512"#));
+        assert!(!json.contains("config_json"));
+    }
+
+    #[test]
+    fn hcs_rejects_hostnames_that_cannot_be_safely_rendered() {
+        assert!(is_valid_hostname("malt-session-1"));
+        assert!(!is_valid_hostname("malt\"injected"));
+        assert!(!is_valid_hostname(""));
+    }
+
+    #[test]
+    fn hcs_json_escapes_entitled_windows_paths() {
+        assert_eq!(json_escape(r#"C:\malt\"session"#), r#"C:\\malt\\\"session"#);
+    }
+
+    #[test]
+    fn entitled_symlink_refuses_path_outside_session_root() {
+        let parent = tempfile::tempdir().expect("create test parent");
+        let root = parent.path().join("root");
+        std::fs::create_dir(&root).expect("create session root");
+        let target = root.join("target");
+        std::fs::write(&target, "target").expect("create target");
+        let request = ElevateRequest::CreateSymlink {
+            target: target.to_string_lossy().into_owned(),
+            link: parent
+                .path()
+                .join("outside-link")
+                .to_string_lossy()
+                .into_owned(),
+        };
+        let response =
+            dispatch_entitled_request(44, 7, &root, &request, &mut HcsContainerRegistry::default());
+        assert_eq!(response.kind, OutcomeKind::Refused);
+        assert_eq!(response.reason, Some(ReasonCode::NotEntitled));
+    }
+
+    #[cfg(windows)]
+    fn hcs_environment_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn helper_owned_hcs_container_lifecycle_is_observable_and_tears_down() {
+        let _guard = hcs_environment_lock();
+        // SAFETY: process-local environment mutation is serialized by the
+        // helper test mutex.
+        unsafe {
+            std::env::set_var("MALT_HCS_FAKE", "1");
+        }
+        let root = tempfile::tempdir().expect("create entitled storage root");
+        let create = ElevateRequest::ManageHcsContainer {
+            operation: ContainerOperation::Create {
+                memory_limit_mb: Some(256),
+                hostname: Some("malt-test".to_string()),
+            },
+        };
+        let mut containers = HcsContainerRegistry::default();
+        let created = dispatch_entitled_request(31, 7, root.path(), &create, &mut containers);
+        assert_eq!(created.kind, OutcomeKind::Performed, "{created:?}");
+        let id = String::from_utf8(created.payload.expect("container id payload"))
+            .expect("container id is UTF-8");
+        assert!(
+            malt_platform::isolation::hcs::open_compute_system(&id).is_ok(),
+            "performed creation must leave a helper-owned compute system"
+        );
+
+        let terminate = ElevateRequest::ManageHcsContainer {
+            operation: ContainerOperation::Terminate { id: id.clone() },
+        };
+        let terminated = dispatch_entitled_request(32, 7, root.path(), &terminate, &mut containers);
+        assert_eq!(terminated.kind, OutcomeKind::Performed);
+        assert!(
+            malt_platform::isolation::hcs::open_compute_system(&id).is_err(),
+            "performed teardown must leave no compute system behind"
+        );
+
+        // SAFETY: paired with the serialized test-only mutation above.
+        unsafe {
+            std::env::remove_var("MALT_HCS_FAKE");
+        }
     }
 }

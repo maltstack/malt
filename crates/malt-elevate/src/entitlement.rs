@@ -136,6 +136,18 @@ impl EnrollmentRegistry {
             .map_err(ElevateError::Connection)
     }
 
+    /// Return the canonical storage root only for the authenticated owner's
+    /// registered session. The caller never provides an HCS configuration or
+    /// a substitute root: the helper derives both from this record.
+    pub fn storage_root_for_session(
+        &self,
+        peer: &PeerIdentity,
+        session_id: u32,
+    ) -> Option<PathBuf> {
+        let session = self.sessions.get(&session_id)?;
+        (session.owner == peer.principal).then(|| session.storage_root.clone())
+    }
+
     /// Validate an observed PID against the session record and reject PID reuse.
     pub fn allows_pid(
         &mut self,
