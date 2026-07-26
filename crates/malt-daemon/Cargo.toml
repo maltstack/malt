@@ -8,7 +8,7 @@ description = "Daemon core for MALT — message bus, session-sharded executor, c
 
 [dependencies]
 malt-protocol = { path = "../malt-protocol" }
-malt-platform = { path = "../malt-platform", features = ["tokio"] }
+malt-platform = { path = "../malt-platform", features = ["tokio", "hcs"] }
 malt-renderer = { path = "../malt-renderer" }
 malt-session = { path = "../malt-session" }
 malt-layout = { path = "../malt-layout" }

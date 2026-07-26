@@ -281,8 +281,36 @@ pub fn register_session_entitlement(
     }
 }
 
+/// Ask the helper to create and start the HCS compute system for one entitled
+/// session. Only a Performed outcome means a container now exists; callers
+/// must leave their isolation carrier unchanged for every other outcome.
 #[cfg(windows)]
-fn enrollment_nonce(_subject: u32) -> u64 {
+pub fn manage_hcs_container(
+    session_id: malt_protocol::common::SessionId,
+    memory_limit_mb: Option<u32>,
+    hostname: Option<String>,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    use malt_protocol::elevate::{ContainerOperation, ElevateRequest, ElevateRequestEnvelope};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static NEXT_REQUEST_ID: AtomicU32 = AtomicU32::new(1);
+    let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    send_request(ElevateRequestEnvelope {
+        request_id,
+        request: ElevateRequest::ManageHcsContainer {
+            operation: ContainerOperation::Create {
+                memory_limit_mb,
+                hostname,
+            },
+        },
+        session_id,
+        nonce: request_nonce(),
+        _unknown: Vec::new(),
+    })
+}
+
+#[cfg(windows)]
+fn request_nonce() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     static NEXT_NONCE: AtomicU64 = AtomicU64::new(1);
@@ -291,6 +319,11 @@ fn enrollment_nonce(_subject: u32) -> u64 {
         .map(|value| value.as_secs())
         .unwrap_or(0);
     (issued_at << 32) | (NEXT_NONCE.fetch_add(1, Ordering::Relaxed) & u64::from(u32::MAX))
+}
+
+#[cfg(windows)]
+fn enrollment_nonce(_subject: u32) -> u64 {
+    request_nonce()
 }
 
 #[cfg(all(test, windows))]
@@ -570,6 +603,46 @@ pub fn send_request(
         payload: None,
         _unknown: Vec::new(),
     })
+}
+
+#[cfg(not(windows))]
+pub fn manage_hcs_container(
+    session_id: malt_protocol::common::SessionId,
+    _memory_limit_mb: Option<u32>,
+    _hostname: Option<String>,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    send_request(malt_protocol::elevate::ElevateRequestEnvelope {
+        request_id: 0,
+        request: malt_protocol::elevate::ElevateRequest::ManageHcsContainer {
+            operation: malt_protocol::elevate::ContainerOperation::Create {
+                memory_limit_mb: None,
+                hostname: None,
+            },
+        },
+        session_id,
+        nonce: 0,
+        _unknown: Vec::new(),
+    })
+}
+
+#[cfg(not(windows))]
+pub fn register_session_entitlement(
+    _session_id: malt_protocol::common::SessionId,
+    _storage_root: &Path,
+    _pids: &[u32],
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the privileged helper service is only available on Windows",
+    ))
+}
+
+#[cfg(not(windows))]
+pub fn enroll_daemon(_pid: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the privileged helper service is only available on Windows",
+    ))
 }
 
 #[cfg(not(windows))]
