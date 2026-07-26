@@ -139,6 +139,28 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 ## Phase 7: Polish & Cross-Cutting Concerns
 
 - [X] T036 Restore reruns session establishment and replaces the stored status from its result. `capped_session_reestablishes_verified_isolation_after_restart` persists, restarts, attaches, and verifies the newly inspected status.
+> **Reopened 2026-07-26 — `Contained` is still satisfiable by a weaker
+> mechanism (FR-009).** Surfaced by printing the capability probe on this
+> host, which had never been visible:
+>
+> ```
+> windows_hcs   Unsupported / None (MissingKernelFeature) — HCS runtime unavailable
+> tiers: restricted=true capped=true contained=true
+> ```
+>
+> `supports_contained()` (`probe.rs:121`) returns true via
+> `windows_job_objects && windows_restricted_tokens` — the same Job Object
+> that provides `Capped`, reported under the stronger name, with HCS
+> explicitly unsupported. FR-009: a level must be provided by the mechanism
+> it denotes, or refused. Research R4 flagged this as an open sub-question
+> for the design and it was not settled.
+>
+> This is T024/T025 work, not a new task: decide whether `Contained` means
+> HCS only, or admits a *named, reported* alternative — and if the latter,
+> the session must report which mechanism it got (FR-005), never a silent
+> substitution. Whichever is chosen, `supports_contained()` must stop
+> returning true on Job Objects alone.
+
 - [ ] T037 Surface containment lost after creation (FR-017) in `crates/malt-daemon/src/executor/session_thread.rs`, updating the stored status rather than leaving a session reporting a level it no longer has. Note the detection point is unspecified by the spec -- decide whether it is checked on query, on command execution, or not at all this cycle, and record which.
 - [X] T038 Closed `specs/001-cli-isolation-flag/spec.md` with the existing required-refusal, visible-preferred-downgrade, and verified-capped-status test evidence.
 - [X] T039 [P] Closed audit A-02 in `docs/BACKLOG.md` with named evidence and restated the still-unavailable AppContainer, HCS, Linux, and macOS spawn backends.

@@ -216,3 +216,89 @@ fn hcs_capability_is_never_reported_as_verified_on_dll_presence_alone() {
         );
     }
 }
+
+/// Print this host's full capability probe. Runs on **every** platform.
+///
+/// Added after the CI `isolation-capabilities` job was reported as passing on
+/// Linux and macOS when it had in fact run a single negative test — every
+/// other test in this file is `#[cfg(windows)]`, so the job was green on
+/// hosts where isolation is entirely unwired. A green tick that would stay
+/// green if the feature were absent is the exact failure this repo keeps
+/// producing.
+///
+/// This asserts nothing about facets it cannot reason about; its job is to
+/// make the answer visible in the CI log, which is what was claimed and not
+/// delivered. The assertions that *can* hold everywhere are in the test
+/// below.
+#[test]
+fn print_this_hosts_isolation_capabilities() {
+    use malt_platform::isolation::IsolationCapabilities;
+
+    let caps = IsolationCapabilities::probe();
+    println!("--- isolation capabilities on {} ---", std::env::consts::OS);
+    for (name, report) in [
+        ("linux_namespaces", &caps.linux_namespaces),
+        ("linux_cgroups", &caps.linux_cgroups),
+        ("linux_overlayfs", &caps.linux_overlayfs),
+        ("linux_seccomp", &caps.linux_seccomp),
+        ("windows_job_objects", &caps.windows_job_objects),
+        ("windows_restricted_tokens", &caps.windows_restricted_tokens),
+        ("windows_hcs", &caps.windows_hcs),
+        ("macos_sandbox", &caps.macos_sandbox),
+        ("macos_rlimit", &caps.macos_rlimit),
+    ] {
+        println!(
+            "  {name:<26} {:?} / {:?} ({:?}){}",
+            report.status,
+            report.basis,
+            report.reason_code,
+            report
+                .reason_detail
+                .as_deref()
+                .map(|d| format!(" — {d}"))
+                .unwrap_or_default()
+        );
+    }
+    println!(
+        "  tiers: restricted={} capped={} contained={}",
+        caps.supports_restricted(),
+        caps.supports_capped(),
+        caps.supports_contained()
+    );
+}
+
+/// The two things the probe says about a tier must agree, on every platform.
+///
+/// `supports_<tier>()` answers "is this available here" and
+/// `unsupported_detail_for_tier()` answers "why not". A tier reported as
+/// available while also carrying an unsupported reason is two surfaces
+/// disagreeing about one fact — FR-007 — and it is a property that holds
+/// regardless of which mechanisms a host actually has, so it is checkable on
+/// Linux and macOS today rather than after those paths are wired.
+#[test]
+fn tier_availability_and_unsupported_detail_never_disagree() {
+    use malt_platform::isolation::{IsolationCapabilities, IsolationTier};
+
+    let caps = IsolationCapabilities::probe();
+    for tier in [
+        IsolationTier::Bare,
+        IsolationTier::Restricted,
+        IsolationTier::Capped,
+        IsolationTier::Contained,
+    ] {
+        let available = match tier {
+            IsolationTier::Bare => true,
+            IsolationTier::Restricted => caps.supports_restricted(),
+            IsolationTier::Capped => caps.supports_capped(),
+            IsolationTier::Contained => caps.supports_contained(),
+        };
+        let detail = caps.unsupported_detail_for_tier(tier);
+        assert_eq!(
+            available,
+            detail.is_none(),
+            "on {}: {tier:?} reports available={available} but unsupported_detail={detail:?}; \
+             the two surfaces must not disagree about the same tier",
+            std::env::consts::OS
+        );
+    }
+}
