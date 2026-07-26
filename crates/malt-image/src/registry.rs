@@ -46,6 +46,18 @@ impl RegistryClient {
         read_success(response)
     }
 
+    /// Fetch a manifest selected by an index and verify it against that
+    /// index's descriptor before the caller parses or publishes it.
+    pub fn fetch_manifest_descriptor(&self, reference: &ImageReference, descriptor: &Descriptor) -> Result<Vec<u8>, RegistryError> {
+        let response = self.get_with_bearer(&reference.manifest_url(), Some(ACCEPT_MANIFESTS))?;
+        let bytes = read_success(response)?;
+        if bytes.len() as u64 != descriptor.size {
+            return Err(RegistryError::ContentLength { expected: descriptor.size, actual: bytes.len() as u64 });
+        }
+        crate::verify_reader(&mut &bytes[..], &descriptor.digest, descriptor.size)?;
+        Ok(bytes)
+    }
+
     /// Download a descriptor to a caller-supplied writer while checking both
     /// declared size and SHA-256. Callers publish the output only after this
     /// returns success.

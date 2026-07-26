@@ -9,6 +9,7 @@ mod archive;
 mod digest;
 mod manifest;
 mod model;
+mod provision;
 mod registry;
 mod store;
 
@@ -16,5 +17,6 @@ pub use archive::{extract_gzip_layer, ArchiveError};
 pub use digest::{verify_reader, Digest, DigestError};
 pub use manifest::{parse_image_manifest, select_windows_amd64, ManifestError};
 pub use model::{Descriptor, ImageManifest, ImageReference, Platform};
+pub use provision::{acquire_public_windows_image, ProvisionError};
 pub use registry::{RegistryClient, RegistryError};
 pub use store::{ImageRecord, ImageStore, StoreError};
