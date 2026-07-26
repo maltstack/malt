@@ -23,9 +23,9 @@ pub mod seccomp;
 #[cfg(target_os = "windows")]
 pub mod hcs;
 #[cfg(target_os = "windows")]
-pub mod layers;
-#[cfg(target_os = "windows")]
 pub mod job_objects;
+#[cfg(target_os = "windows")]
+pub mod layers;
 #[cfg(target_os = "windows")]
 pub mod tokens;
 

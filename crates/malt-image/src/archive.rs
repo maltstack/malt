@@ -24,7 +24,9 @@ pub enum ArchiveError {
 /// escaping the destination are refused rather than interpreted.
 pub fn extract_gzip_layer(input: impl Read, destination: &Path) -> Result<(), ArchiveError> {
     if destination.exists() {
-        return Err(ArchiveError::UnsafePath("destination already exists".to_string()));
+        return Err(ArchiveError::UnsafePath(
+            "destination already exists".to_string(),
+        ));
     }
     fs::create_dir_all(destination)?;
     let result = extract_archive(GzDecoder::new(input), destination);
@@ -51,9 +53,13 @@ fn extract_archive(reader: impl Read, destination: &Path) -> Result<(), ArchiveE
             continue;
         }
         if !entry_type.is_file() {
-            return Err(ArchiveError::UnsupportedEntry(relative.display().to_string()));
+            return Err(ArchiveError::UnsupportedEntry(
+                relative.display().to_string(),
+            ));
         }
-        let parent = output.parent().ok_or_else(|| ArchiveError::UnsafePath(relative.display().to_string()))?;
+        let parent = output
+            .parent()
+            .ok_or_else(|| ArchiveError::UnsafePath(relative.display().to_string()))?;
         fs::create_dir_all(parent)?;
         let mut file = File::options().create_new(true).write(true).open(output)?;
         std::io::copy(&mut entry, &mut file)?;
@@ -70,19 +76,23 @@ fn safe_relative_path(path: &Path) -> Result<PathBuf, ArchiveError> {
         match component {
             Component::Normal(value) => clean.push(value),
             Component::CurDir => {}
-            Component::Prefix(_) | Component::RootDir | Component::ParentDir => return Err(ArchiveError::UnsafePath(path.display().to_string())),
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                return Err(ArchiveError::UnsafePath(path.display().to_string()))
+            }
         }
     }
-    if clean.as_os_str().is_empty() { return Err(ArchiveError::UnsafePath(path.display().to_string())); }
+    if clean.as_os_str().is_empty() {
+        return Err(ArchiveError::UnsafePath(path.display().to_string()));
+    }
     Ok(clean)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use tar::{Builder, Header};
-    use super::*;
 
     fn gzip_with_entry(name: &str, bytes: &[u8]) -> Vec<u8> {
         let mut compressed = GzEncoder::new(Vec::new(), Compression::default());
@@ -102,8 +112,14 @@ mod tests {
     #[test]
     fn extract_rejects_path_traversal() {
         let root = tempfile::tempdir().expect("temp");
-        assert!(matches!(safe_relative_path(Path::new("../outside")), Err(ArchiveError::UnsafePath(_))));
-        assert!(matches!(safe_relative_path(&root.path().join("absolute")), Err(ArchiveError::UnsafePath(_))));
+        assert!(matches!(
+            safe_relative_path(Path::new("../outside")),
+            Err(ArchiveError::UnsafePath(_))
+        ));
+        assert!(matches!(
+            safe_relative_path(&root.path().join("absolute")),
+            Err(ArchiveError::UnsafePath(_))
+        ));
     }
 
     #[test]
@@ -112,6 +128,9 @@ mod tests {
         let bytes = gzip_with_entry("Files/test.txt", b"ok");
         let target = root.path().join("layer");
         extract_gzip_layer(&bytes[..], &target).expect("extract");
-        assert_eq!(fs::read(target.join("Files/test.txt")).expect("read"), b"ok");
+        assert_eq!(
+            fs::read(target.join("Files/test.txt")).expect("read"),
+            b"ok"
+        );
     }
 }

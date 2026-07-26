@@ -14,8 +14,14 @@ pub fn build_router(backend: Arc<dyn GatewayBackend>) -> Router {
             get(routes::sessions::isolation_capabilities),
         )
         .route("/health", get(routes::health::health))
-        .route("/images", get(routes::images::list).post(routes::images::provision))
-        .route("/images/{id}", get(routes::images::inspect).delete(routes::images::remove))
+        .route(
+            "/images",
+            get(routes::images::list).post(routes::images::provision),
+        )
+        .route(
+            "/images/{id}",
+            get(routes::images::inspect).delete(routes::images::remove),
+        )
         .route("/sessions", get(routes::sessions::list))
         .route("/sessions", post(routes::sessions::create))
         .route("/sessions/{id}", get(routes::sessions::get))

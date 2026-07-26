@@ -16,62 +16,95 @@ impl ImageReference {
     pub fn parse(value: &str) -> Result<Self, String> {
         let value = value.trim();
         if value.is_empty() || value.contains(char::is_whitespace) || value.contains('\0') {
-            return Err("image reference must be non-empty and contain no whitespace or NUL".into());
+            return Err(
+                "image reference must be non-empty and contain no whitespace or NUL".into(),
+            );
         }
         let (name, reference) = match value.rsplit_once('@') {
             Some((name, digest)) if digest.starts_with("sha256:") => (name, digest),
             Some(_) => return Err("image digest references must use sha256:<hex>".into()),
             None => match value.rsplit_once(':') {
-                Some((name, tag)) if !name.rsplit('/').next().unwrap_or_default().contains('.')
-                    && !name.rsplit('/').next().unwrap_or_default().contains(':') => (name, tag),
+                Some((name, tag))
+                    if !name.rsplit('/').next().unwrap_or_default().contains('.')
+                        && !name.rsplit('/').next().unwrap_or_default().contains(':') =>
+                {
+                    (name, tag)
+                }
                 Some((name, tag)) if name.contains('/') && !tag.contains('/') => (name, tag),
                 _ => (value, "latest"),
             },
         };
         let mut components = name.split('/');
         let first = components.next().unwrap_or_default();
-        let (registry, repository) = if first.contains('.') || first.contains(':') || first == "localhost" {
-            let rest = components.collect::<Vec<_>>().join("/");
-            (first.to_ascii_lowercase(), rest)
-        } else {
-            ("registry-1.docker.io".to_string(), name.to_string())
-        };
+        let (registry, repository) =
+            if first.contains('.') || first.contains(':') || first == "localhost" {
+                let rest = components.collect::<Vec<_>>().join("/");
+                (first.to_ascii_lowercase(), rest)
+            } else {
+                ("registry-1.docker.io".to_string(), name.to_string())
+            };
         let repository = if registry == "registry-1.docker.io" && !repository.contains('/') {
             format!("library/{repository}")
         } else {
             repository
         };
         if repository.is_empty()
-            || repository.split('/').any(|part| part.is_empty() || part == "." || part == "..")
-            || !repository.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/'))
+            || repository
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || !repository.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/')
+            })
         {
             return Err("image repository contains an invalid component".into());
         }
         if reference.is_empty() || reference.contains('/') || reference.contains('\0') {
             return Err("image tag or digest is invalid".into());
         }
-        Ok(Self { registry, repository, reference: reference.to_string() })
+        Ok(Self {
+            registry,
+            repository,
+            reference: reference.to_string(),
+        })
     }
 
     pub fn manifest_url(&self) -> String {
-        format!("https://{}/v2/{}/manifests/{}", self.registry, self.repository, self.reference)
+        format!(
+            "https://{}/v2/{}/manifests/{}",
+            self.registry, self.repository, self.reference
+        )
     }
 
     pub fn blob_url(&self, digest: &Digest) -> String {
-        format!("https://{}/v2/{}/blobs/{digest}", self.registry, self.repository)
+        format!(
+            "https://{}/v2/{}/blobs/{digest}",
+            self.registry, self.repository
+        )
     }
 
     pub fn with_reference(&self, reference: impl Into<String>) -> Self {
-        Self { registry: self.registry.clone(), repository: self.repository.clone(), reference: reference.into() }
+        Self {
+            registry: self.registry.clone(),
+            repository: self.repository.clone(),
+            reference: reference.into(),
+        }
     }
 }
 
 impl fmt::Display for ImageReference {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.reference.starts_with("sha256:") {
-            write!(formatter, "{}/{}@{}", self.registry, self.repository, self.reference)
+            write!(
+                formatter,
+                "{}/{}@{}",
+                self.registry, self.repository, self.reference
+            )
         } else {
-            write!(formatter, "{}/{}:{}", self.registry, self.repository, self.reference)
+            write!(
+                formatter,
+                "{}/{}:{}",
+                self.registry, self.repository, self.reference
+            )
         }
     }
 }
