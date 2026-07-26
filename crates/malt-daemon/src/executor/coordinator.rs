@@ -50,6 +50,14 @@ struct SessionHandle {
     first_pane: PaneId,
 }
 
+fn status_mechanism(tier: IsolationTier) -> Option<String> {
+    match tier {
+        IsolationTier::Bare => None,
+        IsolationTier::Restricted | IsolationTier::Capped => Some("job-object".to_string()),
+        IsolationTier::Contained => Some("hcs".to_string()),
+    }
+}
+
 /// Coordinator manages session lifecycle and routes messages to session threads.
 ///
 /// Monotonically increasing session IDs — never recycled within daemon lifetime.
@@ -710,7 +718,7 @@ impl Coordinator {
                     effective: h.isolation,
                     requested: h.isolation_requested,
                     basis: h.isolation_basis,
-                    mechanism: None,
+                    mechanism: status_mechanism(h.isolation),
                     detail: h.isolation_detail.clone(),
                     _unknown: Vec::new(),
                 },

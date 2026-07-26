@@ -260,6 +260,21 @@ fn creation_get_and_list_share_the_same_isolation_status() {
 }
 
 #[test]
+fn granted_capped_session_names_its_job_object_mechanism() {
+    let backend = make_backend();
+    let created = backend
+        .create_session_with_policy(
+            None,
+            Some("capped".to_string()),
+            Some("required".to_string()),
+        )
+        .unwrap();
+    assert_eq!(created.isolation.effective, "capped");
+    assert_eq!(created.isolation.mechanism.as_deref(), Some("job-object"));
+    assert_eq!(created.isolation.basis, "assumed");
+}
+
+#[test]
 fn capabilities_match_the_required_creation_path() {
     let backend = make_backend();
     let capabilities = backend.isolation_capabilities().unwrap();
