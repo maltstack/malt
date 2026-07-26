@@ -223,7 +223,40 @@ fn disabled_isolation_attempts_nothing_and_reports_none() {
     assert_eq!(created.isolation.effective, "bare");
     assert_eq!(created.isolation.requested, "contained");
     assert_eq!(created.isolation.basis, "none");
-    assert!(created.isolation.detail.as_deref().unwrap_or_default().contains("disabled"));
+    assert!(created
+        .isolation
+        .detail
+        .as_deref()
+        .unwrap_or_default()
+        .contains("disabled"));
+}
+
+#[test]
+fn creation_get_and_list_share_the_same_isolation_status() {
+    let backend = make_backend();
+    let created = backend
+        .create_session_with_policy(
+            Some("status-agreement".to_string()),
+            Some("contained".to_string()),
+            Some("preferred".to_string()),
+        )
+        .unwrap();
+    let fetched = backend.get_session(created.id).unwrap();
+    let listed = backend
+        .list_sessions()
+        .unwrap()
+        .into_iter()
+        .find(|session| session.id == created.id)
+        .expect("created session must appear in list");
+
+    for status in [&fetched.isolation, &listed.isolation] {
+        assert_eq!(status.effective, created.isolation.effective);
+        assert_eq!(status.requested, created.isolation.requested);
+        assert_eq!(status.basis, created.isolation.basis);
+        assert_eq!(status.mechanism, created.isolation.mechanism);
+        assert_eq!(status.detail, created.isolation.detail);
+    }
+    assert_ne!(created.isolation.basis, "verified");
 }
 
 #[test]
