@@ -148,7 +148,7 @@ fn validate_hcs_config(config: &HcsConfig) -> Result<(), IsolationError> {
 pub fn create_compute_system(config: &HcsConfig) -> Result<HcsComputeSystem, IsolationError> {
     validate_hcs_config(config)?;
     if hcs_fake_mode_enabled() {
-        return Ok(fake::create_compute_system(config));
+        return fake::create_compute_system(config);
     }
     ensure_hcs_runtime()?;
     #[cfg(feature = "hcs")]
@@ -297,16 +297,23 @@ mod fake {
         NEXT_HANDLE.fetch_add(1, Ordering::Relaxed) as isize
     }
 
-    pub fn create_compute_system(config: &HcsConfig) -> HcsComputeSystem {
+    pub fn create_compute_system(config: &HcsConfig) -> Result<HcsComputeSystem, IsolationError> {
         let handle = next_handle();
         compute_registry()
             .lock()
             .expect("compute registry lock poisoned")
             .insert(config.id.clone(), handle);
-        HcsComputeSystem {
+        let system = HcsComputeSystem {
             handle,
             id: config.id.clone(),
+        };
+        if std::env::var_os("MALT_HCS_FAKE_START_FAIL").is_some() {
+            terminate_compute_system(handle)?;
+            return Err(IsolationError::HcsError(
+                "fake HcsStartComputeSystem failure".to_string(),
+            ));
         }
+        Ok(system)
     }
 
     pub fn open_compute_system(id: &str) -> Result<HcsComputeSystem, IsolationError> {
@@ -469,8 +476,12 @@ mod native {
             // options string is the documented "no options" form.
             unsafe { HcsStartComputeSystem(handle, operation, std::ptr::null()) }
         }) {
-            let _ = terminate_compute_system(handle as isize);
-            return Err(error);
+            return match terminate_compute_system(handle as isize) {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(IsolationError::HcsError(format!(
+                    "{error}; HcsTerminateComputeSystem cleanup also failed: {cleanup_error}"
+                ))),
+            };
         }
 
         Ok(HcsComputeSystem {
@@ -1024,6 +1035,31 @@ mod tests {
 
         // SAFETY: test serializes env mutation via `env_lock`.
         unsafe {
+            std::env::remove_var("MALT_HCS_FAKE");
+        }
+    }
+
+    #[test]
+    fn fake_start_failure_removes_the_created_compute_system() {
+        let _guard = env_lock();
+        // SAFETY: test serializes environment mutation via env_lock.
+        unsafe {
+            std::env::set_var("MALT_HCS_FAKE", "1");
+            std::env::set_var("MALT_HCS_FAKE_START_FAIL", "1");
+        }
+        let config = HcsConfig {
+            id: "cs-start-failure-cleanup".to_string(),
+            config_json: "{}".to_string(),
+        };
+        let error = create_compute_system(&config).expect_err("fake start must fail");
+        assert!(matches!(error, IsolationError::HcsError(_)));
+        assert!(
+            open_compute_system(&config.id).is_err(),
+            "a failed start must not leave a compute system behind"
+        );
+        // SAFETY: paired with the serialized test-only mutations above.
+        unsafe {
+            std::env::remove_var("MALT_HCS_FAKE_START_FAIL");
             std::env::remove_var("MALT_HCS_FAKE");
         }
     }
