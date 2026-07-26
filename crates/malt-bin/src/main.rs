@@ -505,7 +505,10 @@ mod tests {
             validate_created_session(&session, tier).unwrap();
             assert_eq!(
                 creation_message(&session),
-                format!("created session 42 (build) [{}]", tier.display_value())
+                format!(
+                    "created session 42 (build) [{}; basis: none; mechanism: none]",
+                    tier.display_value()
+                )
             );
         }
     }
