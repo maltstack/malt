@@ -7,8 +7,8 @@ use base64::Engine;
 use malt_gateway::backend::GatewayBackend;
 use malt_gateway::error::GatewayError;
 use malt_gateway::types::{
-    CommandHistoryEntry, ExecResult, LifecycleEventDto, OutputChunkDto, PaneResponse,
-    SessionResponse,
+    CommandHistoryEntry, ExecResult, IsolationStatusResponse, LifecycleEventDto, OutputChunkDto,
+    PaneResponse, SessionResponse,
 };
 use malt_protocol::common::{IsolationPolicy, IsolationTier, SessionId};
 use malt_protocol::shell::OutputStream;
@@ -189,7 +189,10 @@ fn parse_isolation(s: Option<String>) -> Result<IsolationTier, GatewayError> {
     }
 }
 
-fn parse_isolation_policy(s: Option<String>, tier: IsolationTier) -> Result<IsolationPolicy, GatewayError> {
+fn parse_isolation_policy(
+    s: Option<String>,
+    tier: IsolationTier,
+) -> Result<IsolationPolicy, GatewayError> {
     match s.as_deref() {
         None if tier == IsolationTier::Bare => Ok(IsolationPolicy::Disabled),
         None => Ok(IsolationPolicy::Required),
@@ -199,6 +202,18 @@ fn parse_isolation_policy(s: Option<String>, tier: IsolationTier) -> Result<Isol
         Some(other) => Err(GatewayError::BadRequest(format!(
             "unrecognized isolation policy {other:?} (expected one of: required, preferred, disabled)"
         ))),
+    }
+}
+
+fn isolation_status_response(
+    status: malt_protocol::common::IsolationStatus,
+) -> IsolationStatusResponse {
+    IsolationStatusResponse {
+        effective: format!("{:?}", status.effective).to_ascii_lowercase(),
+        requested: format!("{:?}", status.requested).to_ascii_lowercase(),
+        basis: format!("{:?}", status.basis).to_ascii_lowercase(),
+        mechanism: status.mechanism,
+        detail: status.detail,
     }
 }
 
@@ -212,7 +227,7 @@ impl GatewayBackend for DaemonBackend {
                 id: s.session_id.0,
                 name: s.name,
                 pane_count: s.pane_count,
-                isolation: format!("{:?}", s.isolation),
+                isolation: isolation_status_response(s.isolation),
                 state: format!("{:?}", s.state),
             })
             .collect())
@@ -248,7 +263,18 @@ impl GatewayBackend for DaemonBackend {
             id: session_id.0,
             name,
             pane_count: 1,
-            isolation: coord.list_sessions().into_iter().find(|s| s.session_id == session_id).map(|s| format!("{:?}", s.isolation)).unwrap_or_else(|| format!("{:?}", tier)),
+            isolation: coord
+                .list_sessions()
+                .into_iter()
+                .find(|s| s.session_id == session_id)
+                .map(|s| isolation_status_response(s.isolation))
+                .unwrap_or(IsolationStatusResponse {
+                    effective: format!("{tier:?}").to_ascii_lowercase(),
+                    requested: format!("{tier:?}").to_ascii_lowercase(),
+                    basis: "none".to_string(),
+                    mechanism: None,
+                    detail: None,
+                }),
             state: "Active".to_string(),
         })
     }
@@ -263,7 +289,7 @@ impl GatewayBackend for DaemonBackend {
                 id: s.session_id.0,
                 name: s.name,
                 pane_count: s.pane_count,
-                isolation: format!("{:?}", s.isolation),
+                isolation: isolation_status_response(s.isolation),
                 state: format!("{:?}", s.state),
             })
             .ok_or(GatewayError::SessionNotFound(id))

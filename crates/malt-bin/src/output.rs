@@ -15,7 +15,7 @@ pub fn print_sessions(sessions: &[SessionData]) {
             "  {:>4}  {:>5}  {:>10}  {:>8}  {}",
             s.id,
             s.pane_count,
-            s.isolation,
+            s.isolation.effective,
             s.state,
             s.name.as_deref().unwrap_or("-")
         );

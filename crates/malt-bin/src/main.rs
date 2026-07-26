@@ -21,7 +21,11 @@ fn main() -> Result<()> {
         Some(Command::Start) => handle_start(),
         Some(Command::Stop) => handle_stop(&client),
         Some(Command::List) => handle_list(&client),
-        Some(Command::New { name, isolation, isolation_policy }) => handle_new(&client, name.as_deref(), isolation, isolation_policy),
+        Some(Command::New {
+            name,
+            isolation,
+            isolation_policy,
+        }) => handle_new(&client, name.as_deref(), isolation, isolation_policy),
         Some(Command::Attach { session_id }) => handle_attach(&cli.api_addr, session_id),
         Some(Command::Kill { session_id }) => handle_kill(&client, session_id),
         Some(Command::Exec {
@@ -138,7 +142,11 @@ fn handle_new(
     isolation_policy: Option<IsolationPolicyArg>,
 ) -> Result<()> {
     let expected_tier = expected_isolation_tier(isolation);
-    let session = client.create_session(name, isolation.map(IsolationTierArg::request_value), isolation_policy.map(IsolationPolicyArg::request_value))?;
+    let session = client.create_session(
+        name,
+        isolation.map(IsolationTierArg::request_value),
+        isolation_policy.map(IsolationPolicyArg::request_value),
+    )?;
     validate_created_session(&session, expected_tier)?;
     println!("{}", creation_message(&session));
     Ok(())
@@ -151,6 +159,7 @@ fn expected_isolation_tier(isolation: Option<IsolationTierArg>) -> IsolationTier
 fn validate_created_session(session: &SessionData, expected_tier: IsolationTierArg) -> Result<()> {
     if session
         .isolation
+        .effective
         .eq_ignore_ascii_case(expected_tier.request_value())
     {
         return Ok(());
@@ -159,7 +168,7 @@ fn validate_created_session(session: &SessionData, expected_tier: IsolationTierA
     anyhow::bail!(
         "session {} was created with isolation {}, not requested {}",
         session.id,
-        session.isolation,
+        session.isolation.effective,
         expected_tier.display_value()
     );
 }
@@ -169,7 +178,7 @@ fn creation_message(session: &SessionData) -> String {
         "created session {} ({}) [{}]",
         session.id,
         session.name.as_deref().unwrap_or("-"),
-        session.isolation
+        session.isolation.effective
     )
 }
 
@@ -429,7 +438,13 @@ mod tests {
             id: 42,
             name: Some("build".to_string()),
             pane_count: 1,
-            isolation: isolation.to_string(),
+            isolation: crate::client::IsolationData {
+                effective: isolation.to_string(),
+                requested: isolation.to_string(),
+                basis: "none".to_string(),
+                mechanism: None,
+                detail: None,
+            },
             state: "Active".to_string(),
         }
     }

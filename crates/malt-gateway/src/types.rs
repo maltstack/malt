@@ -19,7 +19,7 @@ pub struct SessionResponse {
     pub id: u32,
     pub name: Option<String>,
     pub pane_count: u16,
-    pub isolation: String,
+    pub isolation: IsolationStatusResponse,
     pub state: String,
 }
 
@@ -38,6 +38,17 @@ pub struct CreateSessionRequest {
     pub name: Option<String>,
     pub isolation: Option<String>,
     pub isolation_policy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IsolationStatusResponse {
+    pub effective: String,
+    pub requested: String,
+    pub basis: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mechanism: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Request body for executing a command.

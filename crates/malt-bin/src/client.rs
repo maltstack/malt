@@ -44,8 +44,17 @@ pub struct SessionData {
     pub id: u32,
     pub name: Option<String>,
     pub pane_count: u32,
-    pub isolation: String,
+    pub isolation: IsolationData,
     pub state: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IsolationData {
+    pub effective: String,
+    pub requested: String,
+    pub basis: String,
+    pub mechanism: Option<String>,
+    pub detail: Option<String>,
 }
 
 /// Payload sent to the existing create-session endpoint.
@@ -60,8 +69,16 @@ struct CreateSessionRequest<'a> {
 }
 
 impl<'a> CreateSessionRequest<'a> {
-    fn new(name: Option<&'a str>, isolation: Option<&'a str>, isolation_policy: Option<&'a str>) -> Self {
-        Self { name, isolation, isolation_policy }
+    fn new(
+        name: Option<&'a str>,
+        isolation: Option<&'a str>,
+        isolation_policy: Option<&'a str>,
+    ) -> Self {
+        Self {
+            name,
+            isolation,
+            isolation_policy,
+        }
     }
 }
 
@@ -193,9 +210,13 @@ impl MaltClient {
         isolation: Option<&str>,
         isolation_policy: Option<&str>,
     ) -> Result<SessionData> {
-        let req = self
-            .authed(self.http.post(self.url("/sessions")))
-            .json(&CreateSessionRequest::new(name, isolation, isolation_policy));
+        let req =
+            self.authed(self.http.post(self.url("/sessions")))
+                .json(&CreateSessionRequest::new(
+                    name,
+                    isolation,
+                    isolation_policy,
+                ));
         let resp = req.send().context("failed to reach daemon")?;
         let envelope: ApiEnvelope<SessionData> =
             resp.json().context("invalid create session response")?;
@@ -410,7 +431,7 @@ mod tests {
                     "id": 1,
                     "name": "dev",
                     "pane_count": 2,
-                    "isolation": "Bare",
+                    "isolation": {"effective":"bare","requested":"bare","basis":"none"},
                     "state": "Running"
                 }
             ],
@@ -423,7 +444,7 @@ mod tests {
         assert_eq!(sessions[0].id, 1);
         assert_eq!(sessions[0].name.as_deref(), Some("dev"));
         assert_eq!(sessions[0].pane_count, 2);
-        assert_eq!(sessions[0].isolation, "Bare");
+        assert_eq!(sessions[0].isolation.effective, "bare");
         assert_eq!(sessions[0].state, "Running");
     }
 
