@@ -82,10 +82,24 @@ that looked sufficient in the four previous instances.
 
 ## What vexil-v2 genuinely adds
 
-Two backends MALT has no equivalent of at all:
+> **Corrected 2026-07-26, same day.** The first version of this section
+> claimed MALT had no macOS backend. That was wrong. MALT has
+> `isolation/sandbox.rs` — 359 lines, `sandbox_init` under
+> `#[cfg(target_os = "macos")]`, 17 tests — which is a Seatbelt
+> implementation. The error was mine and entirely self-inflicted: the check
+> was a grep whose output I labelled "(empty above = no macOS backend)"
+> with a hardcoded `echo`, while the grep had in fact printed three files
+> including `sandbox.rs`. I wrote a false claim into the very document
+> warning about assuming things are absent.
+>
+> Worth keeping visible rather than quietly editing, because it is the same
+> failure this survey is about, one level up: I checked for existence,
+> mis-read the answer, and concluded "build it". The lesson added to
+> AGENTS.md — grep for callers, exclude the defining crate — does not help if
+> the grep's *output* is not actually read.
 
-- **macOS Seatbelt** (`seatbelt.rs`, 303 lines) — MALT has
-  `probe::has_macos_isolation()` but no backend behind it.
+**One** backend MALT has no equivalent of:
+
 - **Windows AppContainer** (`appcontainer.rs`, 395 lines) — MALT has
   `tokens.rs` for restricted tokens, which is related but not the same
   mechanism. AppContainer is also what vexil-v2 uses as the *imageless*
@@ -93,7 +107,13 @@ Two backends MALT has no equivalent of at all:
   spec 007's US3 (a stronger tier must differ from a weaker one) and to
   FR-009 (a level must be provided by the mechanism it denotes, or refused).
 
-Both map to US4, the P3 story. Neither is needed for US1–US3.
+**macOS is not a gap in coverage; it is another instance of the main
+finding.** `sandbox.rs` exists, has 17 tests, and has zero callers outside
+`malt-platform` — exactly like the other 11. vexil-v2's `seatbelt.rs` (303
+lines) is *smaller* than MALT's. Comparing the two for correctness may still
+be worthwhile, but not as a port.
+
+AppContainer maps to US4, the P3 story. It is not needed for US1–US3.
 
 ## Recommendation
 

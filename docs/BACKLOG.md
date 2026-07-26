@@ -63,16 +63,19 @@ termination that only removes bookkeeping (A-06).
 
 Raised 2026-07-26 while surveying isolation prior art
 (`docs/findings/2026-07-26-isolation-prior-art-survey.md`). vexil-v2 is
-plausibly **more mature than MALT at the low level** — it has backends MALT
-has no equivalent of (macOS Seatbelt, Windows AppContainer), a
+plausibly **more mature than MALT at the low level** — it has a backend MALT
+has no equivalent of (Windows AppContainer), a
 `ContainedBackend` enum spanning five platform mechanisms, and a
 `ContainedCapability` report carrying a separate reason per degraded facet.
 
 Worth a deliberate audit of `vexil-platform/` as a whole — not only
 isolation — to identify what is genuinely ahead of MALT and worth vendoring.
-Candidates seen in passing: `seatbelt.rs`, `appcontainer.rs`, `hcs.rs` (1,378
-lines vs MALT's 843), `network.rs`, `seccomp.rs`, and the checkpoint/CRIU
-work behind `CheckpointMode`.
+Candidates seen in passing: `appcontainer.rs`, `hcs.rs` (1,378 lines vs
+MALT's 843), `network.rs`, and the checkpoint/CRIU work behind
+`CheckpointMode`. Note MALT's macOS Seatbelt (`isolation/sandbox.rs`, 359
+lines) is *larger* than vexil-v2's `seatbelt.rs` (303) — an earlier version
+of this entry wrongly listed Seatbelt as a MALT gap; see the correction note
+in the findings doc.
 
 **Constraints on any such port** (ADR-0001, Constitution VIII): vendored as
 owned source, rewritten to these invariants, never a path or git dependency.
