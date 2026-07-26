@@ -318,6 +318,17 @@ pub fn manage_hcs_container(
     )
 }
 
+/// Perform an authenticated helper-owned image operation. SessionId(0) is
+/// reserved for image inventory: the helper still requires daemon enrollment,
+/// but never accepts a caller-selected filesystem path.
+#[cfg(windows)]
+pub fn manage_image(operation: malt_protocol::elevate::ImageOperation) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    use malt_protocol::elevate::{ElevateRequest, ElevateRequestEnvelope};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT_IMAGE_REQUEST: AtomicU32 = AtomicU32::new(50_000);
+    send_request(ElevateRequestEnvelope { request_id: NEXT_IMAGE_REQUEST.fetch_add(1, Ordering::Relaxed), request: ElevateRequest::ManageImage { operation }, session_id: malt_protocol::common::SessionId(0), nonce: request_nonce(), _unknown: Vec::new() })
+}
+
 /// Ask the helper to terminate only the compute system it recorded for this
 /// caller's session. This is intentionally separate from generic requests so
 /// callers cannot name an arbitrary system id without the entitlement check.

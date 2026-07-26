@@ -40,6 +40,22 @@ pub struct CreateSessionRequest {
     pub isolation_policy: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ProvisionImageRequest { pub reference: String }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageResponse {
+    pub id: String,
+    pub manifest_digest: String,
+    pub platform: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
+    pub ready: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub active_sessions: u32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IsolationStatusResponse {
     pub effective: String,

@@ -9,6 +9,10 @@ use crate::types::{
 /// Implementations bridge the HTTP layer to the daemon's session store,
 /// executor, and layout engine.
 pub trait GatewayBackend: Send + Sync + 'static {
+    fn provision_image(&self, _reference: String) -> Result<crate::types::ImageResponse, GatewayError> { Err(GatewayError::Internal("image provisioning is unavailable in this backend".to_string())) }
+    fn list_images(&self) -> Result<Vec<crate::types::ImageResponse>, GatewayError> { Err(GatewayError::Internal("image inventory is unavailable in this backend".to_string())) }
+    fn inspect_image(&self, _id: String) -> Result<crate::types::ImageResponse, GatewayError> { Err(GatewayError::Internal("image inventory is unavailable in this backend".to_string())) }
+    fn remove_image(&self, _id: String) -> Result<(), GatewayError> { Err(GatewayError::Internal("image inventory is unavailable in this backend".to_string())) }
     fn list_sessions(&self) -> Result<Vec<SessionResponse>, GatewayError>;
 
     fn isolation_capabilities(
