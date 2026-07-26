@@ -51,3 +51,26 @@ Two gates in particular are easy to skip because they are conditional:
 - Build time on a cold cache is substantial for an 18-crate workspace; cache
   the cargo registry and `target/` or the gate becomes something people want
   to skip.
+
+---
+
+## Status: workflow added 2026-07-26
+
+`.github/workflows/ci.yml` implements this brief, staged rather than all at
+once:
+
+- **`gates`** (windows-latest, **blocking**) — build, fmt, clippy, test.
+- **`smoosh`** (windows-latest, **blocking**, path-filtered) — runs only when
+  `crates/mash` or `crates/malt-tools` changed. It greps for `passed: 183`
+  rather than trusting the exit code, because the runner reports success
+  while skipping, which is how a conformance regression would hide.
+- **`cross-platform`** (ubuntu + macos, **advisory**) — the workspace has
+  never been compiled on either. Finding out what breaks is the job's
+  purpose; blocking the merge on it before anyone has looked is not.
+- **`isolation-capabilities`** (all three, **advisory**) — reports what each
+  host can actually contain, and probes HCS on Windows. This answers
+  empirically what one Windows laptop cannot, and validates the
+  Verified/Assumed distinction against three real hosts.
+
+**Not yet done**: the advisory jobs should become blocking once their state is
+known. Leaving them advisory permanently would make them decoration.

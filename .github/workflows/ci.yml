@@ -1,0 +1,145 @@
+name: CI
+
+# Enforcement for the four gates AGENTS.md requires, plus the cross-platform
+# coverage this project cannot get from its primary Windows machine.
+#
+# Staged deliberately (see docs/briefs/005-enforce-quality-gates-in-ci.md):
+# Windows is the primary target and blocks the merge. Linux and macOS are
+# advisory for now, because the workspace has never been built on either and
+# the first honest job of this workflow is to find out what happens.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── The gate. Windows is the primary target; a failure here blocks. ──
+  gates:
+    name: Gates (windows, blocking)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  # ── Smoosh: a gate, but only when the shell can have changed. ──
+  # Path-filtered rather than unconditional: it takes ~40s, and the point is
+  # that it cannot be forgotten, not that it runs on documentation commits.
+  smoosh:
+    name: Smoosh POSIX conformance (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Does this change touch the shell?
+        id: filter
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only HEAD^ HEAD || echo "")
+          if echo "$changed" | grep -qE '^crates/(mash|malt-tools)/'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No changes under crates/mash or crates/malt-tools; Smoosh not required."
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.filter.outputs.run == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.filter.outputs.run == 'true'
+
+      - name: Run Smoosh
+        if: steps.filter.outputs.run == 'true'
+        shell: bash
+        run: |
+          cargo build -p mash
+          export MASH="$(pwd)/target/debug/mash.exe"
+          cargo test -p mash --test smoosh_runner smoosh_conformance_tests -- --nocapture 2>&1 | tee smoosh.log
+          # Expected on native Windows: 183 passed, 3 skipped. Assert it rather
+          # than trusting the exit code -- the runner reports success while
+          # skipping, which is how a conformance regression would hide.
+          grep -q "passed: 183" smoosh.log || { echo "::error::Smoosh did not report 183 passed"; exit 1; }
+
+  # ── Discovery. Advisory until it is known to pass. ──
+  # The workspace has never been compiled on Linux or macOS. windows-sys is
+  # correctly gated behind [target.'cfg(windows)'.dependencies], but libc is
+  # unconditional in malt-platform and malt-tools, and there will be cfg gaps.
+  # Finding them is this job's purpose; failing the merge for them is not.
+  cross-platform:
+    name: Build + test (${{ matrix.os }}, advisory)
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
+  # ── What can each host actually contain? ──
+  # Answers empirically what cannot be answered from one Windows laptop, and
+  # validates the capability probe against three real hosts. The probe's
+  # Verified/Assumed distinction is the thing under test: a facet reported as
+  # Verified must have been checked, not assumed from the platform.
+  isolation-capabilities:
+    name: Isolation capabilities (${{ matrix.os }}, advisory)
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Report what this host supports
+        shell: bash
+        run: cargo test -p malt-platform --test isolation_reality -- --nocapture
+
+      - name: Probe HCS specifically
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        continue-on-error: true
+        run: |
+          # Diagnostic only. On a dev machine with the Containers feature this
+          # currently access-violates -- see docs/briefs/006. Running it here
+          # answers whether GitHub's Windows runners can create a compute
+          # system at all, which decides whether 007's T028 is ever testable
+          # in CI.
+          cargo test -p malt-platform --test isolation_reality hcs_probe -- --ignored --nocapture || \
+            echo "::warning::HCS probe did not complete cleanly; see docs/briefs/006-hcs-backend-access-violation.md"
