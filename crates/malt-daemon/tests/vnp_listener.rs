@@ -10,19 +10,20 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use malt_protocol::codec::{
-    make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, MSG_ATTACH_SESSION, MSG_FRAME_ACK,
-    MSG_HELLO, MSG_HELLO_ACK, MSG_INITIAL_STATE, MSG_KEY_EVENT, MSG_RENDER_BATCH,
+    make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, MSG_ATTACH_SESSION,
+    MSG_CREATE_SESSION, MSG_FRAME_ACK, MSG_HELLO, MSG_HELLO_ACK, MSG_INITIAL_STATE, MSG_KEY_EVENT,
+    MSG_RENDER_BATCH, MSG_SESSION_LIST,
 };
 use malt_protocol::common::{
-    ClientCapabilities, ColorDepth, ImageProtocol, InputAuthority, IsolationTier, KeyModifiers,
-    SessionId, UnicodeLevel,
+    ClientCapabilities, ColorDepth, ImageProtocol, InputAuthority, IsolationPolicy, IsolationTier,
+    KeyModifiers, SessionId, UnicodeLevel,
 };
 use malt_protocol::envelope::{decode_envelope, encode_message};
 use malt_protocol::framing::{Frame, FrameFlags, FrameReader, FrameWriter};
 use malt_protocol::handshake::{Hello, HelloAck};
 use malt_protocol::input::{KeyEvent, KeyValue, NamedKey};
 use malt_protocol::render::{FrameAck, InitialState, RenderBatch};
-use malt_protocol::session::AttachSession;
+use malt_protocol::session::{AttachSession, CreateSession, SessionList};
 use vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
 use malt_daemon::executor::coordinator::Coordinator;
@@ -147,6 +148,41 @@ fn do_attach(writer: &mut FrameWriter<TcpStream>, session_id: u32) {
     writer.write_frame(&frame).unwrap();
 }
 
+/// Create a session through the VNP pre-attach phase and return the one
+/// status-bearing SessionInfo response. The next client frame can then attach
+/// to its returned id on the same authenticated socket.
+fn do_create_session(
+    writer: &mut FrameWriter<TcpStream>,
+    reader: &mut FrameReader<BufReader<TcpStream>>,
+    isolation: IsolationTier,
+    policy: IsolationPolicy,
+) -> malt_protocol::common::SessionInfo {
+    let create = CreateSession {
+        name: Some("vnp-created".to_string()),
+        isolation,
+        group: None,
+        policy,
+        _unknown: Vec::new(),
+    };
+    let env = make_envelope(DOMAIN_SESSION, MSG_CREATE_SESSION, 0);
+    let mut w = BitWriter::new();
+    create.pack(&mut w).unwrap();
+    let frame = Frame {
+        flags: FrameFlags::new(),
+        payload: encode_message(&env, &w.finish()).unwrap(),
+    };
+    writer.write_frame(&frame).unwrap();
+
+    let frame = reader.read_frame().unwrap();
+    let (env, bytes) = decode_envelope(&frame.payload).unwrap();
+    assert_eq!(env.domain, DOMAIN_SESSION);
+    assert_eq!(env.msg_type, MSG_SESSION_LIST);
+    let mut r = BitReader::new(bytes);
+    let response = SessionList::unpack(&mut r).unwrap();
+    assert_eq!(response.sessions.len(), 1);
+    response.sessions.into_iter().next().unwrap()
+}
+
 /// Read and decode the next InitialState frame, asserting correct domain/type.
 fn read_initial_state(reader: &mut FrameReader<BufReader<TcpStream>>) -> InitialState {
     let frame = reader.read_frame().unwrap();
@@ -230,6 +266,35 @@ fn vnp_handshake_succeeds() {
 
     let ack = do_handshake(&mut writer, &mut reader);
     assert_eq!(ack.negotiated_version, 1, "negotiated version must be 1");
+}
+
+#[test]
+fn vnp_create_session_applies_policy_and_returns_stored_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
+    let addr = start_test_listener_seeded(coordinator);
+
+    let stream = TcpStream::connect(&addr).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let mut writer = FrameWriter::new(stream.try_clone().unwrap());
+    let mut reader = FrameReader::new(BufReader::new(stream));
+    let ack = do_handshake(&mut writer, &mut reader);
+    assert!(ack.sessions.is_empty());
+
+    let created = do_create_session(
+        &mut writer,
+        &mut reader,
+        IsolationTier::Bare,
+        IsolationPolicy::Required,
+    );
+    assert_eq!(created.isolation.effective, IsolationTier::Bare);
+    assert_eq!(created.isolation.requested, IsolationTier::Bare);
+
+    do_attach(&mut writer, created.session_id.0);
+    let _ = read_initial_state(&mut reader);
 }
 
 /// Test 2: After attaching, the listener sends an InitialState frame.

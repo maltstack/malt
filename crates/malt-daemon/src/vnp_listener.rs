@@ -6,18 +6,20 @@
 use crate::connection::handshake::perform_server_handshake;
 use crate::executor::coordinator::Coordinator;
 use crate::executor::session_thread::SessionCommand;
+use malt_gateway::auth::AuthScope;
 use malt_gateway::auth::TokenStore;
 use malt_protocol::codec::{
     make_envelope, DOMAIN_INPUT, DOMAIN_RENDER, DOMAIN_SESSION, DOMAIN_SHELL, MSG_ATTACH_SESSION,
-    MSG_DETACH_SESSION, MSG_FRAME_ACK, MSG_INITIAL_STATE, MSG_INPUT_AUTHORITY_CHANGED,
-    MSG_INPUT_CLAIM, MSG_KEY_EVENT, MSG_OUTPUT_CHUNK, MSG_RENDER_BATCH, MSG_RESIZE,
+    MSG_CREATE_SESSION, MSG_DETACH_SESSION, MSG_FRAME_ACK, MSG_INITIAL_STATE,
+    MSG_INPUT_AUTHORITY_CHANGED, MSG_INPUT_CLAIM, MSG_KEY_EVENT, MSG_OUTPUT_CHUNK,
+    MSG_RENDER_BATCH, MSG_RESIZE, MSG_SESSION_LIST,
 };
 use malt_protocol::common::SessionId;
 use malt_protocol::envelope::{decode_envelope, encode_message};
 use malt_protocol::framing::{Frame, FrameError, FrameFlags, FrameReader, FrameWriter};
 use malt_protocol::input::{KeyEvent, Resize};
 use malt_protocol::render::FrameAck;
-use malt_protocol::session::{AttachSession, DetachSession};
+use malt_protocol::session::{AttachSession, CreateSession, DetachSession, SessionList};
 use std::io::BufReader;
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -204,8 +206,18 @@ fn handle_client(
     let mut frame_reader = FrameReader::new(read_stream);
     let mut frame_writer = FrameWriter::new(write_stream);
 
-    // Wait for AttachSession.
-    let (session_id_raw, requested_authority) = match wait_for_attach(&mut frame_reader, &peer) {
+    // Before attaching, a sufficiently privileged client may create a
+    // session. Creation stays in this phase so the newly-created session can
+    // be attached on the same authenticated connection; the response is the
+    // existing typed SessionList message containing the coordinator's single
+    // stored status value.
+    let (session_id_raw, requested_authority) = match wait_for_attach(
+        &mut frame_reader,
+        &mut frame_writer,
+        &coordinator,
+        handshake.scope,
+        &peer,
+    ) {
         Some(attached) => attached,
         None => {
             warn!(peer = %peer, client_id, "VNP: no AttachSession received; disconnecting");
@@ -410,6 +422,9 @@ fn handle_client(
 /// requested: by the time registration happened the request no longer existed.
 fn wait_for_attach(
     reader: &mut FrameReader<BufReader<TcpStream>>,
+    writer: &mut FrameWriter<TcpStream>,
+    coordinator: &Arc<Mutex<Coordinator>>,
+    scope: AuthScope,
     peer: &str,
 ) -> Option<(u32, malt_protocol::common::InputAuthority)> {
     let mut attempts = 0usize;
@@ -447,26 +462,82 @@ fn wait_for_attach(
             }
         };
 
-        if envelope.domain == DOMAIN_SESSION && envelope.msg_type == MSG_ATTACH_SESSION {
+        if envelope.domain == DOMAIN_SESSION {
             let mut bit_reader = BitReader::new(msg_bytes);
-            match AttachSession::unpack(&mut bit_reader) {
-                Ok(attach) => {
-                    return Some((attach.session_id.0, attach.authority));
+            match envelope.msg_type {
+                MSG_ATTACH_SESSION => match AttachSession::unpack(&mut bit_reader) {
+                    Ok(attach) => return Some((attach.session_id.0, attach.authority)),
+                    Err(e) => {
+                        warn!(peer, error = %e, "VNP: AttachSession decode failed");
+                        return None;
+                    }
+                },
+                MSG_CREATE_SESSION => {
+                    let create = match CreateSession::unpack(&mut bit_reader) {
+                        Ok(create) => create,
+                        Err(e) => {
+                            warn!(peer, error = %e, "VNP: CreateSession decode failed");
+                            return None;
+                        }
+                    };
+                    if scope < AuthScope::Admin {
+                        warn!(peer, "VNP: CreateSession requires Admin scope");
+                        return None;
+                    }
+                    let session = match coordinator.lock() {
+                        Ok(mut coord) => match coord.create_session_with_policy(
+                            create.name,
+                            create.isolation,
+                            create.policy,
+                            create.group,
+                        ) {
+                            Ok(id) => coord
+                                .list_sessions()
+                                .into_iter()
+                                .find(|session| session.session_id == id),
+                            Err(error) => {
+                                warn!(peer, error = %error, "VNP: CreateSession refused");
+                                return None;
+                            }
+                        },
+                        Err(error) => {
+                            warn!(peer, error = %error, "VNP: coordinator lock poisoned during CreateSession");
+                            return None;
+                        }
+                    };
+                    let Some(session) = session else {
+                        warn!(peer, "VNP: created session missing from coordinator status");
+                        return None;
+                    };
+                    let response = SessionList {
+                        sessions: vec![session],
+                        _unknown: Vec::new(),
+                    };
+                    if let Err(error) =
+                        send_vnp_msg(writer, DOMAIN_SESSION, MSG_SESSION_LIST, 0, &response)
+                    {
+                        warn!(peer, error = %error, "VNP: failed to send CreateSession status");
+                        return None;
+                    }
                 }
-                Err(e) => {
-                    warn!(peer, error = %e, "VNP: AttachSession decode failed");
-                    return None;
+                _ => {
+                    warn!(
+                        peer,
+                        domain = envelope.domain,
+                        msg_type = envelope.msg_type,
+                        "VNP: unexpected message during attach phase; skipping"
+                    );
                 }
             }
+        } else {
+            // Log and skip non-session frames during the attach phase.
+            warn!(
+                peer,
+                domain = envelope.domain,
+                msg_type = envelope.msg_type,
+                "VNP: unexpected message during attach phase; skipping"
+            );
         }
-
-        // Log and skip non-AttachSession frames during the attach phase.
-        warn!(
-            peer,
-            domain = envelope.domain,
-            msg_type = envelope.msg_type,
-            "VNP: unexpected message during attach phase; skipping"
-        );
     }
 }
 
