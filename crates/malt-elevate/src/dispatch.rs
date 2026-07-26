@@ -1,158 +1,128 @@
-//! Request dispatch — routes `ElevateRequest` variants to handlers.
+//! Request dispatch for generated `ElevateRequest` values.
 //!
-//! Phase 2: most operations are stubs returning success. Real implementations
-//! arrive with `malt-platform` isolation tier support.
+//! An outcome is only `Performed` after its handler completes the requested
+//! effect. Everything else is an explicit refusal or an indeterminate result.
 
-/// Identifies a privileged operation requested by the daemon.
-///
-/// These variants mirror the `ElevateRequest` union from `elevate.vexil`.
-/// We define them here as plain Rust types so the dispatch logic is testable
-/// independently of the vexilc codegen pipeline.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub enum ElevateRequest {
-    // Linux
-    CreateNamespace {
-        pid: u32,
-        tier: u8,
-    },
-    MountOverlay {
-        lower: String,
-        upper: String,
-        merged: String,
-    },
-    SetCgroup {
-        pid: u32,
-        memory_mb: u32,
-        cpu_pct: u16,
-    },
-    SetupNetns {
-        pid: u32,
-        bridge: String,
-        veth_host: String,
-        veth_ns: String,
-    },
-    ApplySeccomp {
-        pid: u32,
-        policy: Vec<u8>,
-    },
-    // Windows
-    CreateSymlink {
-        target: String,
-        link: String,
-    },
-    CreateRestrictedToken {
-        pid: u32,
-        tier: u8,
-    },
-    ManageHcsContainer {
-        operation: String,
-        config: Vec<u8>,
-    },
-    // macOS
-    ApplySeatbelt {
-        pid: u32,
-        profile: String,
-    },
-    // Cross-platform
-    BindPort {
-        port: u16,
-        socket_path: String,
-    },
-}
+use std::path::Path;
 
-/// Result of dispatching an `ElevateRequest`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ElevateResponse {
-    /// Correlation ID from the request envelope.
-    pub request_id: u32,
-    /// Operation result: `Ok(payload)` on success, `Err(message)` on failure.
-    pub result: Result<Vec<u8>, String>,
-}
+use crate::protocol::{ElevateRequest, ElevateResponse, OutcomeKind, ReasonCode};
 
-/// Dispatch a request to the appropriate handler.
-///
-/// Most operations are stubs in Phase 2 — they return success without
-/// performing any actual privileged work. `CreateSymlink` is implemented
-/// on Windows since symlink creation requires elevation.
+/// Dispatch a request to the operation handler.
 pub fn dispatch_request(request_id: u32, request: &ElevateRequest) -> ElevateResponse {
-    let result = match request {
-        ElevateRequest::CreateNamespace { .. } => stub_success("CreateNamespace"),
-        ElevateRequest::MountOverlay { .. } => stub_success("MountOverlay"),
-        ElevateRequest::SetCgroup { .. } => stub_success("SetCgroup"),
-        ElevateRequest::SetupNetns { .. } => stub_success("SetupNetns"),
-        ElevateRequest::ApplySeccomp { .. } => stub_success("ApplySeccomp"),
-        ElevateRequest::CreateSymlink { target, link } => dispatch_create_symlink(target, link),
-        ElevateRequest::CreateRestrictedToken { .. } => stub_success("CreateRestrictedToken"),
-        ElevateRequest::ManageHcsContainer { .. } => stub_success("ManageHcsContainer"),
-        ElevateRequest::ApplySeatbelt { .. } => stub_success("ApplySeatbelt"),
-        ElevateRequest::BindPort { .. } => stub_success("BindPort"),
-    };
-
-    ElevateResponse { request_id, result }
-}
-
-/// Stub handler: logs the operation and returns success with an empty payload.
-fn stub_success(op: &str) -> Result<Vec<u8>, String> {
-    tracing::info!(
-        operation = op,
-        "stub: operation not yet implemented, returning success"
-    );
-    Ok(Vec::new())
-}
-
-/// Create a symlink. On Windows this requires elevation; on Unix it does not
-/// but we handle it here for consistency.
-fn dispatch_create_symlink(target: &str, link: &str) -> Result<Vec<u8>, String> {
-    tracing::info!(target = target, link = link, "creating symlink");
-
-    #[cfg(windows)]
-    {
-        create_symlink_windows(target, link)
+    match request {
+        ElevateRequest::CreateNamespace { .. } => {
+            unsupported_or_unimplemented(request_id, "CreateNamespace", cfg!(target_os = "linux"))
+        }
+        ElevateRequest::MountOverlay { .. } => {
+            unsupported_or_unimplemented(request_id, "MountOverlay", cfg!(target_os = "linux"))
+        }
+        ElevateRequest::SetCgroup { .. } => {
+            unsupported_or_unimplemented(request_id, "SetCgroup", cfg!(target_os = "linux"))
+        }
+        ElevateRequest::SetupNetns { .. } => {
+            unsupported_or_unimplemented(request_id, "SetupNetns", cfg!(target_os = "linux"))
+        }
+        ElevateRequest::ApplySeccomp { .. } => {
+            unsupported_or_unimplemented(request_id, "ApplySeccomp", cfg!(target_os = "linux"))
+        }
+        ElevateRequest::CreateSymlink { target, link } => {
+            dispatch_create_symlink(request_id, target, link)
+        }
+        ElevateRequest::CreateRestrictedToken { .. } => unsupported_or_unimplemented(
+            request_id,
+            "CreateRestrictedToken",
+            cfg!(target_os = "windows"),
+        ),
+        ElevateRequest::ManageHcsContainer { .. } => unsupported_or_unimplemented(
+            request_id,
+            "ManageHcsContainer",
+            cfg!(target_os = "windows"),
+        ),
+        ElevateRequest::ApplySeatbelt { .. } => {
+            unsupported_or_unimplemented(request_id, "ApplySeatbelt", cfg!(target_os = "macos"))
+        }
+        ElevateRequest::BindPort { .. } => refused(
+            request_id,
+            ReasonCode::NotImplemented,
+            "BindPort is not implemented by this helper build",
+        ),
+        ElevateRequest::Unknown { .. } => refused(
+            request_id,
+            ReasonCode::InvalidParameters,
+            "unknown elevate operation cannot be validated",
+        ),
+        _ => refused(
+            request_id,
+            ReasonCode::InvalidParameters,
+            "unrecognized elevate operation cannot be validated",
+        ),
     }
-
-    #[cfg(unix)]
-    {
-        create_symlink_unix(target, link)
-    }
 }
 
-#[cfg(windows)]
-fn create_symlink_windows(target: &str, link: &str) -> Result<Vec<u8>, String> {
-    use std::path::Path;
-
-    let target_path = Path::new(target);
-
-    // Try file symlink first, fall back to directory symlink.
-    // On Windows, symlink type must match the target type.
-    let result = if target_path.is_dir() {
-        std::os::windows::fs::symlink_dir(target, link)
+/// Construct a refusal for an operation the current host cannot perform.
+pub fn unsupported_or_unimplemented(
+    request_id: u32,
+    operation: &str,
+    supported_platform: bool,
+) -> ElevateResponse {
+    let (reason, detail) = if supported_platform {
+        (
+            ReasonCode::NotImplemented,
+            format!("{operation} is not implemented by this helper build"),
+        )
     } else {
-        std::os::windows::fs::symlink_file(target, link)
+        (
+            ReasonCode::UnsupportedPlatform,
+            format!("{operation} is unsupported on this platform"),
+        )
     };
+    refused(request_id, reason, detail)
+}
 
-    match result {
-        Ok(()) => Ok(Vec::new()),
-        Err(e) => Err(format!("symlink creation failed: {e}")),
+/// Construct a refusal. Refused outcomes never carry an effect payload.
+pub fn refused(request_id: u32, reason: ReasonCode, detail: impl Into<String>) -> ElevateResponse {
+    ElevateResponse {
+        request_id,
+        kind: OutcomeKind::Refused,
+        reason: Some(reason),
+        detail: Some(detail.into()),
+        payload: None,
+        _unknown: Vec::new(),
     }
 }
 
-#[cfg(unix)]
-fn create_symlink_unix(target: &str, link: &str) -> Result<Vec<u8>, String> {
-    match std::os::unix::fs::symlink(target, link) {
-        Ok(()) => Ok(Vec::new()),
-        Err(e) => Err(format!("symlink creation failed: {e}")),
+fn dispatch_create_symlink(request_id: u32, target: &str, link: &str) -> ElevateResponse {
+    tracing::info!(target, link, "creating symlink through malt-platform");
+    match malt_platform::fs::create_symlink(Path::new(target), Path::new(link)) {
+        Ok(()) => ElevateResponse {
+            request_id,
+            kind: OutcomeKind::Performed,
+            reason: None,
+            detail: None,
+            payload: Some(Vec::new()),
+            _unknown: Vec::new(),
+        },
+        Err(error) => refused(
+            request_id,
+            ReasonCode::OsError,
+            format!("CreateSymlink failed: {error}"),
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use malt_protocol::common::IsolationTier;
+    use malt_protocol::elevate::ContainerOperation;
 
     #[test]
-    fn stub_operations_return_success() {
-        let stubs = vec![
-            ElevateRequest::CreateNamespace { pid: 1, tier: 0 },
+    fn unimplemented_operations_are_refused_not_reported_as_success() {
+        let requests = [
+            ElevateRequest::CreateNamespace {
+                pid: 1,
+                tier: IsolationTier::Bare,
+            },
             ElevateRequest::MountOverlay {
                 lower: "/lower".into(),
                 upper: "/upper".into(),
@@ -173,10 +143,15 @@ mod tests {
                 pid: 1,
                 policy: vec![0, 1, 2],
             },
-            ElevateRequest::CreateRestrictedToken { pid: 1, tier: 1 },
+            ElevateRequest::CreateRestrictedToken {
+                pid: 1,
+                tier: IsolationTier::Restricted,
+            },
             ElevateRequest::ManageHcsContainer {
-                operation: "create".into(),
-                config: vec![],
+                operation: ContainerOperation::Create {
+                    memory_limit_mb: None,
+                    hostname: None,
+                },
             },
             ElevateRequest::ApplySeatbelt {
                 pid: 1,
@@ -188,25 +163,21 @@ mod tests {
             },
         ];
 
-        for (i, req) in stubs.iter().enumerate() {
-            let resp = dispatch_request(i as u32, req);
-            assert_eq!(resp.request_id, i as u32);
-            assert!(
-                resp.result.is_ok(),
-                "expected success for {:?}, got {:?}",
-                req,
-                resp.result
-            );
+        for (index, request) in requests.iter().enumerate() {
+            let response = dispatch_request(index as u32, request);
+            assert_eq!(response.request_id, index as u32);
+            assert_eq!(response.kind, OutcomeKind::Refused, "{request:?}");
+            assert!(response.reason.is_some(), "{request:?}");
+            assert!(response.payload.is_none(), "{request:?}");
         }
     }
 
     #[test]
     fn response_carries_request_id() {
-        let req = ElevateRequest::BindPort {
+        let request = ElevateRequest::BindPort {
             port: 443,
             socket_path: "/s".into(),
         };
-        let resp = dispatch_request(42, &req);
-        assert_eq!(resp.request_id, 42);
+        assert_eq!(dispatch_request(42, &request).request_id, 42);
     }
 }

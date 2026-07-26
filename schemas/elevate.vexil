@@ -1,11 +1,11 @@
-@version("0.1.0")
+@version("0.2.0")
 namespace malt.elevate
 
 import malt.common
 
 @doc("Daemon → helper: initiate authenticated connection.")
 message ElevateHello {
-    @doc("Single-use nonce from the nonce file. Rotated hourly with 30s overlap.")
+    @doc("Connection nonce supplied as defence in depth alongside peer identity.")
     nonce   @0 : u64
     version @1 : u32
 }
@@ -21,6 +21,16 @@ message ElevateHelloAck {
 message ElevateRequestEnvelope {
     request_id @0 : u32
     request    @1 : ElevateRequest
+    session_id @2 : SessionId
+    nonce      @3 : u64
+}
+
+@non_exhaustive
+@doc("Typed container operation. The helper renders the OS configuration itself.")
+union ContainerOperation {
+    Create    @0 { memory_limit_mb @0 : optional<u32>  hostname @1 : optional<string> }
+    Start     @1 { id @0 : string }
+    Terminate @2 { id @0 : string }
 }
 
 @non_exhaustive
@@ -35,17 +45,54 @@ union ElevateRequest {
     # Windows
     CreateSymlink    @5 { target @0 : string  link @1 : string }
     CreateRestrictedToken @6 { pid @0 : u32  tier @1 : IsolationTier }
-    ManageHcsContainer @7 { operation @0 : string  config @1 : bytes }
+    ManageHcsContainer @7 { operation @0 : ContainerOperation }
     # macOS
     ApplySeatbelt    @8 { pid @0 : u32  profile @1 : string }
     # Cross-platform
     BindPort         @9 { port @0 : u16  socket_path @1 : string }
 }
 
-@doc("Helper → daemon: operation result.")
+@non_exhaustive
+@doc("Whether an operation was performed, refused, or became unknowable in flight.")
+enum OutcomeKind {
+    Performed     @0
+    Refused       @1
+    Indeterminate @2
+}
+
+@non_exhaustive
+@doc("Machine-readable reason an operation did not complete.")
+enum ReasonCode {
+    NotImplemented      @0
+    UnsupportedPlatform @1
+    HelperUnavailable   @2
+    NotEntitled         @3
+    InvalidParameters   @4
+    OsError             @5
+    TimedOut            @6
+}
+
+@doc("Availability of one operation on this host and build.")
+message OperationCapability {
+    operation @0 : string
+    available @1 : bool
+    reason    @2 : optional<ReasonCode>
+    detail    @3 : optional<string>
+}
+
+@doc("Helper capability report, derived from real implementations and host support.")
+message ElevateCapabilities {
+    protocol_version @0 : u32
+    operations       @1 : array<OperationCapability>
+}
+
+@doc("Helper → daemon: operation outcome.")
 message ElevateResponse {
     request_id @0 : u32
-    result     @1 : result<bytes, string>
+    kind       @1 : OutcomeKind
+    reason     @2 : optional<ReasonCode>
+    detail     @3 : optional<string>
+    payload    @4 : optional<bytes>
 }
 
 @doc("Either side: graceful shutdown.")

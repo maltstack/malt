@@ -27,7 +27,10 @@ impl NonceAuth {
             )));
         }
 
-        let nonce = u64::from_le_bytes(bytes.try_into().expect("length checked above"));
+        let nonce_bytes: [u8; 8] = bytes.try_into().map_err(|_| {
+            ElevateError::AuthFailed("nonce file did not contain exactly 8 bytes".into())
+        })?;
+        let nonce = u64::from_le_bytes(nonce_bytes);
 
         Ok(Self { nonce })
     }
@@ -40,9 +43,8 @@ impl NonceAuth {
 
     /// Validate a received nonce against the stored nonce.
     pub fn validate(&self, received: u64) -> bool {
-        // Constant-time comparison is not strictly necessary here (the nonce
-        // is single-use and rotated hourly), but we avoid short-circuiting
-        // for defense in depth.
+        // This is defence in depth only. Peer identity and single-use request
+        // nonces are enforced by the server once the transport is active.
         let a = self.nonce.to_le_bytes();
         let b = received.to_le_bytes();
         let mut diff = 0u8;
