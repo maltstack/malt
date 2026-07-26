@@ -61,6 +61,10 @@ const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: u32 = 9;
 
 // Limit Flags
 const JOB_OBJECT_LIMIT_PROCESS_MEMORY: u32 = 0x00000100;
+/// Closing the last session-owned Job Object handle terminates every member.
+/// A session teardown that merely closes a handle must not leave its external
+/// command tree running outside daemon ownership.
+const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x00002000;
 #[allow(dead_code)]
 const JOB_OBJECT_LIMIT_JOB_MEMORY: u32 = 0x00000200;
 #[allow(dead_code)] // intentionally unused — see create_job_object's comment
@@ -145,7 +149,7 @@ pub fn create_job_object(
     }
 
     // Set extended limit information
-    let mut limit_flags: u32 = 0;
+    let mut limit_flags: u32 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     let process_memory_limit = if memory_limit_mb > 0 {
         limit_flags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
         memory_limit_mb * 1024 * 1024
