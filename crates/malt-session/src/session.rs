@@ -1,7 +1,7 @@
 //! Session runtime and lifecycle state machine.
 
 use malt_protocol::common::{
-    GroupId, InputAuthority, IsolationTier, LayoutNode, PaneId, SessionId, SessionInfo,
+    GroupId, InputAuthority, IsolationBasis, IsolationStatus, IsolationTier, LayoutNode, PaneId, SessionId, SessionInfo,
     SessionState,
 };
 
@@ -306,7 +306,14 @@ impl SessionRuntime {
             session_id: self.id.clone(),
             name: self.name.clone(),
             pane_count: self.panes.len() as u16,
-            isolation: self.isolation,
+            isolation: IsolationStatus {
+                effective: self.isolation,
+                requested: self.isolation,
+                basis: if self.isolation == IsolationTier::Bare { IsolationBasis::None } else { IsolationBasis::Assumed },
+                mechanism: None,
+                detail: None,
+                _unknown: Vec::new(),
+            },
             state: self.state,
             _unknown: Vec::new(),
         }

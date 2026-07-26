@@ -33,6 +33,22 @@ enum IsolationTier {
     Contained  @3
 }
 
+@non_exhaustive
+@doc("How strictly a caller requires its requested isolation tier.")
+enum IsolationPolicy {
+    Required  @0
+    Preferred @1
+    Disabled  @2
+}
+
+@non_exhaustive
+@doc("How an isolation status was established.")
+enum IsolationBasis {
+    Verified @0
+    Assumed  @1
+    None     @2
+}
+
 @doc("Split direction for layout operations.")
 enum Direction {
     Horizontal @0
@@ -202,6 +218,15 @@ union LayoutNode {
 
 # ─── Messages (shared compound types) ───
 
+@doc("The isolation actually held by a session, including request and evidence.")
+message IsolationStatus {
+    effective @0 : IsolationTier
+    requested @1 : IsolationTier
+    basis     @2 : IsolationBasis
+    mechanism @3 : optional<string>
+    detail    @4 : optional<string>
+}
+
 @doc("Tab metadata for panes that are members of a tabbed layout.")
 message TabContext {
     label     @0 : string
@@ -252,7 +277,7 @@ message SessionInfo {
     session_id @0 : SessionId
     name       @1 : optional<string>
     pane_count @2 @varint : u16
-    isolation  @3 : IsolationTier
+    isolation  @3 : IsolationStatus
     state      @4 : SessionState
 }
 

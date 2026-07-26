@@ -6,11 +6,12 @@ import malt.common
 # All session messages are Priority: Reliable
 
 @doc("Create a new session.")
-@domain(Session) @type(0x01) @revision(1)
+@domain(Session) @type(0x01) @revision(2)
 message CreateSession {
     name      @0 : optional<string>
     isolation @1 : IsolationTier
     group     @2 : optional<GroupId>
+    policy    @3 : IsolationPolicy
 }
 
 @doc("Attach to an existing session.")

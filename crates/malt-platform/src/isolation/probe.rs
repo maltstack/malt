@@ -214,7 +214,7 @@ impl IsolationCapabilities {
 
 #[cfg(target_os = "linux")]
 fn linux_namespaces_report() -> CapabilityReport {
-    CapabilityReport::supported()
+    CapabilityReport::assumed("namespace availability is inferred; no namespace was created")
 }
 #[cfg(not(target_os = "linux"))]
 fn linux_namespaces_report() -> CapabilityReport {
@@ -227,7 +227,7 @@ fn linux_namespaces_report() -> CapabilityReport {
 #[cfg(target_os = "linux")]
 fn linux_cgroups_report() -> CapabilityReport {
     if std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
-        CapabilityReport::supported()
+        CapabilityReport::verified()
     } else {
         CapabilityReport::unsupported(
             CapabilityReasonCode::MissingKernelFeature,
@@ -249,7 +249,7 @@ fn linux_overlayfs_report() -> CapabilityReport {
         .map(|content| content.lines().any(|line| line.contains("overlay")))
         .unwrap_or(false);
     if available {
-        CapabilityReport::supported()
+        CapabilityReport::verified()
     } else {
         CapabilityReport::unsupported(
             CapabilityReasonCode::MissingKernelFeature,
@@ -271,7 +271,7 @@ fn linux_seccomp_report() -> CapabilityReport {
         .map(|content| content.lines().any(|line| line.starts_with("Seccomp:")))
         .unwrap_or(false);
     if available {
-        CapabilityReport::supported()
+        CapabilityReport::verified()
     } else {
         CapabilityReport::unsupported(
             CapabilityReasonCode::MissingKernelFeature,
@@ -293,7 +293,7 @@ fn linux_seccomp_report() -> CapabilityReport {
 fn windows_job_objects_report() -> CapabilityReport {
     // Job Objects have been available on every supported Windows version;
     // unlike HCS there's no optional feature to check for.
-    CapabilityReport::supported()
+    CapabilityReport::assumed("Job Objects are expected on supported Windows versions; not created during probe")
 }
 #[cfg(not(target_os = "windows"))]
 fn windows_job_objects_report() -> CapabilityReport {
@@ -305,7 +305,7 @@ fn windows_job_objects_report() -> CapabilityReport {
 
 #[cfg(target_os = "windows")]
 fn windows_restricted_tokens_report() -> CapabilityReport {
-    CapabilityReport::supported()
+    CapabilityReport::assumed("restricted-token support is assumed; token not created during probe")
 }
 #[cfg(not(target_os = "windows"))]
 fn windows_restricted_tokens_report() -> CapabilityReport {
@@ -318,7 +318,7 @@ fn windows_restricted_tokens_report() -> CapabilityReport {
 #[cfg(target_os = "windows")]
 fn windows_hcs_report() -> CapabilityReport {
     if super::hcs::hcs_available() {
-        CapabilityReport::supported()
+        CapabilityReport::verified()
     } else {
         CapabilityReport::unsupported(
             CapabilityReasonCode::MissingBinary,
@@ -338,7 +338,7 @@ fn windows_hcs_report() -> CapabilityReport {
 
 #[cfg(target_os = "macos")]
 fn macos_sandbox_report() -> CapabilityReport {
-    CapabilityReport::supported()
+    CapabilityReport::assumed("sandbox_init availability is assumed; sandbox not initialized during probe")
 }
 #[cfg(not(target_os = "macos"))]
 fn macos_sandbox_report() -> CapabilityReport {
@@ -350,7 +350,7 @@ fn macos_sandbox_report() -> CapabilityReport {
 
 #[cfg(target_os = "macos")]
 fn macos_rlimit_report() -> CapabilityReport {
-    CapabilityReport::supported()
+    CapabilityReport::assumed("setrlimit availability is assumed; limits not applied during probe")
 }
 #[cfg(not(target_os = "macos"))]
 fn macos_rlimit_report() -> CapabilityReport {

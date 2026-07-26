@@ -121,7 +121,14 @@ fn handshake_includes_session_list() {
         session_id: malt_protocol::common::SessionId(1),
         name: Some("main".to_string()),
         pane_count: 2,
-        isolation: malt_protocol::common::IsolationTier::Bare,
+        isolation: malt_protocol::common::IsolationStatus {
+            effective: malt_protocol::common::IsolationTier::Bare,
+            requested: malt_protocol::common::IsolationTier::Bare,
+            basis: malt_protocol::common::IsolationBasis::None,
+            mechanism: None,
+            detail: None,
+            _unknown: Vec::new(),
+        },
         state: malt_protocol::common::SessionState::Active,
         _unknown: Vec::new(),
     }];
@@ -178,7 +185,14 @@ fn a_session_named(name: &str) -> malt_protocol::common::SessionInfo {
         session_id: malt_protocol::common::SessionId(1),
         name: Some(name.to_string()),
         pane_count: 1,
-        isolation: malt_protocol::common::IsolationTier::Bare,
+        isolation: malt_protocol::common::IsolationStatus {
+            effective: malt_protocol::common::IsolationTier::Bare,
+            requested: malt_protocol::common::IsolationTier::Bare,
+            basis: malt_protocol::common::IsolationBasis::None,
+            mechanism: None,
+            detail: None,
+            _unknown: Vec::new(),
+        },
         state: malt_protocol::common::SessionState::Active,
         _unknown: Vec::new(),
     }

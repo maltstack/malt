@@ -37,8 +37,8 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 
 ## Phase 1: Setup
 
-- [ ] T001 Confirm the workspace baseline before changing anything: `cargo test --workspace` (expect ~1447 passed / 0 failed). Record the number; it is the comparison for every later gate.
-- [ ] T002 [P] Re-verify the three claims this plan rests on, rather than trusting research.md: that `apply_session_isolation` in `crates/malt-daemon/src/executor/session_thread.rs` returns `()` and warns on failure; that `job_object_limits_for_tier` maps `Capped` and `Contained` to identical limits; and that the non-Windows branch is empty. If any has changed, correct the plan before writing code.
+- [X] T001 Confirm the workspace baseline before changing anything: `cargo test --workspace` passed 1,448 tests / 0 failed (2026-07-26).
+- [X] T002 [P] Re-verified before implementation: `apply_session_isolation` returned `()` and warned on failure; `Capped` and `Contained` had identical Job Object limits; the non-Windows branch was empty. The implementation now returns an error and refuses `Contained` rather than relabelling a Job Object.
 
 ---
 
@@ -46,11 +46,11 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 
 **Purpose**: find out what actually works before building policy on top of it. This phase produces no user-visible change and is the phase most likely to change the rest of the plan.
 
-- [ ] T003 Write a throwaway verification harness in `crates/malt-platform/tests/isolation_reality.rs` that calls the real OS entry points of each module a tier will depend on — starting with `job_objects` (already in use) and `hcs::hcs_available`/`create_compute_system`. **Not a deliverable**; its purpose is to answer "which of these function". Record the answers in the task list below before proceeding.
-- [ ] T004 Determine, for each of `namespaces`, `cgroups`, `seccomp`, `rlimit`, `overlayfs`, `sandbox`, `tokens` in `crates/malt-platform/src/isolation/`, whether its tests call real OS APIs or construct types. 54 isolation tests currently pass in 0.01 s, which is what pure-logic tests look like. Write the finding into `docs/findings/` — it determines what US3 and US4 can promise, and it is worth recording whether or not this feature uses every module.
-- [ ] T005 Add the verified-versus-assumed distinction to `CapabilityReport` in `crates/malt-platform/src/isolation/capability_report.rs`. Today `supported()` means both "checked this host" (`windows_hcs_report` calls `hcs_available()`) and "this platform always has it, so we did not check" (`windows_job_objects_report` returns unconditionally). FR-006 requires those to be distinguishable. Keep `CapabilityReasonCode` as-is.
-- [ ] T006 Update each facet in `crates/malt-platform/src/isolation/probe.rs` to declare which it is. The unconditional returns are defensible **as assumptions** — the Job Object one even states its rationale — and indefensible as verifications. Do not "fix" them into probes in this task; declaring them honestly is the requirement.
-- [ ] T007 Define `TierRequirements` in `crates/malt-platform/src/isolation/tier.rs`: per tier, the mechanism that provides it and the constraints it promises (data-model.md). This is what makes SC-004 checkable rather than a matter of naming.
+- [X] T003 Added `isolation_reality.rs`; real Job Object create/query calls succeed. HCS availability is checked and the compute-system entry point confirms the default build cannot create an HCS system.
+- [X] T004 Recorded the caller/test survey in `docs/findings/2026-07-26-isolation-module-reality.md`: only Job Objects are session-wired; HCS/tokens and Unix/macOS modules cannot be claimed as session containment.
+- [X] T005 Added `CapabilityBasis` (`Verified`/`Assumed`/`None`) to `CapabilityReport`, preserving `CapabilityReasonCode`.
+- [X] T006 Reclassified every capability facet as verified, assumed, or unavailable without converting assumptions into probes.
+- [X] T007 Defined `TierRequirements`, explicit mechanisms, and distinct constraints; a unit test prevents `Contained` from aliasing `Capped`.
 
 **Checkpoint**: it is known which modules work, and a capability report can no longer claim verification it does not have. No user-visible change yet.
 

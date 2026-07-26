@@ -69,4 +69,7 @@ pub enum DaemonError {
     /// whether to claim authority (FR-014, FR-015).
     #[error("{0}")]
     InputNotAuthorized(String),
+
+    #[error("requested isolation is unavailable: {0}")]
+    IsolationUnavailable(String),
 }

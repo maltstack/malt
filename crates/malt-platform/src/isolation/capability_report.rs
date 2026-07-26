@@ -19,6 +19,16 @@ pub enum CapabilityStatus {
     Unsupported,
 }
 
+/// Whether availability was observed on this host or inferred from a
+/// platform guarantee. Keeping this separate from `CapabilityStatus` avoids
+/// presenting an unconditional platform assumption as a successful probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityBasis {
+    Verified,
+    Assumed,
+    None,
+}
+
 /// Coarse classification of why a capability is unsupported or degraded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapabilityReasonCode {
@@ -57,6 +67,7 @@ impl fmt::Display for CapabilityReasonCode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityReport {
     pub status: CapabilityStatus,
+    pub basis: CapabilityBasis,
     pub reason_code: CapabilityReasonCode,
     pub reason_detail: Option<String>,
 }
@@ -64,10 +75,26 @@ pub struct CapabilityReport {
 impl CapabilityReport {
     /// A fully supported, verified capability.
     pub fn supported() -> Self {
+        Self::verified()
+    }
+
+    /// A capability whose prerequisite was checked on this host.
+    pub fn verified() -> Self {
         Self {
             status: CapabilityStatus::Supported,
+            basis: CapabilityBasis::Verified,
             reason_code: CapabilityReasonCode::NotImplemented,
             reason_detail: None,
+        }
+    }
+
+    /// A capability expected on this platform but not verified on this host.
+    pub fn assumed(detail: impl Into<String>) -> Self {
+        Self {
+            status: CapabilityStatus::Supported,
+            basis: CapabilityBasis::Assumed,
+            reason_code: CapabilityReasonCode::NotImplemented,
+            reason_detail: Some(detail.into()),
         }
     }
 
@@ -75,6 +102,7 @@ impl CapabilityReport {
     pub fn degraded(detail: impl Into<String>) -> Self {
         Self {
             status: CapabilityStatus::Degraded,
+            basis: CapabilityBasis::Assumed,
             reason_code: CapabilityReasonCode::UnsupportedConfiguration,
             reason_detail: Some(detail.into()),
         }
@@ -84,6 +112,7 @@ impl CapabilityReport {
     pub fn unsupported(reason_code: CapabilityReasonCode, detail: impl Into<String>) -> Self {
         Self {
             status: CapabilityStatus::Unsupported,
+            basis: CapabilityBasis::None,
             reason_code,
             reason_detail: Some(detail.into()),
         }
@@ -105,6 +134,14 @@ mod tests {
     #[test]
     fn supported_is_usable() {
         assert!(CapabilityReport::supported().is_usable());
+        assert_eq!(CapabilityReport::supported().basis, CapabilityBasis::Verified);
+    }
+
+    #[test]
+    fn assumed_support_is_distinguishable_from_verified_support() {
+        let report = CapabilityReport::assumed("documented platform facility");
+        assert!(report.is_usable());
+        assert_eq!(report.basis, CapabilityBasis::Assumed);
     }
 
     #[test]

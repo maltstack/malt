@@ -29,6 +29,43 @@ pub enum IsolationTier {
     Contained,
 }
 
+/// The operating-system mechanism a session tier is allowed to name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsolationMechanism {
+    None,
+    JobObject,
+    Hcs,
+    LinuxNamespaces,
+    MacosSandbox,
+}
+
+/// A concrete promise used to distinguish adjacent tiers in tests and status
+/// reporting. A tier must never be represented by a weaker mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TierConstraint {
+    ProcessGroup,
+    MemoryLimit,
+    CpuLimit,
+    ContainerBoundary,
+}
+
+/// Named mechanism and observable promises for one tier on this build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TierRequirements {
+    pub tier: IsolationTier,
+    pub mechanism: IsolationMechanism,
+    pub constraints: &'static [TierConstraint],
+}
+
+pub fn tier_requirements(tier: IsolationTier) -> TierRequirements {
+    match tier {
+        IsolationTier::Bare => TierRequirements { tier, mechanism: IsolationMechanism::None, constraints: &[] },
+        IsolationTier::Restricted => TierRequirements { tier, mechanism: IsolationMechanism::JobObject, constraints: &[TierConstraint::ProcessGroup] },
+        IsolationTier::Capped => TierRequirements { tier, mechanism: IsolationMechanism::JobObject, constraints: &[TierConstraint::ProcessGroup, TierConstraint::MemoryLimit, TierConstraint::CpuLimit] },
+        IsolationTier::Contained => TierRequirements { tier, mechanism: IsolationMechanism::Hcs, constraints: &[TierConstraint::ContainerBoundary] },
+    }
+}
+
 /// Error type for isolation operations.
 #[derive(Debug)]
 pub enum IsolationError {
@@ -357,5 +394,13 @@ mod tests {
         set.insert(IsolationTier::Capped);
         set.insert(IsolationTier::Contained);
         assert_eq!(set.len(), 4);
+    }
+
+    #[test]
+    fn contained_does_not_alias_capped_requirements() {
+        assert_ne!(
+            tier_requirements(IsolationTier::Capped),
+            tier_requirements(IsolationTier::Contained)
+        );
     }
 }

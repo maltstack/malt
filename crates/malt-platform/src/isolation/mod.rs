@@ -39,9 +39,14 @@ pub mod probe;
 mod capability_report;
 mod tier;
 
-pub use capability_report::{CapabilityReasonCode, CapabilityReport, CapabilityStatus};
+pub use capability_report::{
+    CapabilityBasis, CapabilityReasonCode, CapabilityReport, CapabilityStatus,
+};
 pub use probe::IsolationCapabilities;
-pub use tier::{IsolationContext, IsolationError, IsolationTier};
+pub use tier::{
+    tier_requirements, IsolationContext, IsolationError, IsolationMechanism, IsolationTier,
+    TierConstraint, TierRequirements,
+};
 
 /// Check whether the requested isolation tier is available on this platform.
 ///

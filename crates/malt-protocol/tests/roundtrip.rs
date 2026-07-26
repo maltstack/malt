@@ -70,6 +70,7 @@ fn session_create_roundtrip() {
         name: Some("dev".to_string()),
         isolation: malt_protocol::common::IsolationTier::Restricted,
         group: None,
+        policy: malt_protocol::common::IsolationPolicy::Required,
         _unknown: Vec::new(),
     };
 
@@ -82,6 +83,7 @@ fn session_create_roundtrip() {
     assert_eq!(msg.name, decoded.name);
     assert_eq!(msg.isolation, decoded.isolation);
     assert_eq!(msg.group, decoded.group);
+    assert_eq!(msg.policy, decoded.policy);
 }
 
 #[test]

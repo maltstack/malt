@@ -10,7 +10,7 @@ use crate::store::{DebouncedStore, StoreError};
 use crate::supervisor::ProcessSupervisor;
 use crate::DaemonError;
 use malt_protocol::common::{
-    ClientCapabilities, GroupId, IsolationTier, PaneId, SessionId, SessionInfo, SessionState,
+    ClientCapabilities, GroupId, IsolationBasis, IsolationStatus, IsolationTier, PaneId, SessionId, SessionInfo, SessionState,
 };
 use malt_protocol::input::KeyEvent;
 use malt_protocol::persist::daemon::DaemonState;
@@ -624,7 +624,14 @@ impl Coordinator {
                     SessionLifecycle::Active { .. } => 1,
                     SessionLifecycle::Dormant { persisted } => persisted.panes.len() as u16,
                 },
-                isolation: h.isolation,
+                isolation: IsolationStatus {
+                    effective: h.isolation,
+                    requested: h.isolation,
+                    basis: if h.isolation == IsolationTier::Bare { IsolationBasis::None } else { IsolationBasis::Assumed },
+                    mechanism: None,
+                    detail: None,
+                    _unknown: Vec::new(),
+                },
                 state: match &h.lifecycle {
                     SessionLifecycle::Active { .. } => SessionState::Active,
                     SessionLifecycle::Dormant { .. } => SessionState::Dormant,

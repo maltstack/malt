@@ -90,13 +90,23 @@ pub(crate) fn now_epoch_ms() -> u64 {
 /// inside would be exactly the "looks done but isn't" pattern this project
 /// is trying to stop repeating — tracked as a separate, larger item in
 /// `docs/BACKLOG.md` rather than half-wired here.
-fn apply_session_isolation(env: &mut Env, session_id: SessionId, isolation: IsolationTier) {
+fn apply_session_isolation(
+    env: &mut Env,
+    session_id: SessionId,
+    isolation: IsolationTier,
+) -> Result<(), DaemonError> {
     env.set_isolation_context(malt_platform::isolation::IsolationContext::from(isolation));
 
     #[cfg(windows)]
     {
         if isolation == IsolationTier::Bare {
-            return;
+            return Ok(());
+        }
+        if isolation == IsolationTier::Contained {
+            return Err(DaemonError::IsolationUnavailable(
+                "contained requires an HCS-aware MASH spawn path; a Job Object is not a container"
+                    .to_string(),
+            ));
         }
         let (memory_limit_mb, cpu_rate) = job_object_limits_for_tier(isolation);
         let job_name = format!("malt-session-{}", session_id.0);
@@ -106,16 +116,16 @@ fn apply_session_isolation(env: &mut Env, session_id: SessionId, isolation: Isol
             cpu_rate,
         ) {
             Ok(job) => env.set_job_object(std::sync::Arc::new(job)),
-            Err(error) => warn!(
-                ?session_id,
-                %error,
-                "failed to create job object for session isolation; session will run without process containment"
-            ),
+            Err(error) => return Err(DaemonError::IsolationUnavailable(error.to_string())),
         }
+        Ok(())
     }
     #[cfg(not(windows))]
     {
         let _ = session_id;
+        if isolation == IsolationTier::Bare { Ok(()) } else {
+            Err(DaemonError::IsolationUnavailable("no session isolation backend is wired on this platform".to_string()))
+        }
     }
 }
 
@@ -587,7 +597,7 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        apply_session_isolation(&mut env, session_id.clone(), isolation);
+        apply_session_isolation(&mut env, session_id.clone(), isolation)?;
         Self::spawn_with_env(
             session_id,
             first_pane,
@@ -619,7 +629,7 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        apply_session_isolation(&mut env, session_id.clone(), isolation);
+        apply_session_isolation(&mut env, session_id.clone(), isolation)?;
         Self::spawn_with_env(
             session_id,
             first_pane,
@@ -681,7 +691,7 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        apply_session_isolation(&mut env, session_id.clone(), isolation);
+        apply_session_isolation(&mut env, session_id.clone(), isolation)?;
         if let Some(snapshot) = &env_snapshot {
             env.apply_snapshot(snapshot);
         }
