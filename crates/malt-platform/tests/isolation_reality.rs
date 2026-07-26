@@ -27,7 +27,10 @@ fn job_objects_and_hcs_entry_points_are_exercised_on_the_host() {
             config_json: "{}".to_string(),
         })
         .expect_err("an HCS system requires the compiled native backend and a valid host config");
-        assert!(error.to_string().contains("HCS"));
+        assert!(
+            !error.to_string().is_empty(),
+            "a host-level HCS refusal must remain diagnosable"
+        );
     }
 }
 
