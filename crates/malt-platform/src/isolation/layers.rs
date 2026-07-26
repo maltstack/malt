@@ -95,6 +95,12 @@ pub fn destroy_writable_layer(workspace: WritableLayer) -> Result<(), IsolationE
     Ok(())
 }
 
+/// Destroy an owned read-only prepared layer after no compute system or child
+/// layer references it. The helper performs reference checks before this call.
+pub fn destroy_prepared_layer(layer: PreparedLayer) -> Result<(), IsolationError> {
+    native::destroy_layer(&layer.path)
+}
+
 fn validate_owned_layer_path(path: &Path, id: &str) -> Result<(), IsolationError> {
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
         return Err(IsolationError::HcsError("HCS layer identifier must use ASCII alphanumeric or hyphen characters".to_string()));

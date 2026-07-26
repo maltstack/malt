@@ -87,7 +87,7 @@ pub fn dispatch_image_operation(request_id: u32, operation: &ImageOperation) -> 
         Err(detail) => return refused(request_id, ReasonCode::OsError, detail),
     };
     match operation {
-        ImageOperation::Provision { reference } => match malt_image::acquire_public_windows_image(&store, reference) {
+        ImageOperation::Provision { reference } => match malt_image::acquire_public_windows_image(&store, reference).and_then(|record| prepare_image(&store, record).map_err(malt_image::ProvisionError::Store)) {
             Ok(record) => pack_image_response(request_id, image_view(&record)),
             Err(error) => refused(request_id, ReasonCode::OsError, format!("image provision failed: {error}")),
         },
@@ -101,7 +101,7 @@ pub fn dispatch_image_operation(request_id: u32, operation: &ImageOperation) -> 
         },
         ImageOperation::Remove { id } => match parse_image_id(id).and_then(|digest| {
             let record = store.load_record(&digest).map_err(|error| error.to_string())?;
-            if record.prepared { return Err("prepared images cannot be removed until helper workspace reference accounting is available".to_string()); }
+            if record.prepared { remove_prepared_image(&store, &record)?; }
             store.remove_record(&digest).map_err(|error| error.to_string())?;
             Ok(())
         }) {
@@ -111,6 +111,47 @@ pub fn dispatch_image_operation(request_id: u32, operation: &ImageOperation) -> 
         ImageOperation::Unknown { .. } => refused(request_id, ReasonCode::InvalidParameters, "unknown image operation"),
         _ => refused(request_id, ReasonCode::InvalidParameters, "unrecognized image operation"),
     }
+}
+
+fn remove_prepared_image(store: &malt_image::ImageStore, record: &malt_image::ImageRecord) -> Result<(), String> {
+    let digest = record.manifest_digest.to_string().trim_start_matches("sha256:").to_string();
+    let root = store.root().join("prepared").join(&digest);
+    for index in (0..record.manifest.layers.len()).rev() {
+        let layer = malt_platform::isolation::layers::PreparedLayer { id: format!("malt-{digest}-{index}"), path: root.join("layers").join(index.to_string()) };
+        malt_platform::isolation::layers::destroy_prepared_layer(layer).map_err(|error| error.to_string())?;
+    }
+    std::fs::remove_dir_all(root).map_err(|error| error.to_string())
+}
+
+fn prepare_image(store: &malt_image::ImageStore, mut record: malt_image::ImageRecord) -> Result<malt_image::ImageRecord, malt_image::StoreError> {
+    if record.prepared { return Ok(record); }
+    if let Err(error) = malt_platform::isolation::hcs::ensure_hcs_runtime() {
+        tracing::info!(%error, manifest = %record.manifest_digest, "image acquired but HCS preparation is unavailable");
+        return Ok(record);
+    }
+    let digest = record.manifest_digest.to_string().trim_start_matches("sha256:").to_string();
+    let root = store.root().join("prepared").join(&digest);
+    let sources = root.join("sources");
+    let layers_root = root.join("layers");
+    let result = (|| -> Result<Vec<malt_platform::isolation::layers::PreparedLayer>, String> {
+        std::fs::create_dir_all(&sources).map_err(|error| error.to_string())?;
+        let mut parents = Vec::new();
+        for (index, descriptor) in record.manifest.layers.iter().enumerate() {
+            let source = sources.join(index.to_string());
+            let input = std::fs::File::open(store.blob_path(&descriptor.digest)).map_err(|error| error.to_string())?;
+            malt_image::extract_gzip_layer(input, &source).map_err(|error| error.to_string())?;
+            let layer = malt_platform::isolation::layers::materialize_layer(&layers_root.join(index.to_string()), &source, &format!("malt-{digest}-{index}"), &parents).map_err(|error| error.to_string())?;
+            parents.push(layer);
+        }
+        Ok(parents)
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_dir_all(&root);
+        return Err(malt_image::StoreError::Io(std::io::Error::other(format!("HCS image preparation failed: {error}"))));
+    }
+    record.prepared = true;
+    store.replace_record(&record)?;
+    Ok(record)
 }
 
 fn helper_image_store() -> Result<malt_image::ImageStore, String> {

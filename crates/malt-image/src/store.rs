@@ -71,6 +71,25 @@ impl ImageStore {
         atomic_rename(&temporary, &destination)
     }
 
+    /// Atomically replace a record only after a later privileged preparation
+    /// transaction has completed. The identity remains the manifest digest.
+    pub fn replace_record(&self, record: &ImageRecord) -> Result<(), StoreError> {
+        let destination = self.record_path(&record.manifest_digest);
+        if !destination.exists() { return Err(StoreError::Missing(record.manifest_digest.clone())); }
+        let temporary = destination.with_extension("json.tmp");
+        if temporary.exists() { fs::remove_file(&temporary)?; }
+        write_new(&temporary, &serde_json::to_vec_pretty(record)?)?;
+        #[cfg(windows)]
+        {
+            fs::rename(&temporary, &destination)?;
+        }
+        #[cfg(not(windows))]
+        {
+            fs::rename(&temporary, &destination)?;
+        }
+        Ok(())
+    }
+
     pub fn load_record(&self, digest: &Digest) -> Result<ImageRecord, StoreError> {
         let path = self.record_path(digest);
         let mut bytes = Vec::new();
