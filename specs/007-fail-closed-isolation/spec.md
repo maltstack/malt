@@ -275,6 +275,17 @@ the same request succeeds and enforces where a path does exist.
 - **Scope excludes non-process resources** such as network and filesystem
   restriction, except where an existing level already promises them. Making
   the current promises true comes before adding new ones.
+- **Most of the platform machinery this needs already exists and is
+  unused.** Surveyed 2026-07-26, see
+  `docs/findings/2026-07-26-isolation-prior-art-survey.md`: the platform layer
+  has 14 isolation modules, of which 12 have no caller anywhere outside that
+  crate — including per-tier capability probing and a report type carrying
+  supported/degraded/unsupported with reasons. The session path uses one of
+  them. This feature is therefore expected to be mostly wiring and policy
+  rather than new platform work. **Not yet established: whether those modules
+  actually work.** Existence and test count are not function — two real
+  defects were once found in the one module that *is* used, only because a
+  test called the real OS API rather than constructing types directly.
 - **This closes the reopened fail-closed requirement of the CLI isolation
   flag.** That spec's surface already ships; what is missing is exactly this
   guarantee, so it should be closed by this work rather than separately.
