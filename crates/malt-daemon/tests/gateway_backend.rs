@@ -271,7 +271,7 @@ fn granted_capped_session_names_its_job_object_mechanism() {
         .unwrap();
     assert_eq!(created.isolation.effective, "capped");
     assert_eq!(created.isolation.mechanism.as_deref(), Some("job-object"));
-    assert_eq!(created.isolation.basis, "assumed");
+    assert_eq!(created.isolation.basis, "verified");
 }
 
 #[test]

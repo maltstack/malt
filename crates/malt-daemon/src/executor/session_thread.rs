@@ -138,20 +138,26 @@ fn apply_session_isolation(
                 ))
             })?;
         let job_name = format!("malt-session-{}", session_id.0);
-        match malt_platform::isolation::job_objects::create_job_object(
+        let job = match malt_platform::isolation::job_objects::create_job_object(
             &job_name,
             memory_limit_mb,
             cpu_rate,
         ) {
-            Ok(job) => env.set_job_object(std::sync::Arc::new(job)),
+            Ok(job) => job,
             Err(error) => return Err(DaemonError::IsolationUnavailable(error.to_string())),
-        }
+        };
+        malt_platform::isolation::job_objects::query_active_processes(&job).map_err(|error| {
+            DaemonError::IsolationUnavailable(format!(
+                "created Job Object could not be externally inspected: {error}"
+            ))
+        })?;
+        env.set_job_object(std::sync::Arc::new(job));
         Ok(EstablishedIsolation {
             effective: isolation,
-            basis: IsolationBasis::Assumed,
+            basis: IsolationBasis::Verified,
             mechanism: Some("job-object".to_string()),
             detail: Some(
-                "Job Object established for MASH external commands; external verification has not run"
+                "Job Object creation and process enumeration verified; each MASH external command is assigned before execution"
                     .to_string(),
             ),
         })
