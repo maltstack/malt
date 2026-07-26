@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "presets": {
+    "malt": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:255ba32d6d0079122c12bc9946a1714e9e15db31f07fdacce2c6d504decc5227",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {},
+      "registered_skills": [],
+      "installed_at": "2026-07-26T13:21:34.072110+00:00"
+    }
+  }
+}
