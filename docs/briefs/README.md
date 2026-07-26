@@ -22,6 +22,7 @@ confirmation.
 | [003 — rate limiter has no window](003-rate-limiter-has-no-window.md) | High | 2026-07-26 | A "per window" limiter with no window: a client is banned permanently after N requests |
 | [004 — writer lacks the reader's frame bound](004-frame-writer-size-bound.md) | Medium | 2026-07-26 | `FrameWriter` casts length to `u32` unchecked while `FrameReader` enforces a 16 MiB max |
 | [005 — the lint gate is green but unenforced](005-enforce-quality-gates-in-ci.md) | Medium | 2026-07-26 | Four gates pass locally and nothing prevents a regression landing |
+| [006 — HCS backend access-violates](006-hcs-backend-access-violation.md) | High | 2026-07-26 | `create_compute_system` faults with STATUS_ACCESS_VIOLATION; the host is fine, the binding is not |
 
 ## Not written up, and why
 

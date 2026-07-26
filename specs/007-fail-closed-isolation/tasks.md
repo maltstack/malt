@@ -110,7 +110,7 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 - [X] T025 [US3] Research R9 records AppContainer as out of scope, never a silent fallback.
 - [X] T026 [US3] Windows establishment now calls real `QueryInformationJobObject` after creation; only a successful create-and-enumerate result is reported as `basis: verified`.
 - [ ] T027 [US3] Test in `crates/malt-platform/tests/isolation_reality.rs` that for each adjacent tier pair, one constraint binds at the stronger and not the weaker (SC-004), by running real work — not by comparing the limit values the code passed in.
-- [ ] T028 [P] [US3] Test in `crates/malt-platform/tests/isolation_reality.rs` that a process spawned inside a contained session is subject to the containment (FR-012, SC-005), observed from outside rather than inferred from the spawn succeeding.
+- [ ] T028 [P] [US3] **BLOCKED — reclassified 2026-07-26.** Not blocked on an unavailable platform, as previously recorded. `computecore.dll` is present, `vmcompute`/`hns` are running, the `hcs` feature compiles, and `ensure_hcs_runtime()` returns `Ok` on this host. `create_compute_system` then terminates the process with `STATUS_ACCESS_VIOLATION`. See [brief 006](../../docs/briefs/006-hcs-backend-access-violation.md) for the repro. This task resumes once that crash is fixed; it is local work, not a hardware wait.
 - [X] T029 [P] [US3] Job Objects use `KILL_ON_JOB_CLOSE`; `job_object_teardown_kills_its_real_process_tree` assigns a real process, enumerates it, drops the Job Object, and observes the process exit.
 
 **Checkpoint**: US1–US3 work. Gates green. Commit. **Merge to main.**

@@ -138,3 +138,81 @@ fn windows_isolation_paths_are_not_claimed_on_other_platforms() {
     // establish a Windows session tier.
     assert!(!cfg!(windows));
 }
+
+/// Probe: can this host actually create an HCS compute system?
+///
+/// Ignored because the answer is host-dependent and this is a diagnostic, not
+/// an assertion. Run with:
+/// `cargo test -p malt-platform --test isolation_reality hcs_probe -- --ignored --nocapture`
+///
+/// The distinction it exists to draw: `hcs_available()` checks for
+/// `computecore.dll`, which ships with Windows regardless of whether the
+/// Containers feature is enabled. So "available" is a weaker claim than
+/// "usable", and this prints which one holds here.
+#[cfg(windows)]
+#[test]
+#[ignore]
+fn hcs_probe_reports_what_this_host_can_actually_do() {
+    use malt_platform::isolation::hcs;
+
+    println!("hcs_available() = {}", hcs::hcs_available());
+    match hcs::ensure_hcs_runtime() {
+        Ok(()) => println!("ensure_hcs_runtime() = Ok"),
+        Err(e) => println!("ensure_hcs_runtime() = Err: {e}"),
+    }
+
+    // A structurally valid minimal Windows container document. Creating one
+    // still needs a base layer, so a failure here distinguishes "feature
+    // absent" from "feature present, image missing".
+    let config = hcs::HcsConfig {
+        id: format!("malt-hcs-probe-{}", std::process::id()),
+        config_json: r#"{"SchemaVersion":{"Major":2,"Minor":1},"Owner":"malt","ShouldTerminateOnLastHandleClosed":true}"#
+            .to_string(),
+    };
+    match hcs::create_compute_system(&config) {
+        Ok(system) => {
+            println!(
+                "create_compute_system() = Ok (handle {})",
+                system.raw_handle()
+            );
+        }
+        Err(e) => println!("create_compute_system() = Err: {e}"),
+    }
+}
+
+/// The HCS capability report must not claim more than it checked.
+///
+/// `computecore.dll` ships with Windows regardless of the Containers feature
+/// or of whether this build compiled the HCS backend in. Reporting `Verified`
+/// on its presence advertised `Contained` as available on hosts where every
+/// required request for it then failed -- a capabilities answer that
+/// disagrees with reality, which is worse than none because it is what a
+/// caller uses to decide what to ask for (SC-007).
+///
+/// This asserts the report is never `Verified`, on either build. Without the
+/// `hcs` feature the runtime check fails and it must be `Unsupported`; with
+/// it, the prerequisites resolve but no compute system has been created, so
+/// the honest basis is `Assumed`.
+#[cfg(windows)]
+#[test]
+fn hcs_capability_is_never_reported_as_verified_on_dll_presence_alone() {
+    use malt_platform::isolation::probe::IsolationCapabilities;
+    use malt_platform::isolation::{CapabilityBasis, CapabilityStatus};
+
+    let caps = IsolationCapabilities::probe();
+    let hcs = &caps.windows_hcs;
+
+    assert_ne!(
+        hcs.basis,
+        CapabilityBasis::Verified,
+        "HCS was reported as Verified, but nothing created a compute system;          the only check performed is that computecore.dll exists, which is          true on stock Windows. Report: {hcs:?}"
+    );
+
+    if hcs.status == CapabilityStatus::Supported {
+        assert_eq!(
+            hcs.basis,
+            CapabilityBasis::Assumed,
+            "a supported-but-unverified capability must say Assumed: {hcs:?}"
+        );
+    }
+}

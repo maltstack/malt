@@ -135,6 +135,26 @@ impl IsolationCapabilities {
     pub fn unsupported_detail_for_tier(&self, tier: super::IsolationTier) -> Option<String> {
         use super::IsolationTier;
 
+        // A tier that is available has nothing unsupported to report, even if
+        // some facet that *could* provide it is missing. Several tiers are
+        // satisfied by alternatives -- Restricted on Windows is job objects
+        // OR HCS -- so listing every unusable candidate describes a problem
+        // the caller does not have, and contradicts the availability answer
+        // given by `supports_*`. Two surfaces disagreeing about the same tier
+        // is the defect feature 007 exists to remove (FR-007).
+        //
+        // This generalises a special case that already existed below for
+        // Contained/HCS; that case is now redundant but harmless.
+        let available = match tier {
+            IsolationTier::Bare => true,
+            IsolationTier::Restricted => self.supports_restricted(),
+            IsolationTier::Capped => self.supports_capped(),
+            IsolationTier::Contained => self.supports_contained(),
+        };
+        if available {
+            return None;
+        }
+
         let candidates: Vec<(&'static str, &CapabilityReport)> = match tier {
             IsolationTier::Bare => return None,
             IsolationTier::Restricted => vec![
@@ -319,13 +339,30 @@ fn windows_restricted_tokens_report() -> CapabilityReport {
 
 #[cfg(target_os = "windows")]
 fn windows_hcs_report() -> CapabilityReport {
-    if super::hcs::hcs_available() {
-        CapabilityReport::verified()
-    } else {
-        CapabilityReport::unsupported(
+    if !super::hcs::hcs_available() {
+        return CapabilityReport::unsupported(
             CapabilityReasonCode::MissingBinary,
             "computecore.dll not found (Windows Containers feature may not be installed)",
-        )
+        );
+    }
+    // `computecore.dll` ships with Windows whether or not the Containers
+    // feature is enabled and whether or not this build compiled the HCS
+    // backend in, so its presence is not evidence that HCS can be used.
+    // Reporting `verified()` on the strength of it advertised `Contained` as
+    // available on hosts where every required request for it then failed --
+    // the capabilities call disagreeing with reality, which SC-007 exists to
+    // forbid.
+    match super::hcs::ensure_hcs_runtime() {
+        // Still `assumed`, not `verified`: the runtime prerequisites resolve,
+        // but no compute system has been created, and creating one is the
+        // only thing that would establish the tier is actually deliverable.
+        Ok(()) => CapabilityReport::assumed(
+            "HCS runtime prerequisites resolve; creating a compute system is not attempted during probing",
+        ),
+        Err(error) => CapabilityReport::unsupported(
+            CapabilityReasonCode::MissingKernelFeature,
+            format!("HCS runtime unavailable: {error}"),
+        ),
     }
 }
 #[cfg(not(target_os = "windows"))]
