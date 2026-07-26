@@ -7,7 +7,7 @@ mod output;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Command, IsolationPolicyArg, IsolationTierArg};
+use cli::{Cli, Command, IsolationCommand, IsolationPolicyArg, IsolationTierArg};
 use client::{MaltClient, SessionData};
 
 fn main() -> Result<()> {
@@ -21,6 +21,9 @@ fn main() -> Result<()> {
         Some(Command::Start) => handle_start(),
         Some(Command::Stop) => handle_stop(&client),
         Some(Command::List) => handle_list(&client),
+        Some(Command::Isolation {
+            command: IsolationCommand::Capabilities,
+        }) => handle_isolation_capabilities(&client),
         Some(Command::New {
             name,
             isolation,
@@ -135,6 +138,18 @@ fn handle_list(client: &MaltClient) -> Result<()> {
     Ok(())
 }
 
+fn handle_isolation_capabilities(client: &MaltClient) -> Result<()> {
+    for capability in client.isolation_capabilities()? {
+        let mechanism = capability.mechanism.unwrap_or_else(|| "-".to_string());
+        let detail = capability.detail.unwrap_or_default();
+        println!(
+            "{}: available={} basis={} mechanism={} {}",
+            capability.tier, capability.available, capability.basis, mechanism, detail
+        );
+    }
+    Ok(())
+}
+
 fn handle_new(
     client: &MaltClient,
     name: Option<&str>,
@@ -149,6 +164,23 @@ fn handle_new(
     )?;
     validate_created_session(&session, expected_tier)?;
     println!("{}", creation_message(&session));
+    if !session
+        .isolation
+        .effective
+        .eq_ignore_ascii_case(&session.isolation.requested)
+    {
+        eprintln!(
+            "WARNING: requested {} isolation, received {} (basis: {}). {}",
+            session.isolation.requested,
+            session.isolation.effective,
+            session.isolation.basis,
+            session
+                .isolation
+                .detail
+                .as_deref()
+                .unwrap_or("no further detail"),
+        );
+    }
     Ok(())
 }
 
@@ -161,6 +193,15 @@ fn validate_created_session(session: &SessionData, expected_tier: IsolationTierA
         .isolation
         .effective
         .eq_ignore_ascii_case(expected_tier.request_value())
+    {
+        return Ok(());
+    }
+
+    if session
+        .isolation
+        .requested
+        .eq_ignore_ascii_case(expected_tier.request_value())
+        && session.isolation.detail.is_some()
     {
         return Ok(());
     }

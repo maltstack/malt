@@ -7,8 +7,8 @@ use base64::Engine;
 use malt_gateway::backend::GatewayBackend;
 use malt_gateway::error::GatewayError;
 use malt_gateway::types::{
-    CommandHistoryEntry, ExecResult, IsolationStatusResponse, LifecycleEventDto, OutputChunkDto,
-    PaneResponse, SessionResponse,
+    CommandHistoryEntry, ExecResult, IsolationCapabilityResponse, IsolationStatusResponse,
+    LifecycleEventDto, OutputChunkDto, PaneResponse, SessionResponse,
 };
 use malt_protocol::common::{IsolationPolicy, IsolationTier, SessionId};
 use malt_protocol::shell::OutputStream;
@@ -218,6 +218,21 @@ fn isolation_status_response(
 }
 
 impl GatewayBackend for DaemonBackend {
+    fn isolation_capabilities(&self) -> Result<Vec<IsolationCapabilityResponse>, GatewayError> {
+        Ok(malt_platform::isolation::session_tier_capabilities()
+            .into_iter()
+            .map(|capability| IsolationCapabilityResponse {
+                tier: format!("{:?}", capability.tier).to_ascii_lowercase(),
+                available: capability.available,
+                basis: format!("{:?}", capability.basis).to_ascii_lowercase(),
+                mechanism: capability
+                    .mechanism
+                    .map(|mechanism| format!("{:?}", mechanism).to_ascii_lowercase()),
+                detail: capability.detail,
+            })
+            .collect())
+    }
+
     fn list_sessions(&self) -> Result<Vec<SessionResponse>, GatewayError> {
         let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
         let sessions = coord.list_sessions();

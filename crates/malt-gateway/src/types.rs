@@ -51,6 +51,17 @@ pub struct IsolationStatusResponse {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct IsolationCapabilityResponse {
+    pub tier: String,
+    pub available: bool,
+    pub basis: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mechanism: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 /// Request body for executing a command.
 #[derive(Debug, Deserialize)]
 pub struct ExecRequest {

@@ -31,6 +31,14 @@ pub async fn list(
     Ok(Json(ApiResponse::success(sessions)))
 }
 
+pub async fn isolation_capabilities(
+    State(backend): State<Arc<dyn GatewayBackend>>,
+) -> Result<Json<ApiResponse<Vec<crate::types::IsolationCapabilityResponse>>>, GatewayError> {
+    Ok(Json(ApiResponse::success(
+        backend.isolation_capabilities()?,
+    )))
+}
+
 pub async fn create(
     State(backend): State<Arc<dyn GatewayBackend>>,
     Json(req): Json<CreateSessionRequest>,

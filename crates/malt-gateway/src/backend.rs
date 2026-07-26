@@ -11,6 +11,10 @@ use crate::types::{
 pub trait GatewayBackend: Send + Sync + 'static {
     fn list_sessions(&self) -> Result<Vec<SessionResponse>, GatewayError>;
 
+    fn isolation_capabilities(
+        &self,
+    ) -> Result<Vec<crate::types::IsolationCapabilityResponse>, GatewayError>;
+
     fn create_session(
         &self,
         name: Option<String>,

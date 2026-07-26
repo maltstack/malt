@@ -57,6 +57,15 @@ pub struct IsolationData {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct IsolationCapabilityData {
+    pub tier: String,
+    pub available: bool,
+    pub basis: String,
+    pub mechanism: Option<String>,
+    pub detail: Option<String>,
+}
+
 /// Payload sent to the existing create-session endpoint.
 #[derive(Debug, Serialize)]
 struct CreateSessionRequest<'a> {
@@ -202,6 +211,17 @@ impl MaltClient {
         let envelope: ApiEnvelope<Vec<SessionData>> =
             resp.json().context("invalid session list response")?;
         envelope.into_data("session list")
+    }
+
+    pub fn isolation_capabilities(&self) -> Result<Vec<IsolationCapabilityData>> {
+        let resp = self
+            .authed(self.http.get(self.url("/isolation/capabilities")))
+            .send()
+            .context("failed to reach daemon")?;
+        let envelope: ApiEnvelope<Vec<IsolationCapabilityData>> = resp
+            .json()
+            .context("invalid isolation capabilities response")?;
+        envelope.into_data("isolation capabilities")
     }
 
     pub fn create_session(

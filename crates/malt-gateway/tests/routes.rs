@@ -29,7 +29,13 @@ impl MockBackend {
                 id: 1,
                 name: Some("main".to_string()),
                 pane_count: 1,
-                isolation: malt_gateway::types::IsolationStatusResponse { effective: "bare".to_string(), requested: "bare".to_string(), basis: "none".to_string(), mechanism: None, detail: None },
+                isolation: malt_gateway::types::IsolationStatusResponse {
+                    effective: "bare".to_string(),
+                    requested: "bare".to_string(),
+                    basis: "none".to_string(),
+                    mechanism: None,
+                    detail: None,
+                },
                 state: "Active".to_string(),
             }],
         }
@@ -37,6 +43,12 @@ impl MockBackend {
 }
 
 impl GatewayBackend for MockBackend {
+    fn isolation_capabilities(
+        &self,
+    ) -> Result<Vec<malt_gateway::types::IsolationCapabilityResponse>, GatewayError> {
+        Ok(Vec::new())
+    }
+
     fn list_sessions(&self) -> Result<Vec<SessionResponse>, GatewayError> {
         Ok(self.sessions.clone())
     }
@@ -50,7 +62,13 @@ impl GatewayBackend for MockBackend {
             id: 2,
             name,
             pane_count: 1,
-            isolation: malt_gateway::types::IsolationStatusResponse { effective: isolation.clone().unwrap_or_else(|| "bare".to_string()), requested: isolation.unwrap_or_else(|| "bare".to_string()), basis: "none".to_string(), mechanism: None, detail: None },
+            isolation: malt_gateway::types::IsolationStatusResponse {
+                effective: isolation.clone().unwrap_or_else(|| "bare".to_string()),
+                requested: isolation.unwrap_or_else(|| "bare".to_string()),
+                basis: "none".to_string(),
+                mechanism: None,
+                detail: None,
+            },
             state: "Active".to_string(),
         })
     }

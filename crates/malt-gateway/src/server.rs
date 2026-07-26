@@ -9,6 +9,10 @@ use std::sync::Arc;
 /// Build the axum Router with all routes and middleware.
 pub fn build_router(backend: Arc<dyn GatewayBackend>) -> Router {
     Router::new()
+        .route(
+            "/isolation/capabilities",
+            get(routes::sessions::isolation_capabilities),
+        )
         .route("/health", get(routes::health::health))
         .route("/sessions", get(routes::sessions::list))
         .route("/sessions", post(routes::sessions::create))

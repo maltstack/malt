@@ -57,6 +57,69 @@ pub struct TierRequirements {
     pub constraints: &'static [TierConstraint],
 }
 
+/// Capability as it applies to MALT's actual session spawn path. This is
+/// intentionally narrower than a host primitive probe: an unused OS module
+/// is not a session capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTierCapability {
+    pub tier: IsolationTier,
+    pub available: bool,
+    pub basis: super::CapabilityBasis,
+    pub mechanism: Option<IsolationMechanism>,
+    pub detail: Option<String>,
+}
+
+pub fn session_tier_capabilities() -> Vec<SessionTierCapability> {
+    let unavailable = |tier, detail: &str| SessionTierCapability {
+        tier,
+        available: false,
+        basis: super::CapabilityBasis::None,
+        mechanism: None,
+        detail: Some(detail.to_string()),
+    };
+    let mut tiers = vec![SessionTierCapability {
+        tier: IsolationTier::Bare,
+        available: true,
+        basis: super::CapabilityBasis::None,
+        mechanism: Some(IsolationMechanism::None),
+        detail: None,
+    }];
+    #[cfg(windows)]
+    {
+        tiers.push(SessionTierCapability {
+            tier: IsolationTier::Restricted,
+            available: true,
+            basis: super::CapabilityBasis::Assumed,
+            mechanism: Some(IsolationMechanism::JobObject),
+            detail: Some("Job Object establishment is checked during session creation".to_string()),
+        });
+        tiers.push(SessionTierCapability {
+            tier: IsolationTier::Capped,
+            available: true,
+            basis: super::CapabilityBasis::Assumed,
+            mechanism: Some(IsolationMechanism::JobObject),
+            detail: Some("Job Object establishment is checked during session creation".to_string()),
+        });
+        tiers.push(unavailable(IsolationTier::Contained, "HCS is not wired to MASH's process spawn path; Job Objects are not reported as containers"));
+    }
+    #[cfg(not(windows))]
+    {
+        tiers.push(unavailable(
+            IsolationTier::Restricted,
+            "no session isolation backend is wired on this platform",
+        ));
+        tiers.push(unavailable(
+            IsolationTier::Capped,
+            "no session isolation backend is wired on this platform",
+        ));
+        tiers.push(unavailable(
+            IsolationTier::Contained,
+            "no session containment backend is wired on this platform",
+        ));
+    }
+    tiers
+}
+
 pub fn tier_requirements(tier: IsolationTier) -> TierRequirements {
     match tier {
         IsolationTier::Bare => TierRequirements {

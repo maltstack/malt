@@ -26,6 +26,11 @@ pub enum Command {
     Status,
     /// List all sessions
     List,
+    /// Inspect isolation availability before creating a session
+    Isolation {
+        #[command(subcommand)]
+        command: IsolationCommand,
+    },
     /// Create a new session
     New {
         #[arg(long)]
@@ -64,6 +69,12 @@ pub enum Command {
         #[arg(long)]
         output: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum IsolationCommand {
+    /// Report tiers the current daemon can establish for sessions
+    Capabilities,
 }
 
 /// Canonical command-line spellings for the session isolation tiers.

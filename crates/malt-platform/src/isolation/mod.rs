@@ -44,8 +44,8 @@ pub use capability_report::{
 };
 pub use probe::IsolationCapabilities;
 pub use tier::{
-    tier_requirements, IsolationContext, IsolationError, IsolationMechanism, IsolationTier,
-    TierConstraint, TierRequirements,
+    session_tier_capabilities, tier_requirements, IsolationContext, IsolationError,
+    IsolationMechanism, IsolationTier, SessionTierCapability, TierConstraint, TierRequirements,
 };
 
 /// Check whether the requested isolation tier is available on this platform.

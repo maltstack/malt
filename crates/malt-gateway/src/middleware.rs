@@ -29,6 +29,7 @@ fn required_scope(method: &Method, path: &str) -> AuthScope {
     match (method, path) {
         (&Method::GET, "/health") => AuthScope::Monitor,
         (&Method::GET, "/sessions") => AuthScope::Monitor,
+        (&Method::GET, "/isolation/capabilities") => AuthScope::Read,
         (&Method::POST, "/sessions") => AuthScope::Interact,
         (&Method::GET, "/sessions/{id}") => AuthScope::Read,
         (&Method::DELETE, "/sessions/{id}") => AuthScope::Admin,
