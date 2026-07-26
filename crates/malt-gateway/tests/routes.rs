@@ -46,7 +46,13 @@ impl GatewayBackend for MockBackend {
     fn isolation_capabilities(
         &self,
     ) -> Result<Vec<malt_gateway::types::IsolationCapabilityResponse>, GatewayError> {
-        Ok(Vec::new())
+        Ok(vec![malt_gateway::types::IsolationCapabilityResponse {
+            tier: "contained".to_string(),
+            available: false,
+            basis: "none".to_string(),
+            mechanism: None,
+            detail: Some("no HCS spawn path".to_string()),
+        }])
     }
 
     fn list_sessions(&self) -> Result<Vec<SessionResponse>, GatewayError> {
@@ -329,6 +335,30 @@ async fn list_sessions() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["ok"], true);
     assert_eq!(json["data"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn isolation_capabilities_are_read_scoped_and_structured() {
+    let store = TokenStore::new();
+    let read_token = store.generate_token(AuthScope::Read);
+    let router = with_auth(
+        build_router(Arc::new(MockBackend::new())),
+        Arc::new(store),
+        Arc::new(RateLimiter::new(100)),
+    );
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/isolation/capabilities")
+                .header("authorization", format!("Bearer {read_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(std::str::from_utf8(&body).unwrap().contains("contained"));
 }
 
 #[tokio::test]
