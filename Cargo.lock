@@ -2298,6 +2298,7 @@ dependencies = [
 name = "malt-elevate"
 version = "0.1.0"
 dependencies = [
+ "malt-image",
  "malt-platform",
  "malt-protocol",
  "tempfile",
