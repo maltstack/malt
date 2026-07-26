@@ -33,6 +33,12 @@ pub struct HcsProcessParameters {
     pub command_line: String,
     pub working_directory: Option<String>,
     pub environment: Vec<(String, String)>,
+    /// Ask HCS for the daemon-facing write end of the child's standard input.
+    pub create_stdin_pipe: bool,
+    /// Ask HCS for the daemon-facing read end of the child's standard output.
+    pub create_stdout_pipe: bool,
+    /// Ask HCS for the daemon-facing read end of the child's standard error.
+    pub create_stderr_pipe: bool,
 }
 
 /// Handle to a running HCS compute system.
@@ -351,7 +357,7 @@ mod fake {
 
     pub fn create_process(
         compute_system: isize,
-        _params: &HcsProcessParameters,
+        params: &HcsProcessParameters,
     ) -> Result<HcsProcessLaunch, IsolationError> {
         let has_compute = compute_registry()
             .lock()
@@ -373,9 +379,9 @@ mod fake {
 
         Ok(HcsProcessLaunch {
             process: HcsProcess { handle, process_id },
-            stdin_handle: None,
-            stdout_handle: None,
-            stderr_handle: None,
+            stdin_handle: params.create_stdin_pipe.then(next_handle),
+            stdout_handle: params.create_stdout_pipe.then(next_handle),
+            stderr_handle: params.create_stderr_pipe.then(next_handle),
         })
     }
 
@@ -552,9 +558,9 @@ mod native {
             "CommandLine": params.command_line,
             "WorkingDirectory": params.working_directory,
             "Environment": params.environment.iter().cloned().collect::<BTreeMap<_, _>>(),
-            "CreateStdInPipe": false,
-            "CreateStdOutPipe": false,
-            "CreateStdErrPipe": false
+            "CreateStdInPipe": params.create_stdin_pipe,
+            "CreateStdOutPipe": params.create_stdout_pipe,
+            "CreateStdErrPipe": params.create_stderr_pipe
         });
         let params_wide = to_wide(&params_json.to_string());
         // Not routed through `run_operation`: this call needs the process-info
@@ -1034,6 +1040,40 @@ mod tests {
         assert!(matches!(open_err, IsolationError::HcsError(_)));
 
         // SAFETY: test serializes env mutation via `env_lock`.
+        unsafe {
+            std::env::remove_var("MALT_HCS_FAKE");
+        }
+    }
+
+    #[test]
+    fn fake_process_launch_returns_every_requested_standard_pipe() {
+        let _guard = env_lock();
+        // SAFETY: test serializes env mutation via `env_lock`.
+        unsafe {
+            std::env::set_var("MALT_HCS_FAKE", "1");
+        }
+        let system = create_compute_system(&HcsConfig {
+            id: "cs-process-pipes".to_string(),
+            config_json: "{}".to_string(),
+        })
+        .expect("create fake compute system");
+        let launch = create_process(
+            system.raw_handle(),
+            &HcsProcessParameters {
+                command_line: "cmd.exe /c exit 0".to_string(),
+                create_stdin_pipe: true,
+                create_stdout_pipe: true,
+                create_stderr_pipe: true,
+                ..HcsProcessParameters::default()
+            },
+        )
+        .expect("create fake HCS process");
+        assert!(launch.stdin_handle.is_some());
+        assert!(launch.stdout_handle.is_some());
+        assert!(launch.stderr_handle.is_some());
+        close_process_handle(launch.process.raw_handle()).expect("close fake process");
+        terminate_compute_system(system.raw_handle()).expect("terminate fake compute system");
+        // SAFETY: paired with the serialized test-only mutation above.
         unsafe {
             std::env::remove_var("MALT_HCS_FAKE");
         }
