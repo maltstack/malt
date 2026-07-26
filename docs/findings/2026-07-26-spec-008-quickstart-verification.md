@@ -16,7 +16,7 @@ reported `not installed` before it was installed again.
 |---|---|---|
 | 1: unimplemented operations refuse | Passed | `operation_outcomes` enumerates schema operations and rejects a bare success outcome. |
 | 2: capability and reality agree | Passed | `malt-elevate` capability/outcome tests passed; current status independently reached the live helper. |
-| 3: helper states | Partial | Live evidence covers not-installed, stopped, and reachable. The version-mismatch message is unit-tested but no deliberately mismatched helper build was installed. |
+| 3: helper states | Passed | Live evidence covers not-installed, stopped, and reachable. A real temporary named-pipe VNP peer returned another protocol version and the client produced `VersionMismatch`; CLI guidance is distinct for every state. |
 | 4: declined UAC leaves no artefact | Not run | This requires deliberately declining a UAC prompt; the operator authorized elevation for this run. No failed-install artefact is claimed as substitute evidence. |
 | 5: unauthorised local request | Passed | Real named-pipe test sends a well-formed request from an unenrolled local process and observes refusal. |
 | 6: replay | Passed | Real named-pipe test re-sends the authenticated envelope and observes replay refusal. |

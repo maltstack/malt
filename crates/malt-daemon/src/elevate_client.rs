@@ -90,21 +90,11 @@ pub fn run_elevated(executable: &Path, arguments: &[&str]) -> io::Result<u32> {
 /// service is running.
 #[cfg(windows)]
 pub fn status() -> io::Result<HelperState> {
-    match malt_platform::service::status(HELPER_SERVICE_NAME)? {
-        malt_platform::service::ServiceStatus::NotInstalled => Ok(HelperState::NotInstalled),
-        malt_platform::service::ServiceStatus::Stopped
-        | malt_platform::service::ServiceStatus::Other => Ok(HelperState::InstalledStopped),
-        malt_platform::service::ServiceStatus::Running => match probe()? {
-            ProbeResult::Reachable { protocol_version } => {
-                Ok(HelperState::Reachable { protocol_version })
-            }
-            ProbeResult::VersionMismatch { actual } => Ok(HelperState::VersionMismatch {
-                expected: HELPER_PROTOCOL_VERSION,
-                actual,
-            }),
-            ProbeResult::Unavailable => Ok(HelperState::InstalledUnreachable),
-        },
-    }
+    let service = malt_platform::service::status(HELPER_SERVICE_NAME)?;
+    let probe = matches!(service, malt_platform::service::ServiceStatus::Running)
+        .then(probe)
+        .transpose()?;
+    Ok(helper_state_from(service, probe))
 }
 
 /// Explicitly register and start the helper service for the current Windows
@@ -123,7 +113,22 @@ pub fn install(helper_executable: &Path) -> io::Result<()> {
             "--authorized-principal",
             &principal,
         ],
-    )
+    )?;
+    match status()? {
+        HelperState::Reachable { .. } => Ok(()),
+        state => {
+            let rollback = uninstall();
+            let detail = match rollback {
+                Ok(()) => format!(
+                    "helper installed but did not become reachable ({state:?}); the service registration was removed"
+                ),
+                Err(error) => format!(
+                    "helper installed but did not become reachable ({state:?}); rollback removal failed: {error}"
+                ),
+            };
+            Err(io::Error::new(io::ErrorKind::NotConnected, detail))
+        }
+    }
 }
 
 /// Explicitly remove the helper service. The caller needs an already-elevated
@@ -368,13 +373,143 @@ mod tests {
         assert_eq!(response.kind, OutcomeKind::Refused);
         assert_eq!(response.reason, Some(ReasonCode::HelperUnavailable));
     }
+
+    #[test]
+    fn helper_states_stay_distinct_across_scm_and_authenticated_probe_results() {
+        use malt_platform::service::ServiceStatus;
+
+        let states = [
+            helper_state_from(ServiceStatus::NotInstalled, None),
+            helper_state_from(ServiceStatus::Stopped, None),
+            helper_state_from(ServiceStatus::Running, Some(ProbeResult::Unavailable)),
+            helper_state_from(
+                ServiceStatus::Running,
+                Some(ProbeResult::Reachable {
+                    protocol_version: HELPER_PROTOCOL_VERSION,
+                }),
+            ),
+            helper_state_from(
+                ServiceStatus::Running,
+                Some(ProbeResult::VersionMismatch { actual: 1 }),
+            ),
+        ];
+
+        assert_eq!(states[0], HelperState::NotInstalled);
+        assert_eq!(states[1], HelperState::InstalledStopped);
+        assert_eq!(states[2], HelperState::InstalledUnreachable);
+        assert_eq!(
+            states[3],
+            HelperState::Reachable {
+                protocol_version: HELPER_PROTOCOL_VERSION,
+            }
+        );
+        assert_eq!(
+            states[4],
+            HelperState::VersionMismatch {
+                expected: HELPER_PROTOCOL_VERSION,
+                actual: 1,
+            }
+        );
+        for (index, state) in states.iter().enumerate() {
+            for other in states.iter().skip(index + 1) {
+                assert_ne!(state, other, "helper states must not collapse");
+            }
+        }
+    }
+
+    #[test]
+    fn actual_vnp_probe_reports_a_protocol_version_mismatch() {
+        use malt_platform::ipc::NamedPipeServer;
+        use malt_protocol::elevate::{ElevateHello, ElevateHelloAck};
+        use malt_protocol::elevate_channel::{HELLO, HELLO_ACK};
+        use malt_protocol::vexil_runtime::{BitWriter, Pack};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after Unix epoch")
+            .as_nanos();
+        let pipe_name = format!("malt-elevate-version-test-{}-{suffix}", std::process::id());
+        let server_pipe = pipe_name.clone();
+        let server = std::thread::spawn(move || {
+            let server = NamedPipeServer::create(&server_pipe).expect("create version test pipe");
+            let mut connection = server.accept().expect("accept version test client");
+            let hello = read_tagged::<ElevateHello>(&mut connection, HELLO)
+                .expect("read version test hello");
+            let acknowledgement = ElevateHelloAck {
+                nonce: hello.nonce,
+                version: HELPER_PROTOCOL_VERSION - 1,
+                accepted: false,
+                reason: Some("test protocol version mismatch".to_string()),
+                _unknown: Vec::new(),
+            };
+            let mut writer = BitWriter::new();
+            acknowledgement
+                .pack(&mut writer)
+                .expect("pack version mismatch acknowledgement");
+            let mut payload = vec![HELLO_ACK];
+            payload.extend(writer.finish());
+            write_frame(&mut connection, payload).expect("write version mismatch acknowledgement");
+        });
+
+        let result = (0..100)
+            .find_map(|_| match probe_once_at(&pipe_name, 9_001) {
+                Ok(ProbeResult::Unavailable) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    None
+                }
+                Ok(result) => Some(result),
+                Err(error) if error.raw_os_error() == Some(2) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    None
+                }
+                Err(error) => panic!("run version mismatch probe: {error}"),
+            })
+            .expect("fake version-mismatch helper never accepted the VNP probe");
+        assert_eq!(
+            result,
+            ProbeResult::VersionMismatch {
+                actual: HELPER_PROTOCOL_VERSION - 1,
+            }
+        );
+        server.join().expect("version mismatch server thread");
+    }
 }
 
 #[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProbeResult {
     Reachable { protocol_version: u32 },
     VersionMismatch { actual: u32 },
     Unavailable,
+}
+
+/// Derive the operator-visible state from the two independent observations:
+/// SCM bookkeeping and the authenticated VNP probe. Keeping this pure makes
+/// the protocol-mismatch case coverable without replacing the installed
+/// helper binary merely to change its version.
+#[cfg(windows)]
+fn helper_state_from(
+    service: malt_platform::service::ServiceStatus,
+    probe: Option<ProbeResult>,
+) -> HelperState {
+    match service {
+        malt_platform::service::ServiceStatus::NotInstalled => HelperState::NotInstalled,
+        malt_platform::service::ServiceStatus::Stopped
+        | malt_platform::service::ServiceStatus::Other => HelperState::InstalledStopped,
+        malt_platform::service::ServiceStatus::Running => {
+            match probe.unwrap_or(ProbeResult::Unavailable) {
+                ProbeResult::Reachable { protocol_version } => {
+                    HelperState::Reachable { protocol_version }
+                }
+                ProbeResult::VersionMismatch { actual } => HelperState::VersionMismatch {
+                    expected: HELPER_PROTOCOL_VERSION,
+                    actual,
+                },
+                ProbeResult::Unavailable => HelperState::InstalledUnreachable,
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -398,13 +533,18 @@ fn probe() -> io::Result<ProbeResult> {
 
 #[cfg(windows)]
 fn probe_once(nonce: u64) -> io::Result<ProbeResult> {
+    probe_once_at(HELPER_PIPE_NAME, nonce)
+}
+
+#[cfg(windows)]
+fn probe_once_at(pipe_name: &str, nonce: u64) -> io::Result<ProbeResult> {
     use malt_platform::ipc::NamedPipeClient;
     use malt_protocol::elevate::ElevateHello;
     use malt_protocol::elevate_channel::{HELLO, HELLO_ACK};
     use malt_protocol::framing::{Frame, FrameFlags, FrameReader, FrameWriter};
     use malt_protocol::vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
-    let mut connection = match NamedPipeClient::connect(HELPER_PIPE_NAME) {
+    let mut connection = match NamedPipeClient::connect(pipe_name) {
         Ok(connection) => connection,
         Err(error)
             if matches!(
