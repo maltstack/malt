@@ -350,7 +350,11 @@ items behind each — this list is the ordering, not the detail):
 - 6. Human and agent coexistence
 - 7. Fail-closed requested isolation (`required`/`preferred`/`disabled`
   policy, plus the underlying per-tier enforcement the audit found
-  missing on every platform)
+  missing on every platform) — **re-sequenced to the front 2026-07-26 by
+  ADR-0005**, which supersedes this ordering on this one point. Spec 007
+  delivered the policy layer and the Windows Job Object tiers; `Contained`
+  needs a privileged helper and image layers, which is the container
+  substrate work
 - 8. A correct TUI rendering path
 - 9. Session restoration
 - 10. One excellent agent client or Gateway SDK

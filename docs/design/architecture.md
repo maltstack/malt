@@ -736,6 +736,17 @@ for 100ms) and force-cancels it.
 
 ### Shell and Isolation
 
+> **⚠ The code diverges from this section as of 2026-07-26.** The
+> `IsolationContext` token described below is created and stored but **never
+> read** — `isolation_context()` has zero callers anywhere in the workspace.
+> Isolation is actually applied by a separate `Env` field,
+> `job_object: Option<Arc<JobObject>>`, which works but is Windows-specific by
+> construction. Both mechanisms sit six lines apart in the same struct. See
+> `docs/findings/2026-07-26-isolation-design-doc-survey.md` for the trace, and
+> ADR-0005, which resolves which one becomes the spine. **The text below is
+> the intended design, not current behaviour** — left standing because it
+> remains the better design, not because it is accurate.
+
 MASH itself runs in the daemon process — it is never sandboxed. The isolation
 tier applies to the child processes that MASH spawns (commands, pipelines,
 subshells). MASH runs as multiple instances (one per shell pane), and each

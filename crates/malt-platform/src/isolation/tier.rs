@@ -30,6 +30,10 @@ pub enum IsolationTier {
 }
 
 /// The operating-system mechanism a session tier is allowed to name.
+///
+/// Grows as backends land (ADR-0005), so it is `#[non_exhaustive]`: adding a
+/// mechanism must not be a breaking change for anything matching on it.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IsolationMechanism {
     None,
