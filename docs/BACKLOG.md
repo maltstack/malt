@@ -25,23 +25,31 @@ original ten, in order. Each links to its detail below.
 **Delivered** (kept short; detail lives in the sections below and in
 `docs/findings/`): 0a Gateway auth enforcement · 0b responsive session
 control · 1 correct stdout/stderr · 2 exit codes and execution IDs ·
-3 command lifecycle events · 4 persistent execution history · 8 the TUI
-rendering path.
+3 command lifecycle events · 4 persistent execution history · 5 genuine raw
+input · 6 human/agent coexistence · 8 the TUI rendering path · plus
+streaming command output (`specs/006-streaming-command-output/`), which was
+not on the original ten but is what makes a long-running command observable
+at all.
 
 **Open, in priority order:**
 
-- **5 + 6. Genuine raw input and human/agent coexistence** — being specified
-  together as `specs/005-raw-input-authority/`, now including transport
-  authentication after audit finding A-01 showed the interactive transport
-  performs no identity check at all.
-- **7. Fail-closed requested isolation** — see P1. Audit A-02 rates this
-  Critical: a tier can be reported as applied while the session runs
-  uncontained. Spec 001 is reopened for the same reason.
+- **7. Fail-closed requested isolation** — see P1, and audit A-02, which
+  rates it Critical: a tier can be reported as applied while the session
+  runs uncontained. `Capped` and `Contained` resolve to the same placeholder
+  limits, `Contained` never launches inside HCS, and non-Windows has no
+  enforcement path at all. Session creation reports the *requested* tier
+  rather than a verified one, which is the part that makes this a trust
+  problem rather than a missing feature — a caller is told it got
+  containment it did not get. `specs/001-cli-isolation-flag/` is reopened
+  for the same reason and should be closed by this work, not separately.
 - **9. Session restoration** — largely delivered; the remaining gap is
   restored Compat panes running outside the session's isolation group
-  (audit A-06/A-11).
+  (audit A-06/A-11). Note this overlaps 7: both are about a session's
+  processes actually being where the session says they are.
 - **10. One excellent agent client or Gateway SDK** — unblocked now that the
-  Gateway contract has stabilized; nucleus exists in `malt-bin/src/events.rs`.
+  Gateway contract has stabilized, and more valuable since 006: an agent can
+  now follow a running command's output, which is most of what an SDK would
+  wrap. Nucleus exists in `malt-bin/src/events.rs`.
 
 **Audit-raised, not previously on this list** (see
 `docs/findings/2026-07-25-architecture-spec-codebase-audit.md` for the full
