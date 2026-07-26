@@ -1296,13 +1296,17 @@ impl Env {
     }
 
     #[cfg(windows)]
-    pub fn set_job_object(&mut self, job: Arc<malt_platform::isolation::job_objects::JobObject>) {
+    pub fn set_job_object(
+        &mut self,
+        job: Arc<malt_platform::isolation::job_objects::JobObject>,
+    ) -> Result<(), malt_platform::isolation::IsolationError> {
         let mut context = self
             .isolation_context
             .take()
             .unwrap_or_else(malt_platform::isolation::IsolationContext::bare);
-        context.establish_job_object(job);
+        let result = context.establish_job_object(job);
         self.isolation_context = Some(context);
+        result
     }
 
     #[cfg(windows)]

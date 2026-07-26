@@ -182,6 +182,8 @@ pub enum IsolationError {
     HcsError(String),
     /// IO error during isolation setup.
     IoError(std::io::Error),
+    /// A live enforcement mechanism cannot be replaced after session creation.
+    EstablishmentLocked(String),
 }
 
 impl fmt::Display for IsolationError {
@@ -202,6 +204,7 @@ impl fmt::Display for IsolationError {
             IsolationError::RlimitError(msg) => write!(f, "rlimit error: {msg}"),
             IsolationError::HcsError(msg) => write!(f, "hcs error: {msg}"),
             IsolationError::IoError(err) => write!(f, "io error: {err}"),
+            IsolationError::EstablishmentLocked(msg) => write!(f, "establishment locked: {msg}"),
         }
     }
 }
@@ -332,8 +335,13 @@ impl IsolationContext {
     }
 
     #[cfg(windows)]
-    pub fn establish_job_object(&mut self, job: std::sync::Arc<super::job_objects::JobObject>) {
+    pub fn establish_job_object(
+        &mut self,
+        job: std::sync::Arc<super::job_objects::JobObject>,
+    ) -> Result<(), IsolationError> {
+        self.ensure_unestablished("Job Object")?;
         self.established = Established::JobObject(job);
+        Ok(())
     }
 
     #[cfg(windows)]
@@ -346,14 +354,32 @@ impl IsolationContext {
 
     /// Record the HCS compute-system identity after a helper reports it
     /// performed. This is deliberately separate from requesting containment.
-    pub fn establish_container(&mut self, id: String) {
+    pub fn establish_container(&mut self, id: String) -> Result<(), IsolationError> {
+        self.ensure_unestablished("HCS container")?;
         self.established = Established::Container(id);
+        Ok(())
     }
 
     pub fn container_id(&self) -> Option<&str> {
         match &self.established {
             Established::Container(id) => Some(id),
             _ => None,
+        }
+    }
+
+    /// Remove a lost enforcement mechanism without changing the requested
+    /// tier. This records degraded reality but never permits a later upgrade.
+    pub fn clear_established(&mut self) {
+        self.established = Established::Nothing;
+    }
+
+    fn ensure_unestablished(&self, attempted: &str) -> Result<(), IsolationError> {
+        if matches!(self.established, Established::Nothing) {
+            Ok(())
+        } else {
+            Err(IsolationError::EstablishmentLocked(format!(
+                "cannot establish {attempted} after a session mechanism already exists"
+            )))
         }
     }
 }
@@ -495,6 +521,9 @@ mod tests {
 
         let err = IsolationError::HcsError("test".to_string());
         assert!(err.to_string().contains("hcs error"));
+
+        let err = IsolationError::EstablishmentLocked("test".to_string());
+        assert!(err.to_string().contains("establishment locked"));
     }
 
     #[test]
@@ -529,5 +558,17 @@ mod tests {
             tier_requirements(IsolationTier::Capped),
             tier_requirements(IsolationTier::Contained)
         );
+    }
+
+    #[test]
+    fn establishment_cannot_be_upgraded_after_session_creation() {
+        let mut context = IsolationContext::contained();
+        context
+            .establish_container("first-container".to_string())
+            .expect("first mechanism is allowed during session creation");
+        assert!(context
+            .establish_container("replacement-container".to_string())
+            .is_err());
+        assert_eq!(context.container_id(), Some("first-container"));
     }
 }

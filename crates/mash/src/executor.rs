@@ -6523,7 +6523,8 @@ mod tests {
             .expect("create job object");
 
         let mut env = Env::empty();
-        env.set_job_object(Arc::new(job));
+        env.set_job_object(Arc::new(job))
+            .expect("test context accepts its initial Job Object");
 
         assign_child_to_session_job(&env, &child);
 

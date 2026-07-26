@@ -152,7 +152,9 @@ fn apply_session_isolation(
             ))
         })?;
         let mut context = malt_platform::isolation::IsolationContext::from(isolation);
-        context.establish_job_object(std::sync::Arc::new(job));
+        context
+            .establish_job_object(std::sync::Arc::new(job))
+            .map_err(|error| DaemonError::IsolationUnavailable(error.to_string()))?;
         env.set_isolation_context(context);
         Ok(EstablishedIsolation {
             effective: isolation,

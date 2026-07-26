@@ -136,7 +136,7 @@ refused for that reason through the helper.
 - [X] T034 [US3] Extend `IsolationContext` in `crates/malt-platform/src/isolation/tier.rs` with an `Established` enum (`Nothing` / `JobObject` / `Container`) per [data-model.md](./data-model.md) §4. Do this **before** the container work so the backend has one place to attach.
 - [X] T035 [US3] Make `crates/mash/src/env.rs` carry one isolation field. Remove `job_object` (`env.rs:320`) and make `isolation_context` (`env.rs:314`) the carrier that `crates/mash/src/executor.rs:5683` reads. **Remove the old field; do not deprecate it alongside** — two mechanisms six lines apart is precisely how this arose. Confirm `Env::clone()` still propagates to subshells (`env.rs:373`).
 - [ ] T036 [US3] Update `crates/malt-daemon/src/executor/session_thread.rs:116` and the session-status reporting to read isolation from the single carrier (FR-017), so what a session reports and what constrains it cannot drift.
-- [ ] T037 [US3] Assert isolation is never upgraded after session creation (FR-018). Downgrade to `Nothing` on containment lost remains spec 007's FR-017. **The defect this prevents**: spec 007 covered containment lost and nothing covered containment gained.
+- [X] T037 [US3] Assert isolation is never upgraded after session creation (FR-018). Downgrade to `Nothing` on containment lost remains spec 007's FR-017. **The defect this prevents**: spec 007 covered containment lost and nothing covered containment gained.
 
 ### Container operation
 
