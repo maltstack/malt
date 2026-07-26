@@ -3,7 +3,8 @@ use crate::executor::events::LifecycleEvent;
 use crate::executor::pools::PoolConfig;
 use crate::executor::session_thread::InputOrigin;
 use crate::executor::session_thread::{
-    from_persisted_command_block, CommandOutput, SessionCommand, SessionExecutor,
+    from_persisted_command_block, CommandOutput, EstablishedIsolation, SessionCommand,
+    SessionExecutor,
 };
 use crate::executor::{ExecutionIngress, QueueState};
 use crate::store::{DebouncedStore, StoreError};
@@ -39,10 +40,10 @@ enum SessionLifecycle {
 struct SessionHandle {
     id: SessionId,
     name: Option<String>,
-    isolation: IsolationTier,
-    isolation_requested: IsolationTier,
-    isolation_basis: IsolationBasis,
-    isolation_detail: Option<String>,
+    /// The single authoritative report of the isolation actually established
+    /// for this session. It is written from the executor construction result,
+    /// then returned unchanged by every status surface.
+    isolation: IsolationStatus,
     lifecycle: SessionLifecycle,
     /// The session's one pane, under today's single-pane model. Stable
     /// across Active<->Dormant transitions since it lives on the outer
@@ -50,11 +51,17 @@ struct SessionHandle {
     first_pane: PaneId,
 }
 
-fn status_mechanism(tier: IsolationTier) -> Option<String> {
-    match tier {
-        IsolationTier::Bare => None,
-        IsolationTier::Restricted | IsolationTier::Capped => Some("job-object".to_string()),
-        IsolationTier::Contained => Some("hcs".to_string()),
+fn isolation_status(
+    established: EstablishedIsolation,
+    requested: IsolationTier,
+) -> IsolationStatus {
+    IsolationStatus {
+        effective: established.effective,
+        requested,
+        basis: established.basis,
+        mechanism: established.mechanism,
+        detail: established.detail,
+        _unknown: Vec::new(),
     }
 }
 
@@ -111,16 +118,20 @@ impl Coordinator {
                                 SessionHandle {
                                     id: persisted.id.clone(),
                                     name: persisted.name.clone(),
-                                    isolation: persisted.isolation,
-                                    isolation_requested: persisted.isolation,
-                                    isolation_basis: if persisted.isolation == IsolationTier::Bare {
-                                        IsolationBasis::None
-                                    } else {
-                                        IsolationBasis::Assumed
+                                    isolation: IsolationStatus {
+                                        effective: persisted.isolation,
+                                        requested: persisted.isolation,
+                                        basis: if persisted.isolation == IsolationTier::Bare {
+                                            IsolationBasis::None
+                                        } else {
+                                            IsolationBasis::Assumed
+                                        },
+                                        mechanism: None,
+                                        detail: Some(
+                                            "restored isolation is not yet re-verified".to_string(),
+                                        ),
+                                        _unknown: Vec::new(),
                                     },
-                                    isolation_detail: Some(
-                                        "restored isolation is not yet re-verified".to_string(),
-                                    ),
                                     first_pane,
                                     lifecycle: SessionLifecycle::Dormant { persisted },
                                 },
@@ -217,9 +228,9 @@ impl Coordinator {
         detail: Option<String>,
     ) {
         if let Some(handle) = self.sessions.get_mut(&id.0) {
-            handle.isolation_requested = requested;
-            handle.isolation_basis = basis;
-            handle.isolation_detail = detail;
+            handle.isolation.requested = requested;
+            handle.isolation.basis = basis;
+            handle.isolation.detail = detail;
         }
     }
 
@@ -278,14 +289,7 @@ impl Coordinator {
             SessionHandle {
                 id: session_id.clone(),
                 name: Some(final_name),
-                isolation,
-                isolation_requested: isolation,
-                isolation_basis: if isolation == IsolationTier::Bare {
-                    IsolationBasis::None
-                } else {
-                    IsolationBasis::Assumed
-                },
-                isolation_detail: None,
+                isolation: isolation_status(spawned.established_isolation, isolation),
                 first_pane: pane_id,
                 lifecycle: SessionLifecycle::Active {
                     cmd_tx: spawned.control_tx,
@@ -714,14 +718,7 @@ impl Coordinator {
                     SessionLifecycle::Active { .. } => 1,
                     SessionLifecycle::Dormant { persisted } => persisted.panes.len() as u16,
                 },
-                isolation: IsolationStatus {
-                    effective: h.isolation,
-                    requested: h.isolation_requested,
-                    basis: h.isolation_basis,
-                    mechanism: status_mechanism(h.isolation),
-                    detail: h.isolation_detail.clone(),
-                    _unknown: Vec::new(),
-                },
+                isolation: h.isolation.clone(),
                 state: match &h.lifecycle {
                     SessionLifecycle::Active { .. } => SessionState::Active,
                     SessionLifecycle::Dormant { .. } => SessionState::Dormant,
@@ -923,9 +920,11 @@ impl Coordinator {
                     None => continue,
                 };
                 match &handle.lifecycle {
-                    SessionLifecycle::Active { cmd_tx, .. } => {
-                        (cmd_tx.clone(), handle.name.clone(), handle.isolation)
-                    }
+                    SessionLifecycle::Active { cmd_tx, .. } => (
+                        cmd_tx.clone(),
+                        handle.name.clone(),
+                        handle.isolation.effective,
+                    ),
                     SessionLifecycle::Dormant { .. } => continue,
                 }
             };
@@ -1020,9 +1019,11 @@ impl Coordinator {
                 .get(&id.0)
                 .ok_or(DaemonError::SessionNotFound(id.clone()))?;
             match &handle.lifecycle {
-                SessionLifecycle::Dormant { persisted } => {
-                    (persisted.clone(), handle.name.clone(), handle.isolation)
-                }
+                SessionLifecycle::Dormant { persisted } => (
+                    persisted.clone(),
+                    handle.name.clone(),
+                    handle.isolation.effective,
+                ),
                 SessionLifecycle::Active { .. } => return Ok(()),
             }
         };
@@ -1125,16 +1126,13 @@ impl Coordinator {
         };
 
         if let Some(handle) = self.sessions.get_mut(&id.0) {
-            handle.isolation_basis = if handle.isolation == IsolationTier::Bare {
-                IsolationBasis::None
+            let requested = handle.isolation.requested;
+            handle.isolation = isolation_status(spawned.established_isolation, requested);
+            handle.isolation.detail = Some(if handle.isolation.effective == IsolationTier::Bare {
+                "restored without requested isolation".to_string()
             } else {
-                IsolationBasis::Assumed
-            };
-            handle.isolation_detail = if handle.isolation == IsolationTier::Bare {
-                Some("restored without requested isolation".to_string())
-            } else {
-                Some("isolation re-established on restore; not externally verified".to_string())
-            };
+                "isolation re-established on restore; not externally verified".to_string()
+            });
             handle.lifecycle = SessionLifecycle::Active {
                 cmd_tx: spawned.control_tx,
                 ingress: spawned.ingress,
@@ -1175,7 +1173,7 @@ impl Coordinator {
                     cmd_tx.clone(),
                     ingress.clone(),
                     handle.name.clone(),
-                    handle.isolation,
+                    handle.isolation.effective,
                 ),
                 SessionLifecycle::Dormant { .. } => return,
             }

@@ -13,7 +13,7 @@ use malt_compat::CompatTranslator;
 use malt_layout::resolve::compute_resolved_panes;
 use malt_layout::{LayoutConfig, Rect};
 use malt_protocol::common::{
-    ClientCapabilities, IsolationTier, PaneId, PaneKind, ResolvedPane, SessionId,
+    ClientCapabilities, IsolationBasis, IsolationTier, PaneId, PaneKind, ResolvedPane, SessionId,
 };
 use malt_protocol::input::KeyEvent;
 use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
@@ -72,11 +72,23 @@ pub(crate) fn now_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Isolation that the executor established before it started either session
+/// thread. The coordinator owns this value after construction; it must not
+/// recreate a status by inferring a mechanism from the requested tier.
+#[derive(Debug, Clone)]
+pub struct EstablishedIsolation {
+    pub effective: IsolationTier,
+    pub basis: IsolationBasis,
+    pub mechanism: Option<String>,
+    pub detail: Option<String>,
+}
+
 /// Apply a session's isolation tier to its MASH environment: sets the opaque
 /// isolation context token, and on Windows, creates a Job Object every
 /// externally-spawned command in this session gets assigned to (see
-/// `mash::executor`'s spawn call site). Best-effort — if job object creation
-/// fails, the session still runs, just without process containment.
+/// `mash::executor`'s spawn call site). Failure is returned to the caller so
+/// the required policy can refuse session creation before either thread is
+/// made reachable.
 ///
 /// Bare tier does nothing (no job object needed). Restricted gets an
 /// uncapped Job Object (group-kill only). Capped and Contained get the same
@@ -100,13 +112,18 @@ fn apply_session_isolation(
     env: &mut Env,
     session_id: SessionId,
     isolation: IsolationTier,
-) -> Result<(), DaemonError> {
+) -> Result<EstablishedIsolation, DaemonError> {
     env.set_isolation_context(malt_platform::isolation::IsolationContext::from(isolation));
 
     #[cfg(windows)]
     {
         if isolation == IsolationTier::Bare {
-            return Ok(());
+            return Ok(EstablishedIsolation {
+                effective: IsolationTier::Bare,
+                basis: IsolationBasis::None,
+                mechanism: None,
+                detail: None,
+            });
         }
         if isolation == IsolationTier::Contained {
             return Err(DaemonError::IsolationUnavailable(
@@ -129,13 +146,26 @@ fn apply_session_isolation(
             Ok(job) => env.set_job_object(std::sync::Arc::new(job)),
             Err(error) => return Err(DaemonError::IsolationUnavailable(error.to_string())),
         }
-        Ok(())
+        Ok(EstablishedIsolation {
+            effective: isolation,
+            basis: IsolationBasis::Assumed,
+            mechanism: Some("job-object".to_string()),
+            detail: Some(
+                "Job Object established for MASH external commands; external verification has not run"
+                    .to_string(),
+            ),
+        })
     }
     #[cfg(not(windows))]
     {
         let _ = session_id;
         if isolation == IsolationTier::Bare {
-            Ok(())
+            Ok(EstablishedIsolation {
+                effective: IsolationTier::Bare,
+                basis: IsolationBasis::None,
+                mechanism: None,
+                detail: None,
+            })
         } else {
             Err(DaemonError::IsolationUnavailable(
                 "no session isolation backend is wired on this platform".to_string(),
@@ -167,6 +197,7 @@ pub struct CommandOutput {
 /// these separate makes ownership explicit: the control thread owns UI,
 /// persistence, and lifecycle state; the worker alone owns MASH state.
 pub struct SessionSpawn {
+    pub established_isolation: EstablishedIsolation,
     pub control_tx: mpsc::SyncSender<SessionCommand>,
     pub ingress: ExecutionIngress,
     pub control_thread: JoinHandle<()>,
@@ -612,7 +643,8 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        apply_session_isolation(&mut env, session_id.clone(), isolation)?;
+        let established_isolation =
+            apply_session_isolation(&mut env, session_id.clone(), isolation)?;
         Self::spawn_with_env(
             session_id,
             first_pane,
@@ -622,6 +654,7 @@ impl SessionExecutor {
             command_blocks,
             output_log::MAX_RETAINED_BYTES,
             output_log::SUBSCRIBER_BUFFER,
+            established_isolation,
         )
     }
 
@@ -644,7 +677,8 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        apply_session_isolation(&mut env, session_id.clone(), isolation)?;
+        let established_isolation =
+            apply_session_isolation(&mut env, session_id.clone(), isolation)?;
         Self::spawn_with_env(
             session_id,
             first_pane,
@@ -654,6 +688,7 @@ impl SessionExecutor {
             command_blocks,
             output_log_capacity_bytes,
             output_subscriber_buffer,
+            established_isolation,
         )
     }
 
@@ -706,7 +741,8 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        apply_session_isolation(&mut env, session_id.clone(), isolation)?;
+        let established_isolation =
+            apply_session_isolation(&mut env, session_id.clone(), isolation)?;
         if let Some(snapshot) = &env_snapshot {
             env.apply_snapshot(snapshot);
         }
@@ -735,6 +771,7 @@ impl SessionExecutor {
             command_blocks,
             output_log::MAX_RETAINED_BYTES,
             output_log::SUBSCRIBER_BUFFER,
+            established_isolation,
         )
     }
 
@@ -751,6 +788,7 @@ impl SessionExecutor {
         command_blocks: Vec<CommandBlock>,
         output_log_capacity_bytes: usize,
         output_subscriber_buffer: usize,
+        established_isolation: EstablishedIsolation,
     ) -> Result<SessionSpawn, DaemonError> {
         let env = env;
         let snapshot = env.to_snapshot();
@@ -830,6 +868,7 @@ impl SessionExecutor {
             })
             .map_err(DaemonError::Io)?;
         Ok(SessionSpawn {
+            established_isolation,
             control_tx,
             ingress,
             control_thread,
