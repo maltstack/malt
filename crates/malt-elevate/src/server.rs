@@ -1,6 +1,10 @@
 //! Privileged helper named-pipe server.
 
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+const MAX_CONCURRENT_CLIENTS: usize = 16;
 
 use malt_platform::ipc::{NamedPipeConnection, NamedPipeServer, PeerIdentity};
 use malt_platform::service::StopSignal;
@@ -27,7 +31,8 @@ pub struct ServerConfig {
 /// Serve authenticated named-pipe clients until the Service Control Manager
 /// requests the host to stop.
 pub fn serve(config: &ServerConfig, stop: &StopSignal) -> Result<(), ElevateError> {
-    let guard = ReplayGuard::new(config.replay_capacity)?;
+    let guard = Arc::new(ReplayGuard::new(config.replay_capacity)?);
+    let active_clients = Arc::new(AtomicUsize::new(0));
     loop {
         if stop.is_requested() {
             return Ok(());
@@ -46,9 +51,47 @@ pub fn serve(config: &ServerConfig, stop: &StopSignal) -> Result<(), ElevateErro
             tracing::warn!(error = %error, "refused unauthorised helper pipe client");
             continue;
         }
-        if let Err(error) = serve_connection(connection, &guard) {
-            tracing::warn!(error = %error, "helper pipe client session ended without a valid completion");
+        if !try_acquire_client_slot(&active_clients) {
+            tracing::warn!(
+                limit = MAX_CONCURRENT_CLIENTS,
+                "refused helper pipe client because the service is at its concurrent-client limit"
+            );
+            continue;
         }
+        let guard = Arc::clone(&guard);
+        let active_clients_for_thread = Arc::clone(&active_clients);
+        if let Err(error) = std::thread::Builder::new()
+            .name("malt-elevate-client".to_string())
+            .spawn(move || {
+                let _slot = ClientSlot {
+                    active_clients: active_clients_for_thread,
+                };
+                if let Err(error) = serve_connection(connection, &guard) {
+                    tracing::warn!(error = %error, "helper pipe client session ended without a valid completion");
+                }
+            })
+        {
+            active_clients.fetch_sub(1, Ordering::AcqRel);
+            return Err(ElevateError::Connection(error));
+        }
+    }
+}
+
+fn try_acquire_client_slot(active_clients: &AtomicUsize) -> bool {
+    active_clients
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            (active < MAX_CONCURRENT_CLIENTS).then_some(active + 1)
+        })
+        .is_ok()
+}
+
+struct ClientSlot {
+    active_clients: Arc<AtomicUsize>,
+}
+
+impl Drop for ClientSlot {
+    fn drop(&mut self) {
+        self.active_clients.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -230,5 +273,13 @@ mod tests {
         assert_eq!(response.kind, OutcomeKind::Refused);
         assert_eq!(response.reason, Some(ReasonCode::NotEntitled));
         assert!(response.payload.is_none());
+    }
+
+    #[test]
+    fn concurrent_client_limit_is_bounded() {
+        let active = AtomicUsize::new(MAX_CONCURRENT_CLIENTS - 1);
+        assert!(try_acquire_client_slot(&active));
+        assert_eq!(active.load(Ordering::Acquire), MAX_CONCURRENT_CLIENTS);
+        assert!(!try_acquire_client_slot(&active));
     }
 }
