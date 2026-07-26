@@ -104,11 +104,11 @@ No container operation needed.
 - [X] T022 [US2] Rewrite `crates/malt-elevate/src/main.rs` to serve. **Delete the "Phase 2 skeleton — IPC loop not yet implemented" path entirely** rather than leaving it behind a flag.
 - [ ] T023 [US2] Rewrite `crates/malt-elevate/src/auth.rs`: peer identity from T018 as the primary control; per-request single-use nonce with a bounded validity window for replay rejection. **A shared secret may remain as defence in depth but MUST NOT be the only control**, and no comment may claim a property the code does not implement (T008 removed the last two).
 - [ ] T024 [US2] Implement session-entitlement validation in `crates/malt-elevate/src/dispatch.rs` per [data-model.md](./data-model.md) §3: session ownership, pid membership checked **against the OS not against the request**, and path containment checked **after canonicalization**. **Put the path check in one function every operation calls** — guarding sites individually is how two of three tool-dispatch sites were missed.
-- [ ] T025 [US2] Return `Indeterminate` when a request was sent and no response arrived (FR-005). **The defect this prevents**: resolving an unknown outcome to either success or failure — the caller must be told it is unknown.
+- [X] T025 [US2] Return `Indeterminate` when a request was sent and no response arrived (FR-005). **The defect this prevents**: resolving an unknown outcome to either success or failure — the caller must be told it is unknown.
 
 ### Daemon and CLI
 
-- [ ] T026 [US2] Create `crates/malt-daemon/src/elevate_client.rs`: connect, query state, send requests. **Query `HelperState` before attempting any operation, and attempt nothing on `VersionMismatch`** (FR-014).
+- [X] T026 [US2] Create `crates/malt-daemon/src/elevate_client.rs`: connect, query state, send requests. **Query `HelperState` before attempting any operation, and attempt nothing on `VersionMismatch`** (FR-014).
 - [X] T027 [US2] Add `malt elevate status|install|uninstall` to `crates/malt-bin/src/`. Install and uninstall require explicit elevation and **MUST NOT run as a side effect of any other command** (FR-007).
 - [X] T028 [US2] Make `status` report `reachable` **only after a round-trip response**, not because the service manager reports the service running. **The defect this prevents**: service bookkeeping is what the OS says about itself, not evidence anything answers — eliding that distinction is what this feature exists to stop.
 

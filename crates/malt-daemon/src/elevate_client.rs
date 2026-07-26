@@ -20,6 +20,58 @@ pub enum HelperState {
     VersionMismatch { expected: u32, actual: u32 },
 }
 
+/// Send one request through the helper after checking state. A request that
+/// may have crossed the process boundary but yields no response is explicitly
+/// indeterminate; callers must not reinterpret it as a refusal or success.
+#[cfg(windows)]
+pub fn send_request(
+    envelope: malt_protocol::elevate::ElevateRequestEnvelope,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    use malt_protocol::elevate::ReasonCode;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let request_id = envelope.request_id;
+    match status()? {
+        HelperState::Reachable { .. } => {}
+        HelperState::VersionMismatch { .. } => {
+            return Ok(refused(
+                request_id,
+                ReasonCode::HelperUnavailable,
+                "helper protocol version does not match; no operation was attempted",
+            ))
+        }
+        HelperState::NotInstalled
+        | HelperState::InstalledStopped
+        | HelperState::InstalledUnreachable => {
+            return Ok(refused(
+                request_id,
+                ReasonCode::HelperUnavailable,
+                "privileged helper is not reachable; no operation was attempted",
+            ))
+        }
+    }
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = sender.send(send_once(envelope));
+    });
+    match receiver.recv_timeout(Duration::from_secs(30)) {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(error)) => Ok(indeterminate(
+            request_id,
+            format!("helper request may have started but no response was received: {error}"),
+        )),
+        Err(mpsc::RecvTimeoutError::Timeout) => Ok(indeterminate(
+            request_id,
+            "helper request timed out after 30 seconds; its outcome is unknown".to_string(),
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Ok(indeterminate(
+            request_id,
+            "helper request worker exited without reporting an outcome".to_string(),
+        )),
+    }
+}
+
 /// Return whether this process already has the elevation required for a
 /// service-management operation.
 #[cfg(windows)]
@@ -79,6 +131,27 @@ pub fn install(helper_executable: &Path) -> io::Result<()> {
 #[cfg(windows)]
 pub fn uninstall() -> io::Result<()> {
     malt_platform::service::uninstall(HELPER_SERVICE_NAME)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use malt_protocol::elevate::{OutcomeKind, ReasonCode};
+
+    #[test]
+    fn unknown_outcome_is_not_reported_as_refusal_or_success() {
+        let response = indeterminate(17, "response lost");
+        assert_eq!(response.request_id, 17);
+        assert_eq!(response.kind, OutcomeKind::Indeterminate);
+        assert_eq!(response.reason, Some(ReasonCode::TimedOut));
+    }
+
+    #[test]
+    fn unavailable_helper_refusal_names_the_cause() {
+        let response = refused(8, ReasonCode::HelperUnavailable, "not reachable");
+        assert_eq!(response.kind, OutcomeKind::Refused);
+        assert_eq!(response.reason, Some(ReasonCode::HelperUnavailable));
+    }
 }
 
 #[cfg(windows)]
@@ -181,6 +254,138 @@ fn probe_once(nonce: u64) -> io::Result<ProbeResult> {
 }
 
 #[cfg(windows)]
+fn send_once(
+    envelope: malt_protocol::elevate::ElevateRequestEnvelope,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    use malt_platform::ipc::NamedPipeClient;
+    use malt_protocol::elevate::{ElevateHello, ElevateHelloAck, ElevateResponse};
+    use malt_protocol::elevate_channel::{HELLO, HELLO_ACK, REQUEST, RESPONSE};
+    use malt_protocol::vexil_runtime::{BitWriter, Pack};
+
+    let mut connection = NamedPipeClient::connect(HELPER_PIPE_NAME)?;
+    let hello = ElevateHello {
+        nonce: envelope.nonce,
+        version: HELPER_PROTOCOL_VERSION,
+        _unknown: Vec::new(),
+    };
+    let mut writer = BitWriter::new();
+    hello
+        .pack(&mut writer)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let mut payload = vec![HELLO];
+    payload.extend(writer.finish());
+    write_frame(&mut connection, payload)?;
+    let acknowledgement = read_tagged::<ElevateHelloAck>(&mut connection, HELLO_ACK)?;
+    if acknowledgement.nonce != envelope.nonce
+        || acknowledgement.version != HELPER_PROTOCOL_VERSION
+        || !acknowledgement.accepted
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "helper rejected the operation handshake",
+        ));
+    }
+    let mut writer = BitWriter::new();
+    envelope
+        .pack(&mut writer)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let mut payload = vec![REQUEST];
+    payload.extend(writer.finish());
+    write_frame(&mut connection, payload)?;
+    read_tagged::<ElevateResponse>(&mut connection, RESPONSE)
+}
+
+#[cfg(windows)]
+fn write_frame(
+    connection: &mut malt_platform::ipc::NamedPipeConnection,
+    payload: Vec<u8>,
+) -> io::Result<()> {
+    use malt_protocol::framing::{Frame, FrameFlags, FrameWriter};
+
+    FrameWriter::new(connection.file())
+        .write_frame(&Frame {
+            flags: FrameFlags::new(),
+            payload,
+        })
+        .map_err(frame_error)
+}
+
+#[cfg(windows)]
+fn read_tagged<T>(
+    connection: &mut malt_platform::ipc::NamedPipeConnection,
+    expected_tag: u8,
+) -> io::Result<T>
+where
+    T: malt_protocol::vexil_runtime::Unpack,
+{
+    use malt_protocol::framing::FrameReader;
+    use malt_protocol::vexil_runtime::BitReader;
+
+    let frame = FrameReader::new(connection.file())
+        .read_frame()
+        .map_err(frame_error)?;
+    let Some((&tag, body)) = frame.payload.split_first() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "empty helper frame",
+        ));
+    };
+    if tag != expected_tag {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected helper message tag {tag}"),
+        ));
+    }
+    let mut reader = BitReader::new(body);
+    T::unpack(&mut reader)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+}
+
+#[cfg(windows)]
+fn refused(
+    request_id: u32,
+    reason: malt_protocol::elevate::ReasonCode,
+    detail: impl Into<String>,
+) -> malt_protocol::elevate::ElevateResponse {
+    response(
+        request_id,
+        malt_protocol::elevate::OutcomeKind::Refused,
+        Some(reason),
+        detail,
+    )
+}
+
+#[cfg(windows)]
+fn indeterminate(
+    request_id: u32,
+    detail: impl Into<String>,
+) -> malt_protocol::elevate::ElevateResponse {
+    response(
+        request_id,
+        malt_protocol::elevate::OutcomeKind::Indeterminate,
+        Some(malt_protocol::elevate::ReasonCode::TimedOut),
+        detail,
+    )
+}
+
+#[cfg(windows)]
+fn response(
+    request_id: u32,
+    kind: malt_protocol::elevate::OutcomeKind,
+    reason: Option<malt_protocol::elevate::ReasonCode>,
+    detail: impl Into<String>,
+) -> malt_protocol::elevate::ElevateResponse {
+    malt_protocol::elevate::ElevateResponse {
+        request_id,
+        kind,
+        reason,
+        detail: Some(detail.into()),
+        payload: None,
+        _unknown: Vec::new(),
+    }
+}
+
+#[cfg(windows)]
 fn frame_error(error: malt_protocol::framing::FrameError) -> io::Error {
     match error {
         malt_protocol::framing::FrameError::Io(error) => error,
@@ -191,6 +396,20 @@ fn frame_error(error: malt_protocol::framing::FrameError) -> io::Error {
 #[cfg(not(windows))]
 pub fn status() -> io::Result<HelperState> {
     Ok(HelperState::InstalledUnreachable)
+}
+
+#[cfg(not(windows))]
+pub fn send_request(
+    envelope: malt_protocol::elevate::ElevateRequestEnvelope,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    Ok(malt_protocol::elevate::ElevateResponse {
+        request_id: envelope.request_id,
+        kind: malt_protocol::elevate::OutcomeKind::Refused,
+        reason: Some(malt_protocol::elevate::ReasonCode::UnsupportedPlatform),
+        detail: Some("the privileged helper service is only available on Windows".into()),
+        payload: None,
+        _unknown: Vec::new(),
+    })
 }
 
 #[cfg(not(windows))]
