@@ -116,7 +116,7 @@ impl ImageStore {
                 records.push(serde_json::from_slice(&bytes)?);
             }
         }
-        records.sort_by(|left, right| left.manifest_digest.to_string().cmp(&right.manifest_digest.to_string()));
+        records.sort_by_key(|record| record.manifest_digest.to_string());
         Ok(records)
     }
 }

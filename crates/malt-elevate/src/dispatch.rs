@@ -242,6 +242,7 @@ pub struct HcsContainerRegistry {
 struct ManagedContainer {
     session_id: u32,
     system: malt_platform::isolation::hcs::HcsComputeSystem,
+    workspace: Option<malt_platform::isolation::layers::WritableLayer>,
 }
 
 /// Construct a refusal for an operation the current host cannot perform.
@@ -384,15 +385,31 @@ fn create_hcs_container(
             ),
             None => "malt",
         };
-    let root = match storage_root.to_str() {
-        Some(root) => root,
-        None => {
-            return refused(
-                request_id,
-                ReasonCode::InvalidParameters,
-                "session storage root is not valid UTF-8",
-            )
-        }
+    let fake_test = cfg!(test) && matches!(std::env::var("MALT_HCS_FAKE").as_deref(), Ok("1") | Ok("true"));
+    let store = match helper_image_store() {
+        Ok(store) => store,
+        Err(detail) => return refused(request_id, ReasonCode::OsError, detail),
+    };
+    let ready = match store.list_records() {
+        Ok(records) => records.into_iter().filter(|record| record.prepared).collect::<Vec<_>>(),
+        Err(error) => return refused(request_id, ReasonCode::OsError, format!("could not inspect helper-owned images: {error}")),
+    };
+    let (parents, workspace, root) = if fake_test {
+        (Vec::new(), None, storage_root.to_path_buf())
+    } else {
+        let record = match ready.as_slice() {
+            [record] => record,
+            [] => return refused(request_id, ReasonCode::InvalidParameters, "contained session requires one ready helper-owned Windows image; provision one with `malt image provision`"),
+            _ => return refused(request_id, ReasonCode::InvalidParameters, "contained session requires an explicit image selector because multiple ready helper-owned images exist"),
+        };
+        let digest = record.manifest_digest.to_string().trim_start_matches("sha256:").to_string();
+        let parents = (0..record.manifest.layers.len()).map(|index| malt_platform::isolation::layers::PreparedLayer { id: format!("malt-{digest}-{index}"), path: store.root().join("prepared").join(&digest).join("layers").join(index.to_string()) }).collect::<Vec<_>>();
+        let workspace = match malt_platform::isolation::layers::initialize_writable_layer(&store.root().join("sessions").join(session_id.to_string()).join(request_id.to_string()), &parents) {
+            Ok(workspace) => workspace,
+            Err(error) => return refused(request_id, ReasonCode::OsError, format!("could not create helper-owned contained workspace: {error}")),
+        };
+        let root = workspace.path().to_path_buf();
+        (parents, Some(workspace), root)
     };
     let id = format!("malt-session-{session_id}-{request_id}");
     if containers.containers.contains_key(&id) {
@@ -402,16 +419,14 @@ fn create_hcs_container(
             "compute-system id is already registered for this helper lifetime",
         );
     }
-    let config = hcs_config(&id, hostname, root, memory_limit_mb);
+    let config = hcs_config(&id, hostname, root.to_string_lossy().as_ref(), memory_limit_mb, &parents);
     let config = malt_platform::isolation::hcs::HcsConfig {
         id: id.clone(),
         config_json: config,
     };
     match malt_platform::isolation::hcs::create_compute_system(&config) {
         Ok(system) => {
-            containers
-                .containers
-                .insert(id.clone(), ManagedContainer { session_id, system });
+            containers.containers.insert(id.clone(), ManagedContainer { session_id, system, workspace });
             ElevateResponse {
                 request_id,
                 kind: OutcomeKind::Performed,
@@ -423,11 +438,10 @@ fn create_hcs_container(
                 _unknown: Vec::new(),
             }
         }
-        Err(error) => refused(
-            request_id,
-            ReasonCode::OsError,
-            format!("ManageHcsContainer failed: {error}"),
-        ),
+        Err(error) => {
+            let cleanup = workspace.map(malt_platform::isolation::layers::destroy_writable_layer).transpose();
+            refused(request_id, ReasonCode::OsError, format!("ManageHcsContainer failed: {error}; workspace cleanup: {}", cleanup.map(|_| "complete".to_string()).unwrap_or_else(|cleanup| cleanup.to_string())))
+        },
     }
 }
 
@@ -568,7 +582,7 @@ fn tear_down_after_process_launch_failure(
     detail: String,
 ) -> ElevateResponse {
     let cleanup = containers.containers.remove(id).map(|container| {
-        malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle())
+        malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle()).and_then(|()| container.workspace.map(malt_platform::isolation::layers::destroy_writable_layer).transpose()).map(|_| ())
     });
     let detail = match cleanup {
         Some(Ok(())) => format!("{detail}; the affected compute system was terminated"),
@@ -605,7 +619,7 @@ fn terminate_hcs_container(
             "helper lost the managed compute-system record before teardown",
         );
     };
-    match malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle()) {
+    match malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle()).and_then(|()| container.workspace.map(malt_platform::isolation::layers::destroy_writable_layer).transpose()).map(|_| ()) {
         Ok(()) => ElevateResponse {
             request_id,
             kind: OutcomeKind::Performed,
@@ -635,16 +649,25 @@ fn hcs_config(
     hostname: &str,
     storage_root: &str,
     memory_limit_mb: Option<u32>,
+    parents: &[malt_platform::isolation::layers::PreparedLayer],
 ) -> String {
-    let storage_root = json_escape(storage_root);
-    let memory = memory_limit_mb
-        .map(|limit| format!(r#","Memory":{{"SizeInMB":{limit}}}"#))
-        .unwrap_or_default();
-    format!(
-        r#"{{"SchemaVersion":{{"Major":2,"Minor":1}},"Owner":"malt-session-{id}","ShouldTerminateOnLastHandleClosed":true,"Container":{{"Storage":{{"Path":"{storage_root}","Layers":[]}},"GuestOs":{{"HostName":"{hostname}"}}{memory}}}}}"#
-    )
+    let mut container = serde_json::json!({
+        "Storage": { "Path": storage_root, "Layers": parents.iter().map(|parent| serde_json::json!({ "Id": parent.id, "Path": parent.path, "PathType": "AbsolutePath" })).collect::<Vec<_>>() },
+        "GuestOs": { "HostName": hostname },
+    });
+    if let Some(limit) = memory_limit_mb {
+        container["Memory"] = serde_json::json!({ "SizeInMB": limit });
+    }
+    serde_json::json!({
+        "SchemaVersion": { "Major": 2, "Minor": 1 },
+        "Owner": format!("malt-session-{id}"),
+        "ShouldTerminateOnLastHandleClosed": true,
+        "Container": container,
+    })
+    .to_string()
 }
 
+#[cfg(test)]
 fn json_escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
@@ -741,10 +764,15 @@ mod tests {
 
     #[test]
     fn hcs_configuration_comes_only_from_typed_fields_and_entitled_root() {
-        let json = hcs_config("malt-session-7-8", "malt", r"C:\session-root", Some(512));
+        let parents = [malt_platform::isolation::layers::PreparedLayer {
+            id: "layer-test".to_string(),
+            path: std::path::PathBuf::from(r"C:\prepared\layer-test"),
+        }];
+        let json = hcs_config("malt-session-7-8", "malt", r"C:\session-root", Some(512), &parents);
         assert!(json.contains(r#""Owner":"malt-session-malt-session-7-8""#));
         assert!(json.contains(r#""Path":"C:\\session-root""#));
         assert!(json.contains(r#""SizeInMB":512"#));
+        assert!(json.contains("layer-test"));
         assert!(!json.contains("config_json"));
     }
 
