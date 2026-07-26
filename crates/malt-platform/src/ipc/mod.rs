@@ -9,7 +9,8 @@ mod windows;
 
 #[cfg(windows)]
 pub use windows::{
-    current_process_principal, NamedPipeClient, NamedPipeConnection, NamedPipeServer, PeerIdentity,
+    current_process_principal, process_identity, NamedPipeClient, NamedPipeConnection,
+    NamedPipeServer, PeerIdentity, ProcessIdentity,
 };
 
 #[cfg(not(windows))]

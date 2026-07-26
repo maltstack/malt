@@ -4,7 +4,20 @@ use std::io::{Read, Write};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use malt_platform::ipc::{current_process_principal, NamedPipeClient, NamedPipeServer};
+use malt_platform::ipc::{
+    current_process_principal, process_identity, NamedPipeClient, NamedPipeServer,
+};
+
+#[test]
+fn process_identity_is_observed_from_the_running_process() {
+    let expected_principal = current_process_principal().expect("read current process principal");
+    let identity = process_identity(std::process::id()).expect("inspect current process");
+
+    assert_eq!(identity.process_id, std::process::id());
+    assert_eq!(identity.principal, expected_principal);
+    assert_ne!(identity.creation_time_100ns, 0);
+    assert!(!identity.image_path.is_empty());
+}
 
 #[test]
 fn named_pipe_accepts_a_real_client_and_attributes_its_process() {

@@ -3,14 +3,14 @@ use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, LocalFree, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE,
-    INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, LocalFree, ERROR_PIPE_CONNECTED, FILETIME, GENERIC_READ,
+    GENERIC_WRITE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows_sys::Win32::Security::{
-    GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+    GetTokenInformation, TokenElevation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -21,7 +21,8 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
@@ -33,6 +34,20 @@ pub struct PeerIdentity {
     pub process_id: u32,
     /// Canonical Windows user SID read from that process's access token.
     pub principal: String,
+}
+
+/// Kernel-observed identity evidence for a process enrolled with the helper.
+///
+/// `creation_time_100ns` prevents PID reuse from being mistaken for an
+/// already-authorised daemon. The service compares every field it relies on
+/// again at operation time rather than trusting a caller-supplied PID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub process_id: u32,
+    pub principal: String,
+    pub creation_time_100ns: u64,
+    pub image_path: String,
+    pub elevated: bool,
 }
 
 /// A connected named pipe. The `File` owns and closes the native handle.
@@ -72,6 +87,22 @@ pub fn current_process_principal() -> io::Result<String> {
     principal_for_handle(unsafe { GetCurrentProcess() })
 }
 
+/// Inspect a process using kernel and token information, not caller input.
+pub fn process_identity(process_id: u32) -> io::Result<ProcessIdentity> {
+    // SAFETY: process_id is an opaque value supplied by the caller; the
+    // requested access permits inspection only and cannot modify the process.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    if process.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let result = process_identity_for_handle(process, process_id);
+    // SAFETY: process is a successful OpenProcess handle owned here.
+    if unsafe { CloseHandle(process) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    result
+}
+
 fn principal_for_process(process_id: u32) -> io::Result<String> {
     // SAFETY: the process ID was supplied by the kernel for this named-pipe
     // connection; the requested access is limited to token inspection.
@@ -85,6 +116,79 @@ fn principal_for_process(process_id: u32) -> io::Result<String> {
         return Err(io::Error::last_os_error());
     }
     result
+}
+
+fn process_identity_for_handle(
+    process: windows_sys::Win32::Foundation::HANDLE,
+    process_id: u32,
+) -> io::Result<ProcessIdentity> {
+    let principal = principal_for_handle(process)?;
+    let creation_time_100ns = process_creation_time(process)?;
+    let image_path = process_image_path(process)?;
+    let elevated = process_is_elevated(process)?;
+    Ok(ProcessIdentity {
+        process_id,
+        principal,
+        creation_time_100ns,
+        image_path,
+        elevated,
+    })
+}
+
+fn process_creation_time(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<u64> {
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: process is a valid query handle and each FILETIME points to
+    // writable storage for the documented process timestamp outputs.
+    if unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(u64::from(created.dwLowDateTime) | (u64::from(created.dwHighDateTime) << 32))
+}
+
+fn process_image_path(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<String> {
+    const MAX_IMAGE_PATH_CHARS: usize = 32_768;
+    let mut image = vec![0u16; MAX_IMAGE_PATH_CHARS];
+    let mut length = image.len() as u32;
+    // SAFETY: process is a valid query handle, image has capacity for length
+    // UTF-16 characters, and length points to writable size storage.
+    if unsafe { QueryFullProcessImageNameW(process, 0, image.as_mut_ptr(), &mut length) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    String::from_utf16(&image[..length as usize])
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid process image path"))
+}
+
+fn process_is_elevated(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<bool> {
+    let mut token = std::ptr::null_mut();
+    // SAFETY: process is a valid query handle and token is writable storage.
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut elevation = windows_sys::Win32::Security::TOKEN_ELEVATION::default();
+    let mut returned = 0u32;
+    // SAFETY: token is valid, elevation is writable and exactly the size
+    // required by TokenElevation, and returned is writable size storage.
+    let queried = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut windows_sys::Win32::Security::TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<windows_sys::Win32::Security::TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    };
+    let query_error = (queried == 0).then(io::Error::last_os_error);
+    // SAFETY: token is a successful OpenProcessToken handle owned here.
+    if unsafe { CloseHandle(token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if let Some(error) = query_error {
+        return Err(error);
+    }
+    Ok(elevation.TokenIsElevated != 0)
 }
 
 fn principal_for_handle(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<String> {
