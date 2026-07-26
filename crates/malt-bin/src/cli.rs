@@ -36,6 +36,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ElevateCommand,
     },
+    /// Provision, inspect, and retire helper-owned Windows base images
+    Image {
+        #[command(subcommand)]
+        command: ImageCommand,
+    },
     /// Create a new session
     New {
         #[arg(long)]
@@ -92,6 +97,14 @@ pub enum ElevateCommand {
     Uninstall,
     /// Explicitly UAC-authorize one already-running daemon process
     AuthorizeDaemon { pid: u32 },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ImageCommand {
+    Provision { reference: String },
+    List,
+    Inspect { id: String },
+    Remove { id: String },
 }
 
 /// Canonical command-line spellings for the session isolation tiers.

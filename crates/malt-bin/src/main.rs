@@ -7,7 +7,7 @@ mod output;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Command, ElevateCommand, IsolationCommand, IsolationPolicyArg, IsolationTierArg};
+use cli::{Cli, Command, ElevateCommand, ImageCommand, IsolationCommand, IsolationPolicyArg, IsolationTierArg};
 use client::{MaltClient, SessionData};
 
 fn main() -> Result<()> {
@@ -25,6 +25,7 @@ fn main() -> Result<()> {
             command: IsolationCommand::Capabilities,
         }) => handle_isolation_capabilities(&client),
         Some(Command::Elevate { command }) => handle_elevate(command),
+        Some(Command::Image { command }) => handle_image(&client, command),
         Some(Command::New {
             name,
             isolation,
@@ -56,6 +57,21 @@ fn main() -> Result<()> {
             }
         }
     }
+}
+
+fn handle_image(client: &MaltClient, command: ImageCommand) -> Result<()> {
+    match command {
+        ImageCommand::Provision { reference } => print_image(&client.provision_image(&reference)?),
+        ImageCommand::List => { for image in client.list_images()? { print_image(&image)?; } Ok(()) }
+        ImageCommand::Inspect { id } => print_image(&client.inspect_image(&id)?),
+        ImageCommand::Remove { id } => { client.remove_image(&id)?; println!("removed helper-owned image {id}"); Ok(()) }
+    }
+}
+
+fn print_image(image: &client::ImageData) -> Result<()> {
+    println!("image:       {}\nmanifest:    {}\nplatform:    {}{}\nreadiness:   {}\nactive:      {}", image.id, image.manifest_digest, image.platform, image.os_version.as_ref().map(|version| format!(" (os.version {version})")).unwrap_or_default(), if image.ready { "ready" } else { "unavailable" }, image.active_sessions);
+    if let Some(reason) = &image.reason { println!("assessment:  {reason}"); }
+    Ok(())
 }
 
 fn handle_elevate(command: ElevateCommand) -> Result<()> {

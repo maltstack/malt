@@ -66,6 +66,9 @@ pub struct IsolationCapabilityData {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImageData { pub id: String, pub manifest_digest: String, pub platform: String, pub os_version: Option<String>, pub ready: bool, pub reason: Option<String>, pub active_sessions: u32 }
+
 /// Payload sent to the existing create-session endpoint.
 #[derive(Debug, Serialize)]
 struct CreateSessionRequest<'a> {
@@ -159,6 +162,10 @@ pub struct MaltClient {
 }
 
 impl MaltClient {
+    pub fn provision_image(&self, reference: &str) -> Result<ImageData> { let resp = self.authed(self.http.post(self.url("/images"))).json(&serde_json::json!({"reference":reference})).send().context("failed to reach daemon")?; resp.json::<ApiEnvelope<ImageData>>().context("invalid image provision response")?.into_data("image provision") }
+    pub fn list_images(&self) -> Result<Vec<ImageData>> { let resp = self.authed(self.http.get(self.url("/images"))).send().context("failed to reach daemon")?; resp.json::<ApiEnvelope<Vec<ImageData>>>().context("invalid image list response")?.into_data("image list") }
+    pub fn inspect_image(&self, id: &str) -> Result<ImageData> { let resp = self.authed(self.http.get(self.url(&format!("/images/{id}")))).send().context("failed to reach daemon")?; resp.json::<ApiEnvelope<ImageData>>().context("invalid image inspect response")?.into_data("image inspect") }
+    pub fn remove_image(&self, id: &str) -> Result<()> { let response = self.authed(self.http.delete(self.url(&format!("/images/{id}")))).send().context("failed to reach daemon")?; let envelope: ApiEnvelope<serde_json::Value> = response.json().context("invalid image remove response")?; if envelope.ok { Ok(()) } else { Err(anyhow::anyhow!("{}", envelope.error.map(ApiError::into_message).unwrap_or_else(|| "image remove failed".to_string()))) } }
     pub fn new(addr: &str) -> Self {
         let addr = addr.trim_end_matches('/').to_owned();
         let token = std::fs::read_to_string(malt_gateway::auth::dirs_token_path())
