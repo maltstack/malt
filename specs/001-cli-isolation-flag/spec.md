@@ -4,16 +4,16 @@
 
 **Created**: 2026-07-24
 
-**Status**: Partially implemented — REOPENED 2026-07-25
+**Status**: Complete — fail-closed closure 2026-07-26
 
-The CLI surface ships and every task is checked, but the spec's fail-closed
-requirement is not met. A requested isolation tier can be reported as applied
-while the session runs uncontained; `Capped` and `Contained` resolve to the
-same placeholder limits; and there is no enforcement path at all on
-non-Windows. Leaving this marked Complete would assert a security guarantee
-the code does not provide, which is worse than an open item. See audit finding
-A-02 in `docs/findings/2026-07-25-architecture-spec-codebase-audit.md` and the
-isolation-policy entry in `docs/BACKLOG.md`.
+The CLI now sends an explicit `required`/`preferred`/`disabled` policy. A
+requested non-baseline tier defaults to `required`, so unavailable containment
+fails instead of creating an uncontained session; `preferred` is the explicit
+opt-in downgrade. The creation response and `malt list` show the stored,
+effective `IsolationStatus`, not the request. Evidence: 
+`required_contained_refusal_leaves_no_session`,
+`preferred_contained_request_returns_visible_bare_downgrade`, and
+`granted_capped_session_names_its_job_object_mechanism`.
 
 **Input**: User description: "the `malt new --isolation` CLI flag from the backlog"
 

@@ -222,7 +222,10 @@ malt start                    # Start daemon in background
 malt stop                     # Graceful shutdown via /shutdown endpoint
 malt status                   # Show daemon health + session list
 malt new [--name N] [--isolation <bare|restricted|capped|contained>]
-                               # Create session (spawns in-process mash shell)
+         [--isolation-policy <required|preferred|disabled>]
+                               # Non-bare defaults to required: unavailable isolation refuses;
+                               # preferred is the explicit visible downgrade policy
+malt isolation capabilities    # Report session-spawn-path tier availability and its evidence basis
 malt list                     # List sessions
 malt attach [ID]              # Open TUI connected to session (VNP + HTTP fallback)
 malt exec ID "command"        # Run command via mash, return output (reports truncation if the
