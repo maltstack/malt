@@ -1130,6 +1130,8 @@ impl Coordinator {
             handle.isolation = isolation_status(spawned.established_isolation, requested);
             handle.isolation.detail = Some(if handle.isolation.effective == IsolationTier::Bare {
                 "restored without requested isolation".to_string()
+            } else if handle.isolation.basis == IsolationBasis::Verified {
+                "isolation re-established and externally inspected on restore".to_string()
             } else {
                 "isolation re-established on restore; not externally verified".to_string()
             });

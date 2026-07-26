@@ -769,6 +769,73 @@ fn shell_env_state_survives_dormant_restore_via_env_snapshot() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn capped_session_reestablishes_verified_isolation_after_restart() {
+    use malt_protocol::common::{InputAuthority, SessionId};
+
+    let directory = tempfile::tempdir().expect("temporary persistent store");
+    let session_id;
+    {
+        let backend = make_backend_with_store(&directory);
+        let created = backend
+            .create_session_with_policy(
+                Some("restore-isolation".to_string()),
+                Some("capped".to_string()),
+                Some("required".to_string()),
+            )
+            .expect("create capped session");
+        session_id = created.id;
+        let coordinator = backend.coordinator().clone();
+        let mut coordinator = coordinator.lock().expect("coordinator lock");
+        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
+        coordinator
+            .register_vnp_client(
+                SessionId(session_id),
+                1,
+                InputAuthority::Exclusive,
+                test_caps(),
+                render_tx,
+            )
+            .expect("attach before dormancy");
+        coordinator
+            .unregister_vnp_client(SessionId(session_id), 1)
+            .expect("persist dormant session");
+    }
+
+    let restored = make_backend_with_store(&directory);
+    let coordinator = restored.coordinator().clone();
+    let mut coordinator = coordinator.lock().expect("restored coordinator lock");
+    let (render_tx, _render_rx) = std::sync::mpsc::sync_channel::<ClientMessage>(4);
+    coordinator
+        .register_vnp_client(
+            SessionId(session_id),
+            2,
+            InputAuthority::Exclusive,
+            test_caps(),
+            render_tx,
+        )
+        .expect("restore and attach capped session");
+    let status = coordinator
+        .list_sessions()
+        .into_iter()
+        .find(|session| session.session_id.0 == session_id)
+        .expect("restored session status")
+        .isolation;
+    assert_eq!(
+        status.effective,
+        malt_protocol::common::IsolationTier::Capped
+    );
+    assert_eq!(
+        status.basis,
+        malt_protocol::common::IsolationBasis::Verified
+    );
+    assert!(status
+        .detail
+        .unwrap_or_default()
+        .contains("re-established and externally inspected"));
+}
+
 #[test]
 fn busy_session_output_remains_prompt_and_another_session_is_not_delayed() {
     use std::sync::Arc;
