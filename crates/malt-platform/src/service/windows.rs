@@ -367,7 +367,21 @@ pub fn install(name: &str, executable: &Path, arguments: &[&str]) -> io::Result<
     let service = create_service(name, executable, arguments)?;
     // SAFETY: service is a valid service handle; there are no arguments.
     if unsafe { StartServiceW(service.0, 0, std::ptr::null()) } == 0 {
-        return Err(io::Error::last_os_error());
+        let start_error = io::Error::last_os_error();
+        // SAFETY: `service` is the registration created immediately above.
+        // Removing it on a failed start ensures `install` is atomic from the
+        // operator's perspective: a failing helper command leaves no service
+        // artefact behind for a later status probe to misinterpret.
+        if unsafe { DeleteService(service.0) } == 0 {
+            let rollback_error = io::Error::last_os_error();
+            return Err(io::Error::new(
+                start_error.kind(),
+                format!(
+                    "start newly registered service failed: {start_error}; rollback deletion also failed: {rollback_error}"
+                ),
+            ));
+        }
+        return Err(start_error);
     }
     Ok(())
 }

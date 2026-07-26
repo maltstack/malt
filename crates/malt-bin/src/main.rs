@@ -61,44 +61,10 @@ fn main() -> Result<()> {
 fn handle_elevate(command: ElevateCommand) -> Result<()> {
     match command {
         ElevateCommand::Status => {
-            match malt_daemon::elevate_client::status()? {
-                malt_daemon::elevate_client::HelperState::NotInstalled => {
-                    println!("helper:   not installed");
-                    println!("effect:   contained isolation is unavailable; required requests are refused");
-                    println!(
-                        "resolve:  run `malt elevate install` and accept the Windows UAC prompt"
-                    );
-                }
-                malt_daemon::elevate_client::HelperState::InstalledStopped => {
-                    println!("helper:   installed, not running");
-                    println!(
-                        "effect:   contained isolation is unavailable until the helper is running"
-                    );
-                    println!(
-                        "resolve:  start the {} service",
-                        malt_daemon::elevate_client::HELPER_SERVICE_NAME
-                    );
-                }
-                malt_daemon::elevate_client::HelperState::InstalledUnreachable => {
-                    println!("helper:   installed, but did not answer its authenticated VNP probe");
-                    println!("effect:   contained isolation is unavailable; service bookkeeping is not reachability");
-                    println!(
-                        "resolve:  inspect the {} service and its event log",
-                        malt_daemon::elevate_client::HELPER_SERVICE_NAME
-                    );
-                }
-                malt_daemon::elevate_client::HelperState::Reachable { protocol_version } => {
-                    println!("helper:   reachable");
-                    println!("protocol: {protocol_version}");
-                    println!("verified: authenticated VNP hello/ack round trip completed");
-                }
-                malt_daemon::elevate_client::HelperState::VersionMismatch { expected, actual } => {
-                    println!("helper:   version mismatch");
-                    println!("protocol: helper {actual}, daemon expects {expected}");
-                    println!("effect:   no privileged operation will be attempted");
-                    println!("resolve:  reinstall the helper from this MALT build in an elevated PowerShell");
-                }
-            }
+            print!(
+                "{}",
+                helper_status_message(malt_daemon::elevate_client::status()?)
+            );
             Ok(())
         }
         ElevateCommand::Install => {
@@ -142,6 +108,42 @@ fn handle_elevate(command: ElevateCommand) -> Result<()> {
             println!("helper enrolled daemon process {pid}");
             Ok(())
         }
+    }
+}
+
+/// Render the helper state independently of the state probe so every state
+/// has testable, distinct operator guidance.
+fn helper_status_message(state: malt_daemon::elevate_client::HelperState) -> String {
+    match state {
+        malt_daemon::elevate_client::HelperState::NotInstalled => concat!(
+            "helper:   not installed\n",
+            "effect:   contained isolation is unavailable; required requests are refused\n",
+            "resolve:  run `malt elevate install` and accept the Windows UAC prompt\n",
+        )
+        .to_string(),
+        malt_daemon::elevate_client::HelperState::InstalledStopped => format!(
+            "helper:   installed, not running\n\
+             effect:   contained isolation is unavailable until the helper is running\n\
+             resolve:  start the {} service\n",
+            malt_daemon::elevate_client::HELPER_SERVICE_NAME
+        ),
+        malt_daemon::elevate_client::HelperState::InstalledUnreachable => format!(
+            "helper:   installed, but did not answer its authenticated VNP probe\n\
+             effect:   contained isolation is unavailable; service bookkeeping is not reachability\n\
+             resolve:  inspect the {} service and its event log\n",
+            malt_daemon::elevate_client::HELPER_SERVICE_NAME
+        ),
+        malt_daemon::elevate_client::HelperState::Reachable { protocol_version } => format!(
+            "helper:   reachable\n\
+             protocol: {protocol_version}\n\
+             verified: authenticated VNP hello/ack round trip completed\n"
+        ),
+        malt_daemon::elevate_client::HelperState::VersionMismatch { expected, actual } => format!(
+            "helper:   version mismatch\n\
+             protocol: helper {actual}, daemon expects {expected}\n\
+             effect:   no privileged operation will be attempted\n\
+             resolve:  reinstall the helper from this MALT build in an elevated PowerShell\n"
+        ),
     }
 }
 
@@ -660,5 +662,37 @@ mod tests {
             "session 42 was created with isolation Bare, not requested Restricted"
         );
         assert!(!error.to_string().contains("created session"));
+    }
+
+    #[test]
+    fn helper_states_have_distinct_operator_guidance() {
+        use malt_daemon::elevate_client::HelperState;
+
+        let messages = [
+            helper_status_message(HelperState::NotInstalled),
+            helper_status_message(HelperState::InstalledStopped),
+            helper_status_message(HelperState::InstalledUnreachable),
+            helper_status_message(HelperState::Reachable {
+                protocol_version: 2,
+            }),
+            helper_status_message(HelperState::VersionMismatch {
+                expected: 2,
+                actual: 1,
+            }),
+        ];
+
+        assert!(messages[0].contains("malt elevate install"));
+        assert!(messages[1].contains("start the MALT-Elevate service"));
+        assert!(messages[2].contains("event log"));
+        assert!(messages[3].contains("hello/ack round trip"));
+        assert!(messages[4].contains("reinstall the helper"));
+        for (index, message) in messages.iter().enumerate() {
+            for other in messages.iter().skip(index + 1) {
+                assert_ne!(
+                    message, other,
+                    "helper states must not collapse to one message"
+                );
+            }
+        }
     }
 }
