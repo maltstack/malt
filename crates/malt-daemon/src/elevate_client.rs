@@ -201,6 +201,86 @@ pub fn enroll_daemon(pid: u32) -> io::Result<()> {
     }
 }
 
+/// Register the resources a previously enrolled daemon may name for one
+/// session. The helper canonicalizes and independently re-observes them.
+#[cfg(windows)]
+pub fn register_session_entitlement(
+    session_id: malt_protocol::common::SessionId,
+    storage_root: &Path,
+    pids: &[u32],
+) -> io::Result<()> {
+    use malt_platform::ipc::NamedPipeClient;
+    use malt_protocol::elevate::{
+        ElevateHello, SessionEntitlementRequest, SessionEntitlementResponse,
+    };
+    use malt_protocol::elevate_channel::{
+        HELLO, HELLO_ACK, SESSION_ENTITLEMENT_REQUEST, SESSION_ENTITLEMENT_RESPONSE,
+    };
+    use malt_protocol::vexil_runtime::{BitWriter, Pack};
+
+    if !matches!(status()?, HelperState::Reachable { .. }) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "helper is not reachable",
+        ));
+    }
+    let storage_root = storage_root.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "session root is not valid UTF-8",
+        )
+    })?;
+    let mut connection = NamedPipeClient::connect(HELPER_PIPE_NAME)?;
+    let nonce = enrollment_nonce(session_id.0);
+    let hello = ElevateHello {
+        nonce,
+        version: HELPER_PROTOCOL_VERSION,
+        _unknown: Vec::new(),
+    };
+    let mut writer = BitWriter::new();
+    hello
+        .pack(&mut writer)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let mut payload = vec![HELLO];
+    payload.extend(writer.finish());
+    write_frame(&mut connection, payload)?;
+    let acknowledgement =
+        read_tagged::<malt_protocol::elevate::ElevateHelloAck>(&mut connection, HELLO_ACK)?;
+    if acknowledgement.nonce != nonce
+        || acknowledgement.version != HELPER_PROTOCOL_VERSION
+        || !acknowledgement.accepted
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "helper rejected session registration handshake",
+        ));
+    }
+    let mut writer = BitWriter::new();
+    SessionEntitlementRequest {
+        session_id,
+        storage_root: storage_root.to_string(),
+        pids: pids.to_vec(),
+        _unknown: Vec::new(),
+    }
+    .pack(&mut writer)
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let mut payload = vec![SESSION_ENTITLEMENT_REQUEST];
+    payload.extend(writer.finish());
+    write_frame(&mut connection, payload)?;
+    let response =
+        read_tagged::<SessionEntitlementResponse>(&mut connection, SESSION_ENTITLEMENT_RESPONSE)?;
+    if response.accepted {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            response
+                .reason
+                .unwrap_or_else(|| "helper refused session registration".to_string()),
+        ))
+    }
+}
+
 #[cfg(windows)]
 fn enrollment_nonce(pid: u32) -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
