@@ -21,7 +21,7 @@ reported `not installed` before it was installed again.
 | 5: unauthorised local request | Passed | Real named-pipe test sends a well-formed request from an unenrolled local process and observes refusal. |
 | 6: replay | Passed | Real named-pipe test re-sends the authenticated envelope and observes replay refusal. |
 | 7: entitlement escape | Passed | Owner, parent-traversal, and symlink-escape refusals are covered against canonicalized paths. |
-| 8: privilege boundary | Passed | The opt-in live `elevate_boundary` scenario passed on 2026-07-27 after UAC authorization. It observed direct `HCS_E_ACCESS_DENIED`; the same entitled helper request was not refused for that reason. |
+| 8: privilege boundary | Skipped on revalidation | The opt-in `elevate_boundary` scenario was rerun on 2026-07-27 after the HCS spawn-path change. Both direct and helper routes reached the host configuration failure `HRESULT=0x80071126` (`OperationFailure: Construct`) before a privilege difference could be observed, so the test printed its defined skip instead of claiming a pass. |
 | 9: teardown absence | Partial | Fake HCS lifecycle test enumerates the removed system; no live helper-created system was available because image layers are out of scope. |
 | 10: helper death during session operation | Partial | A real temporary named-pipe peer accepted the authenticated request then disappeared; the client returned `Indeterminate` and its `IsolationContext` remained unestablished. A live contained MASH child does not yet exist; see the HCS spawn survey. |
 | 11: one isolation carrier | Passed | The MASH environment has one `IsolationContext` field and the targeted test passed. |
@@ -45,8 +45,8 @@ reported `not installed` before it was installed again.
 
 ## What this does not establish
 
-It does not establish a contained MALT session. The helper proves that the
-privilege boundary changes an HCS outcome, but MASH still launches normal host
-children. A helper-owned HCS process, duplicated I/O handles, and a MASH-side
-child lifecycle integration are required before `IsolationContext` may be
-updated to `Container`.
+It does not establish a contained MALT session. The helper-owned HCS-process,
+duplicated-I/O, and MASH child-lifecycle path is now implemented, but this
+host has no validated HCS image/layer configuration: HCS rejects compute-system
+construction before a process can launch. The declined-UAC scenario likewise
+remains unperformed because the operator approved elevation for this run.
