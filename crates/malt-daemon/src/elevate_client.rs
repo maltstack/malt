@@ -128,7 +128,19 @@ pub fn install(helper_executable: &Path) -> io::Result<()> {
             &principal,
         ],
     )?;
-    match status()? {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let state = loop {
+        let state = status()?;
+        if matches!(
+            state,
+            HelperState::Reachable { .. } | HelperState::VersionMismatch { .. }
+        ) || std::time::Instant::now() >= deadline
+        {
+            break state;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    match state {
         HelperState::Reachable { .. } => Ok(()),
         state => {
             let rollback = uninstall();
