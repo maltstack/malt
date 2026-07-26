@@ -26,22 +26,14 @@ original ten, in order. Each links to its detail below.
 `docs/findings/`): 0a Gateway auth enforcement · 0b responsive session
 control · 1 correct stdout/stderr · 2 exit codes and execution IDs ·
 3 command lifecycle events · 4 persistent execution history · 5 genuine raw
-input · 6 human/agent coexistence · 8 the TUI rendering path · plus
+input · 6 human/agent coexistence · 7 fail-closed requested isolation ·
+8 the TUI rendering path · plus
 streaming command output (`specs/006-streaming-command-output/`), which was
 not on the original ten but is what makes a long-running command observable
 at all.
 
 **Open, in priority order:**
 
-- **7. Fail-closed requested isolation** — see P1, and audit A-02, which
-  rates it Critical: a tier can be reported as applied while the session
-  runs uncontained. `Capped` and `Contained` resolve to the same placeholder
-  limits, `Contained` never launches inside HCS, and non-Windows has no
-  enforcement path at all. Session creation reports the *requested* tier
-  rather than a verified one, which is the part that makes this a trust
-  problem rather than a missing feature — a caller is told it got
-  containment it did not get. `specs/001-cli-isolation-flag/` is reopened
-  for the same reason and should be closed by this work, not separately.
 - **9. Session restoration** — largely delivered; the remaining gap is
   restored Compat panes running outside the session's isolation group
   (audit A-06/A-11). Note this overlaps 7: both are about a session's
