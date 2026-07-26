@@ -60,6 +60,10 @@ impl ImageReference {
     pub fn blob_url(&self, digest: &Digest) -> String {
         format!("https://{}/v2/{}/blobs/{digest}", self.registry, self.repository)
     }
+
+    pub fn with_reference(&self, reference: impl Into<String>) -> Self {
+        Self { registry: self.registry.clone(), repository: self.repository.clone(), reference: reference.into() }
+    }
 }
 
 impl fmt::Display for ImageReference {

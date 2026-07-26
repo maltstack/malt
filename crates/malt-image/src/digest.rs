@@ -14,6 +14,19 @@ impl Digest {
     pub fn from_bytes(bytes: [u8; 32]) -> Self { Self(bytes) }
 
     pub fn as_bytes(&self) -> &[u8; 32] { &self.0 }
+
+    pub fn from_reader(reader: &mut impl Read) -> Result<(Self, u64), DigestError> {
+        let mut hasher = Sha256::new();
+        let mut bytes_read = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = reader.read(&mut buffer).map_err(|error| DigestError::Read(error.to_string()))?;
+            if read == 0 { break; }
+            bytes_read = bytes_read.checked_add(read as u64).ok_or(DigestError::SizeMismatch { expected: u64::MAX, actual: u64::MAX })?;
+            hasher.update(&buffer[..read]);
+        }
+        Ok((Self::from_bytes(hasher.finalize().into()), bytes_read))
+    }
 }
 
 impl fmt::Display for Digest {
@@ -70,17 +83,8 @@ pub enum DigestError {
 
 /// Stream and verify a descriptor without retaining its whole body in memory.
 pub fn verify_reader(reader: &mut impl Read, expected: &Digest, expected_size: u64) -> Result<u64, DigestError> {
-    let mut hasher = Sha256::new();
-    let mut bytes_read = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = reader.read(&mut buffer).map_err(|error| DigestError::Read(error.to_string()))?;
-        if read == 0 { break; }
-        bytes_read = bytes_read.checked_add(read as u64).ok_or(DigestError::SizeMismatch { expected: expected_size, actual: u64::MAX })?;
-        hasher.update(&buffer[..read]);
-    }
+    let (actual, bytes_read) = Digest::from_reader(reader)?;
     if bytes_read != expected_size { return Err(DigestError::SizeMismatch { expected: expected_size, actual: bytes_read }); }
-    let actual = Digest::from_bytes(hasher.finalize().into());
     if &actual != expected { return Err(DigestError::Mismatch { expected: expected.clone(), actual }); }
     Ok(bytes_read)
 }
