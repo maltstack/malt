@@ -201,7 +201,8 @@ fn remove_prepared_image(
         malt_platform::isolation::layers::destroy_prepared_layer(layer)
             .map_err(|error| error.to_string())?;
     }
-    std::fs::remove_dir_all(root).map_err(|error| error.to_string())
+    malt_platform::isolation::layers::remove_owned_tree(store.root(), &root)
+        .map_err(|error| error.to_string())
 }
 
 fn prepare_image(
@@ -243,7 +244,7 @@ fn prepare_image(
         Ok(parents)
     })();
     if let Err(error) = result {
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = malt_platform::isolation::layers::remove_owned_tree(store.root(), &root);
         return Err(malt_image::StoreError::Io(std::io::Error::other(format!(
             "HCS image preparation failed: {error}"
         ))));
@@ -256,8 +257,10 @@ fn prepare_image(
 fn helper_image_store() -> Result<malt_image::ImageStore, String> {
     let program_data = std::env::var_os("ProgramData")
         .ok_or_else(|| "ProgramData is not set for the elevated helper".to_string())?;
-    malt_image::ImageStore::open(PathBuf::from(program_data).join("MALT").join("images"))
-        .map_err(|error| error.to_string())
+    let root = PathBuf::from(program_data).join("MALT").join("images");
+    malt_platform::isolation::layers::ensure_owned_root(&root)
+        .map_err(|error| error.to_string())?;
+    malt_image::ImageStore::open(root).map_err(|error| error.to_string())
 }
 
 fn parse_image_id(value: &str) -> Result<malt_image::Digest, String> {

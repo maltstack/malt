@@ -12,6 +12,83 @@ use serde_json::json;
 
 use super::tier::IsolationError;
 
+const OWNER_MARKER: &str = ".malt-owned-image-store";
+const OWNER_MARKER_CONTENT: &[u8] = b"malt-image-store-v1\n";
+
+/// Establish the marker that authorizes later removal below this helper-owned
+/// root. Callers must create this root from trusted configuration, never from
+/// a protocol field.
+pub fn ensure_owned_root(root: &Path) -> Result<(), IsolationError> {
+    if !root.is_absolute() {
+        return Err(IsolationError::HcsError(
+            "owned HCS root must be absolute".to_string(),
+        ));
+    }
+    fs::create_dir_all(root).map_err(IsolationError::IoError)?;
+    let marker = root.join(OWNER_MARKER);
+    if marker.exists() {
+        return verify_owned_root(root);
+    }
+    fs::write(marker, OWNER_MARKER_CONTENT).map_err(IsolationError::IoError)
+}
+
+/// Remove a descendant only after verifying the root marker and rejecting
+/// lexical parent escapes and symlink traversal beneath the owned root.
+pub fn remove_owned_tree(root: &Path, target: &Path) -> Result<(), IsolationError> {
+    verify_owned_root(root)?;
+    let relative = target.strip_prefix(root).map_err(|_| {
+        IsolationError::HcsError("refusing cleanup outside the helper-owned image root".to_string())
+    })?;
+    if relative.as_os_str().is_empty()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(IsolationError::HcsError(
+            "refusing unsafe helper-owned cleanup path".to_string(),
+        ));
+    }
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        if current.exists()
+            && fs::symlink_metadata(&current)
+                .map_err(IsolationError::IoError)?
+                .file_type()
+                .is_symlink()
+        {
+            return Err(IsolationError::HcsError(
+                "refusing cleanup through a symbolic link".to_string(),
+            ));
+        }
+    }
+    if target.exists() {
+        fs::remove_dir_all(target).map_err(IsolationError::IoError)?;
+    }
+    Ok(())
+}
+
+fn verify_owned_root(root: &Path) -> Result<(), IsolationError> {
+    if !root.is_absolute() {
+        return Err(IsolationError::HcsError(
+            "owned HCS root must be absolute".to_string(),
+        ));
+    }
+    let contents = fs::read(root.join(OWNER_MARKER)).map_err(IsolationError::IoError)?;
+    if contents == OWNER_MARKER_CONTENT {
+        Ok(())
+    } else {
+        Err(IsolationError::HcsError(
+            "refusing image-store root with an unrecognized owner marker".to_string(),
+        ))
+    }
+}
+
 /// A prepared HCS read-only parent layer. The path is never a protocol value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedLayer {
@@ -386,5 +463,19 @@ mod tests {
     fn layer_ids_and_relative_destinations_are_refused() {
         assert!(validate_owned_layer_path(Path::new("relative"), "ok").is_err());
         assert!(validate_owned_layer_path(Path::new(r"C:\\MALT\\layers\\ok"), "../bad").is_err());
+    }
+
+    #[test]
+    fn owned_cleanup_requires_marker_and_stays_below_root() {
+        let temporary = tempfile::tempdir().expect("create test root");
+        let root = temporary.path().canonicalize().expect("canonical root");
+        let target = root.join("prepared").join("image");
+        std::fs::create_dir_all(&target).expect("create target");
+        assert!(remove_owned_tree(&root, &target).is_err());
+
+        ensure_owned_root(&root).expect("mark owned root");
+        remove_owned_tree(&root, &target).expect("remove owned target");
+        assert!(!target.exists());
+        assert!(remove_owned_tree(&root, &root).is_err());
     }
 }
