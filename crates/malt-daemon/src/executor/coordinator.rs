@@ -1117,6 +1117,16 @@ impl Coordinator {
         };
 
         if let Some(handle) = self.sessions.get_mut(&id.0) {
+            handle.isolation_basis = if handle.isolation == IsolationTier::Bare {
+                IsolationBasis::None
+            } else {
+                IsolationBasis::Assumed
+            };
+            handle.isolation_detail = if handle.isolation == IsolationTier::Bare {
+                Some("restored without requested isolation".to_string())
+            } else {
+                Some("isolation re-established on restore; not externally verified".to_string())
+            };
             handle.lifecycle = SessionLifecycle::Active {
                 cmd_tx: spawned.control_tx,
                 ingress: spawned.ingress,
