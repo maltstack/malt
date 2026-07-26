@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use malt_platform::ipc::{NamedPipeClient, NamedPipeServer};
+use malt_platform::ipc::{current_process_principal, NamedPipeClient, NamedPipeServer};
 
 #[test]
 fn named_pipe_accepts_a_real_client_and_attributes_its_process() {
@@ -15,6 +15,7 @@ fn named_pipe_accepts_a_real_client_and_attributes_its_process() {
     let name = format!("malt-platform-test-{}-{suffix}", std::process::id());
     let server_name = name.clone();
 
+    let expected_principal = current_process_principal().expect("read current process principal");
     let server = thread::spawn(move || {
         let server = NamedPipeServer::create(&server_name).expect("create named pipe");
         let mut connection = server.accept().expect("accept named pipe client");
@@ -30,7 +31,7 @@ fn named_pipe_accepts_a_real_client_and_attributes_its_process() {
             .file()
             .write_all(b"pong")
             .expect("write response");
-        identity.process_id
+        identity
     });
 
     let mut client = loop {
@@ -50,5 +51,7 @@ fn named_pipe_accepts_a_real_client_and_attributes_its_process() {
         .expect("read response");
 
     assert_eq!(&response, b"pong");
-    assert_eq!(server.join().expect("server thread"), std::process::id());
+    let identity = server.join().expect("server thread");
+    assert_eq!(identity.process_id, std::process::id());
+    assert_eq!(identity.principal, expected_principal);
 }

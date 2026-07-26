@@ -12,6 +12,17 @@ pub mod priority;
 /// a second, potentially divergent runtime dependency.
 pub use vexil_runtime;
 
+/// Stable framing discriminants for the elevated-helper VNP channel.
+///
+/// The payload bodies are generated from `schemas/elevate.vexil`; these values
+/// only select which generated message a framed body carries.
+pub mod elevate_channel {
+    pub const HELLO: u8 = 1;
+    pub const HELLO_ACK: u8 = 2;
+    pub const REQUEST: u8 = 3;
+    pub const RESPONSE: u8 = 4;
+}
+
 // Envelope: hand-written helpers wrapping the generated type
 pub mod envelope;
 

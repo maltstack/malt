@@ -7,7 +7,7 @@ mod output;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Command, IsolationCommand, IsolationPolicyArg, IsolationTierArg};
+use cli::{Cli, Command, ElevateCommand, IsolationCommand, IsolationPolicyArg, IsolationTierArg};
 use client::{MaltClient, SessionData};
 
 fn main() -> Result<()> {
@@ -24,6 +24,7 @@ fn main() -> Result<()> {
         Some(Command::Isolation {
             command: IsolationCommand::Capabilities,
         }) => handle_isolation_capabilities(&client),
+        Some(Command::Elevate { command }) => handle_elevate(command),
         Some(Command::New {
             name,
             isolation,
@@ -55,6 +56,118 @@ fn main() -> Result<()> {
             }
         }
     }
+}
+
+fn handle_elevate(command: ElevateCommand) -> Result<()> {
+    match command {
+        ElevateCommand::Status => {
+            match malt_daemon::elevate_client::status()? {
+                malt_daemon::elevate_client::HelperState::NotInstalled => {
+                    println!("helper:   not installed");
+                    println!("effect:   contained isolation is unavailable; required requests are refused");
+                    println!(
+                        "resolve:  run `malt elevate install` and accept the Windows UAC prompt"
+                    );
+                }
+                malt_daemon::elevate_client::HelperState::InstalledStopped => {
+                    println!("helper:   installed, not running");
+                    println!(
+                        "effect:   contained isolation is unavailable until the helper is running"
+                    );
+                    println!(
+                        "resolve:  start the {} service",
+                        malt_daemon::elevate_client::HELPER_SERVICE_NAME
+                    );
+                }
+                malt_daemon::elevate_client::HelperState::InstalledUnreachable => {
+                    println!("helper:   installed, but did not answer its authenticated VNP probe");
+                    println!("effect:   contained isolation is unavailable; service bookkeeping is not reachability");
+                    println!(
+                        "resolve:  inspect the {} service and its event log",
+                        malt_daemon::elevate_client::HELPER_SERVICE_NAME
+                    );
+                }
+                malt_daemon::elevate_client::HelperState::Reachable { protocol_version } => {
+                    println!("helper:   reachable");
+                    println!("protocol: {protocol_version}");
+                    println!("verified: authenticated VNP hello/ack round trip completed");
+                }
+                malt_daemon::elevate_client::HelperState::VersionMismatch { expected, actual } => {
+                    println!("helper:   version mismatch");
+                    println!("protocol: helper {actual}, daemon expects {expected}");
+                    println!("effect:   no privileged operation will be attempted");
+                    println!("resolve:  reinstall the helper from this MALT build in an elevated PowerShell");
+                }
+            }
+            Ok(())
+        }
+        ElevateCommand::Install => {
+            if relaunch_elevated_if_needed("install")? {
+                return Ok(());
+            }
+            let helper = helper_executable()?;
+            malt_daemon::elevate_client::install(&helper).map_err(|error| {
+                anyhow::anyhow!(
+                    "helper installation did not complete (run this explicit command from an elevated PowerShell): {error}"
+                )
+            })?;
+            println!(
+                "installed and started {}",
+                malt_daemon::elevate_client::HELPER_SERVICE_NAME
+            );
+            handle_elevate(ElevateCommand::Status)
+        }
+        ElevateCommand::Uninstall => {
+            if relaunch_elevated_if_needed("uninstall")? {
+                return Ok(());
+            }
+            malt_daemon::elevate_client::uninstall().map_err(|error| {
+                anyhow::anyhow!(
+                    "helper removal did not complete (run this explicit command from an elevated PowerShell): {error}"
+                )
+            })?;
+            println!(
+                "removed {}",
+                malt_daemon::elevate_client::HELPER_SERVICE_NAME
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Relaunch exactly one explicit elevate subcommand through UAC when the
+/// current process is unelevated. Returns true in the parent after the child
+/// completed, so only the elevated child reaches SCM mutation.
+fn relaunch_elevated_if_needed(operation: &str) -> Result<bool> {
+    if malt_daemon::elevate_client::is_current_process_elevated()? {
+        return Ok(false);
+    }
+    let executable = std::env::current_exe()?;
+    let exit_code = malt_daemon::elevate_client::run_elevated(&executable, &["elevate", operation])
+        .map_err(|error| {
+            anyhow::anyhow!("Windows elevation was not granted; no helper change ran: {error}")
+        })?;
+    if exit_code != 0 {
+        anyhow::bail!("elevated `malt elevate {operation}` exited with code {exit_code}");
+    }
+    println!("elevated `malt elevate {operation}` completed successfully");
+    Ok(true)
+}
+
+fn helper_executable() -> Result<std::path::PathBuf> {
+    let mut helper = std::env::current_exe()?;
+    helper.set_file_name(if cfg!(windows) {
+        "malt-elevate.exe"
+    } else {
+        "malt-elevate"
+    });
+    if !helper.is_file() {
+        anyhow::bail!(
+            "cannot install the privileged helper because {} is absent; build and deploy malt-elevate beside malt first",
+            helper.display()
+        );
+    }
+    Ok(helper)
 }
 
 fn handle_default(api_addr: &str, client: &MaltClient) -> Result<()> {

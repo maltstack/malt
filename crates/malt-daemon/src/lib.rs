@@ -1,5 +1,6 @@
 pub mod bus;
 pub mod connection;
+pub mod elevate_client;
 pub mod error;
 pub mod executor;
 pub mod gateway_backend;

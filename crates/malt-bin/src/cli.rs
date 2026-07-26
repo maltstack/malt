@@ -31,6 +31,11 @@ pub enum Command {
         #[command(subcommand)]
         command: IsolationCommand,
     },
+    /// Inspect or explicitly manage the privileged helper service
+    Elevate {
+        #[command(subcommand)]
+        command: ElevateCommand,
+    },
     /// Create a new session
     New {
         #[arg(long)]
@@ -75,6 +80,16 @@ pub enum Command {
 pub enum IsolationCommand {
     /// Report tiers the current daemon can establish for sessions
     Capabilities,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ElevateCommand {
+    /// Report the helper's installation and reachability state
+    Status,
+    /// Explicitly install and start the privileged helper service
+    Install,
+    /// Explicitly remove the privileged helper service
+    Uninstall,
 }
 
 /// Canonical command-line spellings for the session isolation tiers.

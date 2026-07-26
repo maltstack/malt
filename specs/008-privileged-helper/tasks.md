@@ -93,15 +93,15 @@ No container operation needed.
 
 ### Platform layer (all new OS surface — Constitution II)
 
-- [ ] T017 [P] [US2] Create `crates/malt-platform/src/ipc/` with a named-pipe server and client (`mod.rs`, `windows.rs`). Every `unsafe` block carries `// SAFETY:`. **Put this in `malt-platform`, not `malt-elevate`** — the plan's Structure Decision, and `dispatch.rs:142` is what happened last time this crate made its own OS calls.
-- [ ] T018 [US2] Add peer-identity query to `crates/malt-platform/src/ipc/windows.rs`: attribute a connected pipe client to an OS principal. **This is the primary authentication control** — the existing nonce proves read access to a file, not the identity of a process (research R3).
-- [ ] T019 [P] [US2] Create `crates/malt-platform/src/service/` with install, uninstall, and status against the Windows service manager (`mod.rs`, `windows.rs`), all `unsafe` documented.
+- [X] T017 [P] [US2] Create `crates/malt-platform/src/ipc/` with a named-pipe server and client (`mod.rs`, `windows.rs`). Every `unsafe` block carries `// SAFETY:`. **Put this in `malt-platform`, not `malt-elevate`** — the plan's Structure Decision, and `dispatch.rs:142` is what happened last time this crate made its own OS calls.
+- [X] T018 [US2] Add peer-identity query to `crates/malt-platform/src/ipc/windows.rs`: attribute a connected pipe client to an OS principal. **This is the primary authentication control** — the existing nonce proves read access to a file, not the identity of a process (research R3).
+- [X] T019 [P] [US2] Create `crates/malt-platform/src/service/` with install, uninstall, and status against the Windows service manager (`mod.rs`, `windows.rs`), all `unsafe` documented.
 - [ ] T020 [US2] Add real-OS tests for T017–T019 in `crates/malt-platform/tests/`. **Tests that construct types without calling Win32 are the shape that hid two real `job_objects.rs` bugs** (Constitution IV) — these must open a pipe, query a peer, and register a service.
 
 ### Helper server
 
 - [ ] T021 [US2] Create `crates/malt-elevate/src/server.rs`: accept a connection, authenticate the peer, read framed requests, dispatch, respond. Bound every request with a timeout.
-- [ ] T022 [US2] Rewrite `crates/malt-elevate/src/main.rs` to serve. **Delete the "Phase 2 skeleton — IPC loop not yet implemented" path entirely** rather than leaving it behind a flag.
+- [X] T022 [US2] Rewrite `crates/malt-elevate/src/main.rs` to serve. **Delete the "Phase 2 skeleton — IPC loop not yet implemented" path entirely** rather than leaving it behind a flag.
 - [ ] T023 [US2] Rewrite `crates/malt-elevate/src/auth.rs`: peer identity from T018 as the primary control; per-request single-use nonce with a bounded validity window for replay rejection. **A shared secret may remain as defence in depth but MUST NOT be the only control**, and no comment may claim a property the code does not implement (T008 removed the last two).
 - [ ] T024 [US2] Implement session-entitlement validation in `crates/malt-elevate/src/dispatch.rs` per [data-model.md](./data-model.md) §3: session ownership, pid membership checked **against the OS not against the request**, and path containment checked **after canonicalization**. **Put the path check in one function every operation calls** — guarding sites individually is how two of three tool-dispatch sites were missed.
 - [ ] T025 [US2] Return `Indeterminate` when a request was sent and no response arrived (FR-005). **The defect this prevents**: resolving an unknown outcome to either success or failure — the caller must be told it is unknown.
@@ -109,8 +109,8 @@ No container operation needed.
 ### Daemon and CLI
 
 - [ ] T026 [US2] Create `crates/malt-daemon/src/elevate_client.rs`: connect, query state, send requests. **Query `HelperState` before attempting any operation, and attempt nothing on `VersionMismatch`** (FR-014).
-- [ ] T027 [US2] Add `malt elevate status|install|uninstall` to `crates/malt-bin/src/`. Install and uninstall require explicit elevation and **MUST NOT run as a side effect of any other command** (FR-007).
-- [ ] T028 [US2] Make `status` report `reachable` **only after a round-trip response**, not because the service manager reports the service running. **The defect this prevents**: service bookkeeping is what the OS says about itself, not evidence anything answers — eliding that distinction is what this feature exists to stop.
+- [X] T027 [US2] Add `malt elevate status|install|uninstall` to `crates/malt-bin/src/`. Install and uninstall require explicit elevation and **MUST NOT run as a side effect of any other command** (FR-007).
+- [X] T028 [US2] Make `status` report `reachable` **only after a round-trip response**, not because the service manager reports the service running. **The defect this prevents**: service bookkeeping is what the OS says about itself, not evidence anything answers — eliding that distinction is what this feature exists to stop.
 
 ### Tests for User Story 2
 
@@ -133,8 +133,8 @@ refused for that reason through the helper.
 
 ### Isolation carrier consolidation (FR-015..017) — before the backend
 
-- [ ] T034 [US3] Extend `IsolationContext` in `crates/malt-platform/src/isolation/tier.rs` with an `Established` enum (`Nothing` / `JobObject` / `Container`) per [data-model.md](./data-model.md) §4. Do this **before** the container work so the backend has one place to attach.
-- [ ] T035 [US3] Make `crates/mash/src/env.rs` carry one isolation field. Remove `job_object` (`env.rs:320`) and make `isolation_context` (`env.rs:314`) the carrier that `crates/mash/src/executor.rs:5683` reads. **Remove the old field; do not deprecate it alongside** — two mechanisms six lines apart is precisely how this arose. Confirm `Env::clone()` still propagates to subshells (`env.rs:373`).
+- [X] T034 [US3] Extend `IsolationContext` in `crates/malt-platform/src/isolation/tier.rs` with an `Established` enum (`Nothing` / `JobObject` / `Container`) per [data-model.md](./data-model.md) §4. Do this **before** the container work so the backend has one place to attach.
+- [X] T035 [US3] Make `crates/mash/src/env.rs` carry one isolation field. Remove `job_object` (`env.rs:320`) and make `isolation_context` (`env.rs:314`) the carrier that `crates/mash/src/executor.rs:5683` reads. **Remove the old field; do not deprecate it alongside** — two mechanisms six lines apart is precisely how this arose. Confirm `Env::clone()` still propagates to subshells (`env.rs:373`).
 - [ ] T036 [US3] Update `crates/malt-daemon/src/executor/session_thread.rs:116` and the session-status reporting to read isolation from the single carrier (FR-017), so what a session reports and what constrains it cannot drift.
 - [ ] T037 [US3] Assert isolation is never upgraded after session creation (FR-018). Downgrade to `Nothing` on containment lost remains spec 007's FR-017. **The defect this prevents**: spec 007 covered containment lost and nothing covered containment gained.
 

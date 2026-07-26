@@ -3,7 +3,14 @@ use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 
 use windows_sys::Win32::Foundation::{
-    GetLastError, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, LocalFree, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE,
+    INVALID_HANDLE_VALUE,
+};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows_sys::Win32::Security::{
+    GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -13,14 +20,19 @@ use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 
 /// The OS identity attached to a connected named-pipe client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerIdentity {
     /// Windows process identifier supplied by the kernel for this connection.
     pub process_id: u32,
+    /// Canonical Windows user SID read from that process's access token.
+    pub principal: String,
 }
 
 /// A connected named pipe. The `File` owns and closes the native handle.
@@ -41,12 +53,108 @@ impl NamedPipeConnection {
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(PeerIdentity { process_id })
+        Ok(PeerIdentity {
+            process_id,
+            principal: principal_for_process(process_id)?,
+        })
     }
 
     /// Borrow the connection as a standard file for framed I/O.
     pub fn file(&mut self) -> &mut File {
         &mut self.file
+    }
+}
+
+/// Return the Windows user SID of the current process token.
+pub fn current_process_principal() -> io::Result<String> {
+    // SAFETY: GetCurrentProcess returns the documented pseudo-handle for this
+    // process, which `principal_for_handle` uses only to open its token.
+    principal_for_handle(unsafe { GetCurrentProcess() })
+}
+
+fn principal_for_process(process_id: u32) -> io::Result<String> {
+    // SAFETY: the process ID was supplied by the kernel for this named-pipe
+    // connection; the requested access is limited to token inspection.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    if process.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let result = principal_for_handle(process);
+    // SAFETY: `process` is a successful OpenProcess handle owned here.
+    if unsafe { CloseHandle(process) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    result
+}
+
+fn principal_for_handle(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<String> {
+    let mut token = std::ptr::null_mut();
+    // SAFETY: `process` is a valid process or pseudo-process handle; `token`
+    // points to writable storage; TOKEN_QUERY cannot alter the token.
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let result = principal_from_token(token);
+    // SAFETY: `token` is a successful OpenProcessToken handle owned here.
+    if unsafe { CloseHandle(token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    result
+}
+
+fn principal_from_token(token: windows_sys::Win32::Foundation::HANDLE) -> io::Result<String> {
+    let mut required = 0u32;
+    // SAFETY: this documented sizing call writes only `required`; a null
+    // buffer with length zero requests the needed TOKEN_USER buffer length.
+    unsafe {
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required);
+    }
+    if required == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut bytes = vec![0u8; required as usize];
+    // SAFETY: `bytes` is allocated to the size the preceding Win32 call
+    // reported, and `token` remains valid for the call.
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            bytes.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `bytes` holds a complete TOKEN_USER returned by Win32, so its
+    // leading representation is valid for the lifetime of `bytes`.
+    let user = unsafe { &*(bytes.as_ptr().cast::<TOKEN_USER>()) };
+    let mut sid_text = std::ptr::null_mut();
+    // SAFETY: `user.User.Sid` is supplied in the validated TOKEN_USER buffer;
+    // Windows allocates the returned NUL-terminated string for LocalFree.
+    if unsafe { ConvertSidToStringSidW(user.User.Sid, &mut sid_text) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `sid_text` is a valid NUL-terminated wide string allocated by
+    // Windows; scanning stops at its terminator before it is released.
+    let length = unsafe {
+        let mut value = 0usize;
+        while *sid_text.add(value) != 0 {
+            value += 1;
+        }
+        value
+    };
+    // SAFETY: the preceding scan established `length` initialized UTF-16
+    // elements at `sid_text` before its NUL terminator.
+    let principal = String::from_utf16(unsafe { std::slice::from_raw_parts(sid_text, length) })
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid user SID from Windows"));
+    // SAFETY: `sid_text` is the allocation returned by ConvertSidToStringSidW
+    // and must be released with LocalFree exactly once.
+    if unsafe { LocalFree(sid_text.cast()) }.is_null() {
+        principal
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
@@ -59,28 +167,14 @@ pub struct NamedPipeServer {
 impl NamedPipeServer {
     /// Create a local-only duplex named pipe at `\\\\.\\pipe\\<name>`.
     pub fn create(name: &str) -> io::Result<Self> {
-        let path = pipe_path(name)?;
-        // SAFETY: `path` is NUL terminated and remains live for the duration
-        // of the call; all scalar flags and buffer sizes are Win32 constants.
-        let handle = unsafe {
-            CreateNamedPipeW(
-                path.as_ptr(),
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                1,
-                PIPE_BUFFER_BYTES,
-                PIPE_BUFFER_BYTES,
-                0,
-                std::ptr::null(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: successful `CreateNamedPipeW` transfers ownership of this
-        // handle to the returned `File`, which closes it exactly once.
-        let file = unsafe { File::from_raw_handle(handle as *mut _) };
-        Ok(Self { file })
+        create_server(name, std::ptr::null())
+    }
+
+    /// Create a local named pipe that grants read/write access only to the
+    /// given user SID, local administrators, and LocalSystem.
+    pub fn create_for_principal(name: &str, principal: &str) -> io::Result<Self> {
+        let security = PipeSecurity::for_principal(principal)?;
+        create_server(name, security.attributes())
     }
 
     /// Wait for one client and return a connection that owns the pipe handle.
@@ -99,6 +193,91 @@ impl NamedPipeServer {
             }
         }
         Ok(NamedPipeConnection { file: self.file })
+    }
+}
+
+fn create_server(name: &str, security: *const SECURITY_ATTRIBUTES) -> io::Result<NamedPipeServer> {
+    let path = pipe_path(name)?;
+    // SAFETY: `path` is NUL terminated and remains live for the duration
+    // of the call; all scalar flags and buffer sizes are Win32 constants.
+    let handle = unsafe {
+        CreateNamedPipeW(
+            path.as_ptr(),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            PIPE_BUFFER_BYTES,
+            PIPE_BUFFER_BYTES,
+            0,
+            security,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful `CreateNamedPipeW` transfers ownership of this
+    // handle to the returned `File`, which closes it exactly once.
+    let file = unsafe { File::from_raw_handle(handle as *mut _) };
+    Ok(NamedPipeServer { file })
+}
+
+struct PipeSecurity {
+    descriptor: *mut core::ffi::c_void,
+    attributes: SECURITY_ATTRIBUTES,
+}
+
+impl PipeSecurity {
+    fn for_principal(principal: &str) -> io::Result<Self> {
+        if !principal.starts_with("S-")
+            || principal
+                .bytes()
+                .any(|byte| !(byte.is_ascii_digit() || byte == b'-' || byte == b'S'))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "principal must be a canonical Windows SID",
+            ));
+        }
+        let sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;{principal})");
+        let sddl = sddl.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let mut descriptor = std::ptr::null_mut();
+        // SAFETY: `sddl` is NUL terminated and valid for this call; Windows
+        // allocates the descriptor returned through `descriptor` for LocalFree.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            descriptor,
+            attributes: SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor,
+                bInheritHandle: 0,
+            },
+        })
+    }
+
+    fn attributes(&self) -> *const SECURITY_ATTRIBUTES {
+        &self.attributes
+    }
+}
+
+impl Drop for PipeSecurity {
+    fn drop(&mut self) {
+        // SAFETY: `descriptor` is allocated by
+        // ConvertStringSecurityDescriptorToSecurityDescriptorW and owned here.
+        let result = unsafe { LocalFree(self.descriptor) };
+        debug_assert!(
+            result.is_null(),
+            "LocalFree(pipe security descriptor) failed"
+        );
     }
 }
 

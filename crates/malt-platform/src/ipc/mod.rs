@@ -8,7 +8,9 @@
 mod windows;
 
 #[cfg(windows)]
-pub use windows::{NamedPipeClient, NamedPipeConnection, NamedPipeServer, PeerIdentity};
+pub use windows::{
+    current_process_principal, NamedPipeClient, NamedPipeConnection, NamedPipeServer, PeerIdentity,
+};
 
 #[cfg(not(windows))]
 #[derive(Debug, thiserror::Error)]

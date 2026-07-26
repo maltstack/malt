@@ -1,28 +1,27 @@
 //! Privileged helper service entry point.
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
-use malt_elevate::auth::NonceAuth;
 use malt_elevate::error::ElevateError;
 use malt_elevate::server::{serve, ServerConfig};
+use malt_platform::service::run_service;
+
+pub const SERVICE_NAME: &str = "MALT-Elevate";
 
 struct Args {
-    nonce_file: PathBuf,
+    service: bool,
     pipe_name: String,
-    authorized_pid: u32,
+    authorized_principal: String,
 }
 
 fn parse_args() -> Result<Args, ElevateError> {
     let mut args = std::env::args_os().skip(1);
-    let mut nonce_file = None;
+    let mut service = false;
     let mut pipe_name = None;
-    let mut authorized_pid = None;
+    let mut authorized_principal = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
-            Some("--nonce-file") => {
-                nonce_file = Some(next_value(&mut args, "--nonce-file")?.into())
-            }
+            Some("--service") => service = true,
             Some("--pipe") => {
                 pipe_name = Some(
                     next_value(&mut args, "--pipe")?
@@ -30,11 +29,12 @@ fn parse_args() -> Result<Args, ElevateError> {
                         .into_owned(),
                 )
             }
-            Some("--authorized-pid") => {
-                let value = next_value(&mut args, "--authorized-pid")?;
-                authorized_pid = Some(value.to_string_lossy().parse().map_err(|_| {
-                    ElevateError::InvalidArg("--authorized-pid must be a process id".into())
-                })?);
+            Some("--authorized-principal") => {
+                authorized_principal = Some(
+                    next_value(&mut args, "--authorized-principal")?
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
             Some("--help" | "-h") => {
                 print_usage();
@@ -48,13 +48,17 @@ fn parse_args() -> Result<Args, ElevateError> {
             }
         }
     }
+    if !service {
+        return Err(ElevateError::InvalidArg(
+            "malt-elevate is a service host and must be launched with --service".into(),
+        ));
+    }
     Ok(Args {
-        nonce_file: nonce_file
-            .ok_or_else(|| ElevateError::InvalidArg("--nonce-file is required".into()))?,
+        service,
         pipe_name: pipe_name
             .ok_or_else(|| ElevateError::InvalidArg("--pipe is required".into()))?,
-        authorized_pid: authorized_pid
-            .ok_or_else(|| ElevateError::InvalidArg("--authorized-pid is required".into()))?,
+        authorized_principal: authorized_principal
+            .ok_or_else(|| ElevateError::InvalidArg("--authorized-principal is required".into()))?,
     })
 }
 
@@ -67,19 +71,24 @@ fn next_value(
 }
 
 fn print_usage() {
-    eprintln!("malt-elevate --nonce-file <PATH> --pipe <NAME> --authorized-pid <PID>");
+    eprintln!("malt-elevate --service --pipe <NAME> --authorized-principal <SID>");
 }
 
 fn run() -> Result<(), ElevateError> {
     let args = parse_args()?;
-    // The shared secret remains a defence-in-depth installation check; pipe
-    // peer identity is the primary authentication decision in `serve`.
-    let _nonce_auth = NonceAuth::from_file(&args.nonce_file)?;
-    serve(&ServerConfig {
+    if !args.service {
+        return Err(ElevateError::InvalidArg("--service is required".into()));
+    }
+    let config = ServerConfig {
         pipe_name: args.pipe_name,
-        authorized_process_id: args.authorized_pid,
+        authorized_principal: args.authorized_principal,
         replay_capacity: 4096,
+    };
+    let pipe_name = config.pipe_name.clone();
+    run_service(SERVICE_NAME, Some(&pipe_name), move |stop| {
+        serve(&config, stop).map_err(std::io::Error::other)
     })
+    .map_err(ElevateError::Connection)
 }
 
 fn main() -> ExitCode {
