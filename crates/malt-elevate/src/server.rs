@@ -10,7 +10,7 @@ use malt_protocol::vexil_runtime::{BitReader, BitWriter, Pack, Unpack};
 
 use crate::auth::ReplayGuard;
 use crate::capability::PROTOCOL_VERSION;
-use crate::dispatch::{dispatch_request, refused};
+use crate::dispatch::refused;
 use crate::error::ElevateError;
 use crate::protocol::{
     ElevateHello, ElevateHelloAck, ElevateRequestEnvelope, ElevateResponse, ReasonCode,
@@ -80,7 +80,7 @@ fn serve_connection(
         let frame = read_frame(&mut connection)?;
         let response = match decode_request(&frame) {
             Ok(envelope) if guard.consume(envelope.nonce) => {
-                dispatch_request(envelope.request_id, &envelope.request)
+                refuse_without_entitlement_authority(envelope.request_id)
             }
             Ok(envelope) => refused(
                 envelope.request_id,
@@ -94,6 +94,26 @@ fn serve_connection(
             .write_frame(&frame)
             .map_err(frame_error)?;
     }
+}
+
+/// Refuse privileged operations until the helper can verify the envelope's
+/// session, process, and path claims from helper-owned authority.
+///
+/// A named-pipe SID only identifies the Windows user.  It does not establish
+/// that the connecting process is MALT's daemon, nor does it entitle that
+/// process to act on an arbitrary session.  Dispatching an operation before
+/// those claims are independently verified would turn the elevated service
+/// into a same-user privilege-escalation primitive.
+fn refuse_without_entitlement_authority(request_id: u32) -> ElevateResponse {
+    tracing::warn!(
+        request_id,
+        "refused privileged operation without helper-side entitlement authority"
+    );
+    refused(
+        request_id,
+        ReasonCode::NotEntitled,
+        "the helper has no independent authority for this session, process, or path; refusing operation",
+    )
 }
 
 fn read_frame(connection: &mut NamedPipeConnection) -> Result<Frame, ElevateError> {
@@ -194,5 +214,21 @@ fn frame_error(error: malt_protocol::framing::FrameError) -> ElevateError {
 impl From<io::Error> for ElevateError {
     fn from(error: io::Error) -> Self {
         Self::Connection(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::OutcomeKind;
+
+    #[test]
+    fn operations_are_refused_without_helper_side_entitlement_authority() {
+        let response = refuse_without_entitlement_authority(41);
+
+        assert_eq!(response.request_id, 41);
+        assert_eq!(response.kind, OutcomeKind::Refused);
+        assert_eq!(response.reason, Some(ReasonCode::NotEntitled));
+        assert!(response.payload.is_none());
     }
 }
