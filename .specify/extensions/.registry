@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0",
+  "extensions": {
+    "malt": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:956e028b09579be008ab736c944334c34152fc06468f21cd19d4c6e5627af1eb",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "agy": [
+          "speckit.malt.brief"
+        ],
+        "claude": [
+          "speckit.malt.brief"
+        ],
+        "codex": [
+          "speckit.malt.brief"
+        ],
+        "zed": [
+          "speckit.malt.brief"
+        ]
+      },
+      "registered_skills": [],
+      "installed_at": "2026-07-26T13:27:52.215744+00:00"
+    }
+  }
+}

@@ -1,0 +1,1 @@
+../../../.specify/extensions/malt/.specify-dev/agent-commands/claude/speckit-malt-brief/SKILL.md

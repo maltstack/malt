@@ -1,0 +1,1 @@
+../../../.specify/extensions/malt/.specify-dev/agent-commands/zed/speckit-malt-brief/SKILL.md

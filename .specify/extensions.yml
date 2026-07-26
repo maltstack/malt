@@ -1,0 +1,16 @@
+installed:
+- malt
+settings:
+  auto_execute_hooks: true
+hooks:
+  after_implement:
+  - extension: malt
+    command: speckit.malt.brief
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Did implementing this surface anything out of scope worth a brief? (file:line
+      evidence is still on screen)
+    description: Capture out-of-scope findings while the evidence is fresh, rather
+      than as prose in the backlog later
+    condition: null
