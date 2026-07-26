@@ -1,0 +1,41 @@
+name: Setup vexilc
+description: >
+  Install the pinned vexilc that generates VNP schema code. malt-protocol's
+  build.rs shells out to it, so nothing in this workspace compiles without it.
+
+inputs:
+  rev:
+    description: >
+      vexil-lang/vexil commit to build from. Pinned rather than tracking main:
+      a different vexilc can emit different generated code, so an unpinned CI
+      would compile something other than what a developer compiles, and a
+      schema-codegen regression would surface as an unrelated failure.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore cached vexilc
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/vexilc
+          ~/.cargo/bin/vexilc.exe
+        key: vexilc-${{ runner.os }}-${{ inputs.rev }}
+
+    - name: Build and install vexilc
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: cargo install --git https://github.com/vexil-lang/vexil --rev ${{ inputs.rev }} vexilc
+
+    - name: Verify it runs
+      shell: bash
+      run: |
+        vexilc --version
+        # Fail loudly here rather than inside a build script: a missing vexilc
+        # surfaces as `failed to run vexilc: No such file or directory` from
+        # malt-protocol's build.rs, which reads like a code error rather than
+        # a missing prerequisite. That is exactly how this workflow failed the
+        # first time it ran.
+        command -v vexilc >/dev/null || { echo "::error::vexilc not on PATH after install"; exit 1; }

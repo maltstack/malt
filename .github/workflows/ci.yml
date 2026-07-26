@@ -17,6 +17,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # vexil-lang/vexil revision providing vexilc. malt-protocol's build.rs
+  # invokes it to generate the VNP types, so this is a hard build
+  # prerequisite, not an optional tool. Bump deliberately and re-verify
+  # generated output; see .github/actions/setup-vexilc.
+  VEXILC_REV: fc8c51f31f1f25f0b2885fc98696ad1c5ee543c7
 
 jobs:
   # ── The gate. Windows is the primary target; a failure here blocks. ──
@@ -29,6 +34,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-vexilc
+        with:
+          rev: ${{ env.VEXILC_REV }}
 
       - name: Build
         run: cargo build --workspace
@@ -72,6 +80,10 @@ jobs:
         if: steps.filter.outputs.run == 'true'
       - uses: Swatinem/rust-cache@v2
         if: steps.filter.outputs.run == 'true'
+      - uses: ./.github/actions/setup-vexilc
+        if: steps.filter.outputs.run == 'true'
+        with:
+          rev: ${{ env.VEXILC_REV }}
 
       - name: Run Smoosh
         if: steps.filter.outputs.run == 'true'
@@ -102,6 +114,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-vexilc
+        with:
+          rev: ${{ env.VEXILC_REV }}
 
       - name: Build
         run: cargo build --workspace
@@ -126,6 +141,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-vexilc
+        with:
+          rev: ${{ env.VEXILC_REV }}
 
       - name: Report what this host supports
         shell: bash
