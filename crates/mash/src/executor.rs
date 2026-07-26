@@ -5687,19 +5687,27 @@ fn apply_exec_redirects(env: &Env, io: &mut ResolvedIo) {
 /// silent.
 #[cfg(windows)]
 fn assign_child_to_session_job(env: &Env, child: &malt_platform::process::Child) {
-    if let Some(job) = env
-        .isolation_context()
-        .and_then(|context| context.job_object())
-    {
-        if let Err(error) =
-            malt_platform::isolation::job_objects::assign_process_to_job(job, child.pid())
-        {
-            tracing::warn!(
-                pid = child.pid(),
-                %error,
-                "failed to assign spawned process to session job object"
-            );
+    match env.isolation_context().map_or(
+        Ok(None),
+        malt_platform::isolation::IsolationContext::job_object,
+    ) {
+        Ok(Some(job)) => {
+            if let Err(error) =
+                malt_platform::isolation::job_objects::assign_process_to_job(&job, child.pid())
+            {
+                tracing::warn!(
+                    pid = child.pid(),
+                    %error,
+                    "failed to assign spawned process to session job object"
+                );
+            }
         }
+        Ok(None) => {}
+        Err(error) => tracing::error!(
+            pid = child.pid(),
+            %error,
+            "unable to read session isolation state before assigning child"
+        ),
     }
 }
 #[cfg(not(windows))]
@@ -6530,8 +6538,12 @@ mod tests {
 
         // Terminate via the job, not by killing the child directly — this is
         // the actual thing under test: was the child really in the job?
-        job_objects::terminate_job_object(env.job_object().expect("job was set"))
-            .expect("terminate job object");
+        job_objects::terminate_job_object(
+            &env.job_object()
+                .expect("read job object")
+                .expect("job was set"),
+        )
+        .expect("terminate job object");
 
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut exited = false;

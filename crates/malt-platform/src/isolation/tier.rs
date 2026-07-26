@@ -5,6 +5,7 @@
 //! the daemon through MASH to the platform spawn traits.
 
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 /// Isolation tiers for session processes.
 ///
@@ -257,7 +258,9 @@ pub struct IsolationContext {
     tier: IsolationTier,
     /// Platform-specific isolation configuration (opaque bytes).
     config: Vec<u8>,
-    established: Established,
+    /// Shared so the coordinator's status view and MASH's spawn view observe
+    /// the same live mechanism rather than copies that can drift.
+    established: Arc<Mutex<Established>>,
 }
 
 /// The live platform resource that actually enforces this context.
@@ -269,13 +272,21 @@ pub enum Established {
     Container(String),
 }
 
+/// The kind of live enforcement attached to an isolation context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EstablishedKind {
+    Nothing,
+    JobObject,
+    Container,
+}
+
 impl IsolationContext {
     /// Create a new isolation context for the Bare tier (no isolation).
     pub fn bare() -> Self {
         Self {
             tier: IsolationTier::Bare,
             config: Vec::new(),
-            established: Established::Nothing,
+            established: Arc::new(Mutex::new(Established::Nothing)),
         }
     }
 
@@ -284,7 +295,7 @@ impl IsolationContext {
         Self {
             tier: IsolationTier::Restricted,
             config: Vec::new(),
-            established: Established::Nothing,
+            established: Arc::new(Mutex::new(Established::Nothing)),
         }
     }
 
@@ -293,7 +304,7 @@ impl IsolationContext {
         Self {
             tier: IsolationTier::Capped,
             config: Vec::new(),
-            established: Established::Nothing,
+            established: Arc::new(Mutex::new(Established::Nothing)),
         }
     }
 
@@ -302,7 +313,7 @@ impl IsolationContext {
         Self {
             tier: IsolationTier::Contained,
             config: Vec::new(),
-            established: Established::Nothing,
+            established: Arc::new(Mutex::new(Established::Nothing)),
         }
     }
 
@@ -336,51 +347,73 @@ impl IsolationContext {
 
     #[cfg(windows)]
     pub fn establish_job_object(
-        &mut self,
+        &self,
         job: std::sync::Arc<super::job_objects::JobObject>,
     ) -> Result<(), IsolationError> {
         self.ensure_unestablished("Job Object")?;
-        self.established = Established::JobObject(job);
+        *self.lock_established()? = Established::JobObject(job);
         Ok(())
     }
 
     #[cfg(windows)]
-    pub fn job_object(&self) -> Option<&std::sync::Arc<super::job_objects::JobObject>> {
-        match &self.established {
-            Established::JobObject(job) => Some(job),
-            _ => None,
+    pub fn job_object(
+        &self,
+    ) -> Result<Option<std::sync::Arc<super::job_objects::JobObject>>, IsolationError> {
+        match &*self.lock_established()? {
+            Established::JobObject(job) => Ok(Some(Arc::clone(job))),
+            _ => Ok(None),
         }
     }
 
     /// Record the HCS compute-system identity after a helper reports it
     /// performed. This is deliberately separate from requesting containment.
-    pub fn establish_container(&mut self, id: String) -> Result<(), IsolationError> {
+    pub fn establish_container(&self, id: String) -> Result<(), IsolationError> {
         self.ensure_unestablished("HCS container")?;
-        self.established = Established::Container(id);
+        *self.lock_established()? = Established::Container(id);
         Ok(())
     }
 
-    pub fn container_id(&self) -> Option<&str> {
-        match &self.established {
-            Established::Container(id) => Some(id),
-            _ => None,
+    pub fn container_id(&self) -> Result<Option<String>, IsolationError> {
+        match &*self.lock_established()? {
+            Established::Container(id) => Ok(Some(id.clone())),
+            _ => Ok(None),
         }
+    }
+
+    /// Return the live enforcement kind without exposing a separate resource
+    /// handle to reporting callers.
+    pub fn established_kind(&self) -> Result<EstablishedKind, IsolationError> {
+        Ok(match &*self.lock_established()? {
+            Established::Nothing => EstablishedKind::Nothing,
+            #[cfg(windows)]
+            Established::JobObject(_) => EstablishedKind::JobObject,
+            Established::Container(_) => EstablishedKind::Container,
+        })
     }
 
     /// Remove a lost enforcement mechanism without changing the requested
     /// tier. This records degraded reality but never permits a later upgrade.
-    pub fn clear_established(&mut self) {
-        self.established = Established::Nothing;
+    pub fn clear_established(&self) -> Result<(), IsolationError> {
+        *self.lock_established()? = Established::Nothing;
+        Ok(())
     }
 
     fn ensure_unestablished(&self, attempted: &str) -> Result<(), IsolationError> {
-        if matches!(self.established, Established::Nothing) {
+        if matches!(*self.lock_established()?, Established::Nothing) {
             Ok(())
         } else {
             Err(IsolationError::EstablishmentLocked(format!(
                 "cannot establish {attempted} after a session mechanism already exists"
             )))
         }
+    }
+
+    fn lock_established(&self) -> Result<std::sync::MutexGuard<'_, Established>, IsolationError> {
+        self.established.lock().map_err(|_| {
+            IsolationError::IoError(std::io::Error::other(
+                "isolation context established state lock poisoned",
+            ))
+        })
     }
 }
 
@@ -562,13 +595,37 @@ mod tests {
 
     #[test]
     fn establishment_cannot_be_upgraded_after_session_creation() {
-        let mut context = IsolationContext::contained();
+        let context = IsolationContext::contained();
         context
             .establish_container("first-container".to_string())
             .expect("first mechanism is allowed during session creation");
         assert!(context
             .establish_container("replacement-container".to_string())
             .is_err());
-        assert_eq!(context.container_id(), Some("first-container"));
+        assert_eq!(
+            context.container_id().expect("read container id"),
+            Some("first-container".to_string())
+        );
+    }
+
+    #[test]
+    fn cloned_context_observes_the_same_established_container() {
+        let context = IsolationContext::contained();
+        let status_view = context.clone();
+
+        context
+            .establish_container("shared-container".to_string())
+            .expect("establish container");
+
+        assert_eq!(
+            status_view
+                .established_kind()
+                .expect("read established kind"),
+            EstablishedKind::Container
+        );
+        assert_eq!(
+            status_view.container_id().expect("read container id"),
+            Some("shared-container".to_string())
+        );
     }
 }

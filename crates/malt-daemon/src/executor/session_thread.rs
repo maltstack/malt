@@ -13,7 +13,7 @@ use malt_compat::CompatTranslator;
 use malt_layout::resolve::compute_resolved_panes;
 use malt_layout::{LayoutConfig, Rect};
 use malt_protocol::common::{
-    ClientCapabilities, IsolationBasis, IsolationTier, PaneId, PaneKind, ResolvedPane, SessionId,
+    ClientCapabilities, IsolationTier, PaneId, PaneKind, ResolvedPane, SessionId,
 };
 use malt_protocol::input::KeyEvent;
 use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};
@@ -72,17 +72,6 @@ pub(crate) fn now_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Isolation that the executor established before it started either session
-/// thread. The coordinator owns this value after construction; it must not
-/// recreate a status by inferring a mechanism from the requested tier.
-#[derive(Debug, Clone)]
-pub struct EstablishedIsolation {
-    pub effective: IsolationTier,
-    pub basis: IsolationBasis,
-    pub mechanism: Option<String>,
-    pub detail: Option<String>,
-}
-
 /// Apply a session's isolation tier to its MASH environment: sets the opaque
 /// isolation context token, and on Windows, creates a Job Object every
 /// externally-spawned command in this session gets assigned to (see
@@ -112,18 +101,14 @@ fn apply_session_isolation(
     env: &mut Env,
     session_id: SessionId,
     isolation: IsolationTier,
-) -> Result<EstablishedIsolation, DaemonError> {
-    env.set_isolation_context(malt_platform::isolation::IsolationContext::from(isolation));
+) -> Result<malt_platform::isolation::IsolationContext, DaemonError> {
+    let context = malt_platform::isolation::IsolationContext::from(isolation);
 
     #[cfg(windows)]
     {
         if isolation == IsolationTier::Bare {
-            return Ok(EstablishedIsolation {
-                effective: IsolationTier::Bare,
-                basis: IsolationBasis::None,
-                mechanism: None,
-                detail: None,
-            });
+            env.set_isolation_context(context.clone());
+            return Ok(context);
         }
         if isolation == IsolationTier::Contained {
             return Err(DaemonError::IsolationUnavailable(
@@ -151,31 +136,18 @@ fn apply_session_isolation(
                 "created Job Object could not be externally inspected: {error}"
             ))
         })?;
-        let mut context = malt_platform::isolation::IsolationContext::from(isolation);
         context
             .establish_job_object(std::sync::Arc::new(job))
             .map_err(|error| DaemonError::IsolationUnavailable(error.to_string()))?;
-        env.set_isolation_context(context);
-        Ok(EstablishedIsolation {
-            effective: isolation,
-            basis: IsolationBasis::Verified,
-            mechanism: Some("job-object".to_string()),
-            detail: Some(
-                "Job Object creation and process enumeration verified; each MASH external command is assigned before execution"
-                    .to_string(),
-            ),
-        })
+        env.set_isolation_context(context.clone());
+        Ok(context)
     }
     #[cfg(not(windows))]
     {
         let _ = session_id;
         if isolation == IsolationTier::Bare {
-            Ok(EstablishedIsolation {
-                effective: IsolationTier::Bare,
-                basis: IsolationBasis::None,
-                mechanism: None,
-                detail: None,
-            })
+            env.set_isolation_context(context.clone());
+            Ok(context)
         } else {
             Err(DaemonError::IsolationUnavailable(
                 "no session isolation backend is wired on this platform".to_string(),
@@ -207,7 +179,9 @@ pub struct CommandOutput {
 /// these separate makes ownership explicit: the control thread owns UI,
 /// persistence, and lifecycle state; the worker alone owns MASH state.
 pub struct SessionSpawn {
-    pub established_isolation: EstablishedIsolation,
+    /// Shared with the MASH environment. Coordinator status reads this exact
+    /// carrier instead of reconstructing a parallel mechanism report.
+    pub isolation_context: malt_platform::isolation::IsolationContext,
     pub control_tx: mpsc::SyncSender<SessionCommand>,
     pub ingress: ExecutionIngress,
     pub control_thread: JoinHandle<()>,
@@ -653,8 +627,7 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        let established_isolation =
-            apply_session_isolation(&mut env, session_id.clone(), isolation)?;
+        let isolation_context = apply_session_isolation(&mut env, session_id.clone(), isolation)?;
         Self::spawn_with_env(
             session_id,
             first_pane,
@@ -664,7 +637,7 @@ impl SessionExecutor {
             command_blocks,
             output_log::MAX_RETAINED_BYTES,
             output_log::SUBSCRIBER_BUFFER,
-            established_isolation,
+            isolation_context,
         )
     }
 
@@ -687,8 +660,7 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        let established_isolation =
-            apply_session_isolation(&mut env, session_id.clone(), isolation)?;
+        let isolation_context = apply_session_isolation(&mut env, session_id.clone(), isolation)?;
         Self::spawn_with_env(
             session_id,
             first_pane,
@@ -698,7 +670,7 @@ impl SessionExecutor {
             command_blocks,
             output_log_capacity_bytes,
             output_subscriber_buffer,
-            established_isolation,
+            isolation_context,
         )
     }
 
@@ -751,8 +723,7 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        let established_isolation =
-            apply_session_isolation(&mut env, session_id.clone(), isolation)?;
+        let isolation_context = apply_session_isolation(&mut env, session_id.clone(), isolation)?;
         if let Some(snapshot) = &env_snapshot {
             env.apply_snapshot(snapshot);
         }
@@ -781,7 +752,7 @@ impl SessionExecutor {
             command_blocks,
             output_log::MAX_RETAINED_BYTES,
             output_log::SUBSCRIBER_BUFFER,
-            established_isolation,
+            isolation_context,
         )
     }
 
@@ -798,7 +769,7 @@ impl SessionExecutor {
         command_blocks: Vec<CommandBlock>,
         output_log_capacity_bytes: usize,
         output_subscriber_buffer: usize,
-        established_isolation: EstablishedIsolation,
+        isolation_context: malt_platform::isolation::IsolationContext,
     ) -> Result<SessionSpawn, DaemonError> {
         let env = env;
         let snapshot = env.to_snapshot();
@@ -891,7 +862,7 @@ impl SessionExecutor {
             }
         };
         Ok(SessionSpawn {
-            established_isolation,
+            isolation_context,
             control_tx,
             ingress,
             control_thread,

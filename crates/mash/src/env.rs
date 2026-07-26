@@ -1300,7 +1300,7 @@ impl Env {
         &mut self,
         job: Arc<malt_platform::isolation::job_objects::JobObject>,
     ) -> Result<(), malt_platform::isolation::IsolationError> {
-        let mut context = self
+        let context = self
             .isolation_context
             .take()
             .unwrap_or_else(malt_platform::isolation::IsolationContext::bare);
@@ -1310,10 +1310,16 @@ impl Env {
     }
 
     #[cfg(windows)]
-    pub fn job_object(&self) -> Option<&Arc<malt_platform::isolation::job_objects::JobObject>> {
-        self.isolation_context
-            .as_ref()
-            .and_then(|context| context.job_object())
+    pub fn job_object(
+        &self,
+    ) -> Result<
+        Option<Arc<malt_platform::isolation::job_objects::JobObject>>,
+        malt_platform::isolation::IsolationError,
+    > {
+        self.isolation_context.as_ref().map_or(
+            Ok(None),
+            malt_platform::isolation::IsolationContext::job_object,
+        )
     }
 
     pub fn register_fd(&self, fd: u32, file: File) {
