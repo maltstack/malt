@@ -1,9 +1,23 @@
 //! Cross-platform isolation capability detection.
 //!
-//! Provides `IsolationCapabilities` — a struct that reports which
-//! isolation primitives are available on the current platform, and *why*
-//! when they aren't. Used by `tier_available()` to validate tier
-//! applicability and to produce actionable error messages.
+//! Provides `IsolationCapabilities` — a struct that reports which isolation
+//! primitives are available on the current platform, and *why* when they
+//! aren't.
+//!
+//! **This answers a different question from `tier::session_tier_capabilities`,
+//! and the difference matters.** This module reports *host primitives*: what
+//! the operating system offers. `session_tier_capabilities` reports what
+//! MALT's own session spawn path can actually establish, which is narrower —
+//! an OS primitive that no MALT code path uses is not a session capability.
+//!
+//! The session surfaces (`malt isolation capabilities`, session creation)
+//! read `session_tier_capabilities`. This module is consumed by
+//! `tier_available()`, which currently has **no callers** — it is the
+//! host-primitive entry point kept for the platform wiring in 007's T032/T033.
+//! Stated explicitly because an uncalled mechanism that looks wired is this
+//! repo's most repeated defect, and because an earlier version of this file
+//! let job objects satisfy `Contained` — a false claim that survived precisely
+//! because nothing called it.
 
 use super::capability_report::{CapabilityReasonCode, CapabilityReport};
 
@@ -113,19 +127,35 @@ impl IsolationCapabilities {
 
     /// Check if the Contained tier is achievable on this platform.
     ///
-    /// Requires Capped + advanced isolation:
+    /// Requires Capped + a mechanism that establishes a container boundary,
+    /// which is strictly more than the resource limits Capped already has:
     /// - Linux: namespaces + cgroups + overlayfs + seccomp
-    /// - Windows: HCS (preferred, full containment), or job objects +
-    ///   restricted tokens (weaker fallback — see `unsupported_detail_for_tier`)
-    /// - macOS: sandbox + rlimit (no direct equivalent to seccomp/overlayfs)
+    /// - Windows: HCS only
+    /// - macOS: never, on this build
+    ///
+    /// Two exclusions are deliberate, and both were previously wrong here
+    /// (FR-009 — a tier must never be satisfied by a weaker mechanism):
+    ///
+    /// - **Windows job objects + restricted tokens is not a fallback.** It is
+    ///   the same mechanism `supports_capped` already accepts, so admitting it
+    ///   made `Capped` and `Contained` aliases: two names, one behaviour, and
+    ///   the stronger name claiming a boundary it does not establish.
+    /// - **macOS sandbox + rlimit is not sufficient**, for exactly the same
+    ///   reason — it is character-for-character the `supports_capped` macOS
+    ///   condition. MALT has no macOS mechanism that establishes a container
+    ///   boundary, so the honest answer is that the tier is unavailable, not
+    ///   that Capped is good enough.
+    ///
+    /// A macOS or Windows-without-HCS host therefore reports `Contained`
+    /// unavailable. Under `required` that refuses the request; under
+    /// `preferred` it downgrades visibly. Both are correct outcomes, and both
+    /// are better than a session reporting containment it does not have.
     pub fn supports_contained(&self) -> bool {
         (self.linux_namespaces.is_usable()
             && self.linux_cgroups.is_usable()
             && self.linux_overlayfs.is_usable()
             && self.linux_seccomp.is_usable())
             || self.windows_hcs.is_usable()
-            || (self.windows_job_objects.is_usable() && self.windows_restricted_tokens.is_usable())
-            || (self.macos_sandbox.is_usable() && self.macos_rlimit.is_usable())
     }
 
     /// Explain which required capabilities are missing for a tier, or `None`
@@ -514,18 +544,67 @@ mod tests {
 
         #[cfg(target_os = "windows")]
         {
-            // job_objects + restricted_tokens fallback is always available,
-            // even if HCS (computecore.dll) isn't installed.
-            assert!(caps.supports_contained());
+            // Contained tracks HCS and nothing else. Job objects must not
+            // stand in for it: they are what Capped already uses, so allowing
+            // them here would make the two tiers aliases (FR-009).
+            assert_eq!(caps.supports_contained(), caps.windows_hcs.is_usable());
         }
         #[cfg(target_os = "macos")]
         {
-            assert!(caps.supports_contained());
+            // No macOS mechanism establishes a container boundary on this
+            // build, so this is unconditionally false rather than inheriting
+            // the sandbox+rlimit pair that already satisfies Capped.
+            assert!(!caps.supports_contained());
         }
         #[cfg(target_os = "linux")]
         {
             let _ = caps.supports_contained();
         }
+    }
+
+    /// The defect this guards is not that a tier is unavailable -- it is two
+    /// tiers being satisfied by the same mechanism, so a caller asking for the
+    /// stronger one gets the weaker one under its name. Asserting the
+    /// conditions differ catches that regardless of what this host supports.
+    #[test]
+    fn capped_and_contained_are_not_satisfied_by_the_same_capabilities() {
+        let supported = CapabilityReport::supported();
+        let unsupported =
+            || CapabilityReport::unsupported(CapabilityReasonCode::UnsupportedPlatform, "test");
+
+        // Everything Capped needs on Windows and macOS, and nothing more.
+        let capped_only = IsolationCapabilities {
+            linux_namespaces: unsupported(),
+            linux_cgroups: unsupported(),
+            linux_overlayfs: unsupported(),
+            linux_seccomp: unsupported(),
+            windows_job_objects: supported.clone(),
+            windows_restricted_tokens: supported.clone(),
+            windows_hcs: unsupported(),
+            macos_sandbox: supported.clone(),
+            macos_rlimit: supported.clone(),
+        };
+        assert!(capped_only.supports_capped());
+        assert!(
+            !capped_only.supports_contained(),
+            "Contained must require a mechanism Capped does not already have"
+        );
+
+        // Same for Linux: cgroups+namespaces satisfy Capped, and must not
+        // satisfy Contained without overlayfs and seccomp.
+        let linux_capped_only = IsolationCapabilities {
+            linux_namespaces: supported.clone(),
+            linux_cgroups: supported.clone(),
+            linux_overlayfs: unsupported(),
+            linux_seccomp: unsupported(),
+            windows_job_objects: unsupported(),
+            windows_restricted_tokens: unsupported(),
+            windows_hcs: unsupported(),
+            macos_sandbox: unsupported(),
+            macos_rlimit: unsupported(),
+        };
+        assert!(linux_capped_only.supports_capped());
+        assert!(!linux_capped_only.supports_contained());
     }
 
     #[test]

@@ -404,11 +404,25 @@ mod native {
     use std::collections::BTreeMap;
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::core::PWSTR;
+    use windows_sys::Win32::Foundation::{
+        LocalFree, HCS_E_ACCESS_DENIED, HCS_E_CONNECTION_CLOSED, HCS_E_CONNECTION_TIMEOUT,
+        HCS_E_CONNECT_FAILED, HCS_E_GUEST_CRITICAL_ERROR, HCS_E_HYPERV_NOT_INSTALLED,
+        HCS_E_IMAGE_MISMATCH, HCS_E_INVALID_JSON, HCS_E_INVALID_LAYER, HCS_E_INVALID_STATE,
+        HCS_E_OPERATION_ALREADY_CANCELLED, HCS_E_OPERATION_ALREADY_STARTED,
+        HCS_E_OPERATION_NOT_STARTED, HCS_E_OPERATION_PENDING,
+        HCS_E_OPERATION_RESULT_ALLOCATION_FAILED, HCS_E_OPERATION_TIMEOUT,
+        HCS_E_PROCESS_ALREADY_STOPPED, HCS_E_PROCESS_INFO_NOT_AVAILABLE, HCS_E_PROTOCOL_ERROR,
+        HCS_E_SERVICE_DISCONNECT, HCS_E_SERVICE_NOT_AVAILABLE, HCS_E_SYSTEM_ALREADY_EXISTS,
+        HCS_E_SYSTEM_ALREADY_STOPPED, HCS_E_SYSTEM_NOT_CONFIGURED_FOR_OPERATION,
+        HCS_E_SYSTEM_NOT_FOUND, HCS_E_TERMINATED, HCS_E_TERMINATED_DURING_START,
+        HCS_E_UNEXPECTED_EXIT, HCS_E_UNKNOWN_MESSAGE, HCS_E_UNSUPPORTED_PROTOCOL_VERSION,
+        HCS_E_WINDOWS_INSIDER_REQUIRED, HLOCAL,
+    };
     use windows_sys::Win32::System::HostComputeSystem::{
         HcsCloseComputeSystem, HcsCloseOperation, HcsCloseProcess, HcsCreateComputeSystem,
-        HcsCreateOperation, HcsCreateProcess, HcsGetOperationResult,
-        HcsGetOperationResultAndProcessInfo, HcsOpenComputeSystem, HcsStartComputeSystem,
-        HcsTerminateComputeSystem, HcsWaitForProcessExit, HCS_OPERATION, HCS_PROCESS,
+        HcsCreateOperation, HcsCreateProcess, HcsGetOperationResult, HcsOpenComputeSystem,
+        HcsStartComputeSystem, HcsTerminateComputeSystem, HcsWaitForOperationResult,
+        HcsWaitForOperationResultAndProcessInfo, HcsWaitForProcessExit, HCS_OPERATION, HCS_PROCESS,
         HCS_PROCESS_INFORMATION, HCS_SYSTEM,
     };
 
@@ -423,57 +437,40 @@ mod native {
         let id_wide = to_wide(&config.id);
         let cfg_wide = to_wide(&config.config_json);
 
-        // SAFETY: HcsCreateOperation with null context/callback is the
-        // documented pattern for synchronous-style HCS calls that poll the
-        // operation result immediately below instead of via callback.
-        let operation = unsafe { HcsCreateOperation(std::ptr::null(), None) };
-        if operation.is_null() {
+        let mut handle: HCS_SYSTEM = std::ptr::null_mut();
+        run_operation("HcsCreateComputeSystem", |operation| {
+            // SAFETY: id_wide/cfg_wide are valid null-terminated UTF-16
+            // buffers that outlive this call; `operation` is non-null per
+            // `run_operation`; `handle` is an out-parameter written by the API.
+            unsafe {
+                HcsCreateComputeSystem(
+                    id_wide.as_ptr(),
+                    cfg_wide.as_ptr(),
+                    operation,
+                    std::ptr::null(),
+                    &mut handle,
+                )
+            }
+        })?;
+
+        if handle.is_null() {
             return Err(IsolationError::HcsError(
-                "HcsCreateOperation returned null".to_string(),
+                "HcsCreateComputeSystem reported success but produced no handle".to_string(),
             ));
         }
 
-        let mut handle: HCS_SYSTEM = std::ptr::null_mut();
-        // SAFETY: id_wide/cfg_wide are valid null-terminated UTF-16 buffers
-        // that outlive this call. `operation` was just checked non-null.
-        // `handle` is an out-parameter written by the API on success.
-        let hr = unsafe {
-            HcsCreateComputeSystem(
-                id_wide.as_ptr(),
-                cfg_wide.as_ptr(),
-                operation,
-                std::ptr::null(),
-                &mut handle,
-            )
-        };
-        if hr != 0 {
-            let details = operation_result_string(operation);
-            // SAFETY: operation is a valid handle owned by this function; closing
-            // it once, after we're done reading its result, is the documented
-            // cleanup call.
-            unsafe { HcsCloseOperation(operation) };
-            return Err(IsolationError::HcsError(format!(
-                "HcsCreateComputeSystem HRESULT={hr:#010x}{details}"
-            )));
-        }
-        // SAFETY: same as above — operation is valid and we're done with it.
-        unsafe { HcsCloseOperation(operation) };
-
-        // SAFETY: `handle` was just populated by a successful HcsCreateComputeSystem
-        // call above. Passing a null operation/options here matches the
-        // synchronous-start pattern used throughout this module.
-        let hr = unsafe {
-            HcsStartComputeSystem(
-                handle,
-                std::ptr::null_mut() as HCS_OPERATION,
-                std::ptr::null(),
-            )
-        };
-        if hr != 0 {
+        // Starting is a *second* asynchronous operation, not a continuation of
+        // the first, so it needs its own operation handle. If it fails the
+        // compute system already exists and must be torn down before
+        // returning, or it leaks until the host is rebooted.
+        if let Err(error) = run_operation("HcsStartComputeSystem", |operation| {
+            // SAFETY: `handle` is a non-null compute system from the create
+            // call above; `operation` is non-null per `run_operation`; a null
+            // options string is the documented "no options" form.
+            unsafe { HcsStartComputeSystem(handle, operation, std::ptr::null()) }
+        }) {
             let _ = terminate_compute_system(handle as isize);
-            return Err(IsolationError::HcsError(format!(
-                "HcsStartComputeSystem HRESULT={hr:#010x}"
-            )));
+            return Err(error);
         }
 
         Ok(HcsComputeSystem {
@@ -491,7 +488,8 @@ mod native {
         let hr = unsafe { HcsOpenComputeSystem(id_wide.as_ptr(), 0x001F0000, &mut handle) };
         if hr != 0 {
             return Err(IsolationError::HcsError(format!(
-                "HcsOpenComputeSystem HRESULT={hr:#010x}"
+                "HcsOpenComputeSystem {}",
+                describe_hresult(hr)
             )));
         }
         Ok(HcsComputeSystem {
@@ -501,27 +499,37 @@ mod native {
     }
 
     pub fn terminate_compute_system(handle: isize) -> Result<(), IsolationError> {
-        // SAFETY: caller-provided handle is expected to be a valid HCS_SYSTEM
-        // obtained from create/open above; 0x80070057 (E_INVALIDARG) is
-        // tolerated as "already terminated" rather than treated as an error.
-        let hr = unsafe {
-            HcsTerminateComputeSystem(
-                handle as HCS_SYSTEM,
-                std::ptr::null_mut() as HCS_OPERATION,
-                std::ptr::null(),
-            )
-        };
-        if hr != 0 && hr != 0x80070057u32 as i32 {
-            return Err(IsolationError::HcsError(format!(
-                "HcsTerminateComputeSystem HRESULT={hr:#010x}"
-            )));
-        }
+        // Terminating is asynchronous like every other mutating HCS call, and
+        // was the second site passing a null operation handle -- so tearing a
+        // container down faulted just as reliably as starting one.
+        let outcome = run_operation("HcsTerminateComputeSystem", |operation| {
+            // SAFETY: caller-provided handle is expected to be a valid
+            // HCS_SYSTEM from create/open above; `operation` is non-null per
+            // `run_operation`; null options is the documented no-options form.
+            unsafe { HcsTerminateComputeSystem(handle as HCS_SYSTEM, operation, std::ptr::null()) }
+        });
+
+        // The handle must be closed whether or not termination succeeded --
+        // returning early here would leak it on exactly the paths where
+        // something has already gone wrong.
         // SAFETY: handle is valid per the caller contract above; closing it
         // after termination is the documented HCS cleanup sequence.
         unsafe {
             HcsCloseComputeSystem(handle as HCS_SYSTEM);
         }
-        Ok(())
+
+        match outcome {
+            Ok(_) => Ok(()),
+            // A system that is already gone is the state the caller asked
+            // for, not a failure. HCS reports that as E_INVALIDARG against
+            // the stale handle.
+            Err(IsolationError::HcsError(message))
+                if message.contains(&format!("{:#010x}", 0x80070057u32)) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn create_process(
@@ -538,7 +546,11 @@ mod native {
             "CreateStdErrPipe": false
         });
         let params_wide = to_wide(&params_json.to_string());
-        // SAFETY: same synchronous-operation pattern as create_compute_system.
+        // Not routed through `run_operation`: this call needs the process-info
+        // out-parameter, which requires the `...AndProcessInfo` wait variant
+        // rather than the plain one. The operation lifecycle below is otherwise
+        // identical -- create, call, *wait*, close on every path.
+        // SAFETY: documented form for an operation with no completion callback.
         let operation = unsafe { HcsCreateOperation(std::ptr::null(), None) };
         if operation.is_null() {
             return Err(IsolationError::HcsError(
@@ -564,7 +576,8 @@ mod native {
             // SAFETY: operation is valid; this is the standard cleanup call.
             unsafe { HcsCloseOperation(operation) };
             return Err(IsolationError::HcsError(format!(
-                "HcsCreateProcess HRESULT={hr:#010x}{details}"
+                "HcsCreateProcess {}{details}",
+                describe_hresult(hr)
             )));
         }
 
@@ -575,13 +588,24 @@ mod native {
             std::mem::zeroed()
         };
         let mut result: PWSTR = std::ptr::null_mut();
+        // `Wait...`, not `Get...`. The non-waiting variant returns whatever
+        // state the operation happens to be in, which for a launch that has
+        // not completed yet is `HCS_E_OPERATION_PENDING` -- so process
+        // creation failed or succeeded depending on timing.
+        //
         // SAFETY: operation is valid (checked above); process_info and result
-        // are out-parameters populated by the API on success.
+        // are out-parameters populated by the API, and we take ownership of
+        // the result document.
         let wait_hr = unsafe {
-            HcsGetOperationResultAndProcessInfo(operation, &mut process_info, &mut result)
+            HcsWaitForOperationResultAndProcessInfo(
+                operation,
+                OPERATION_TIMEOUT_MS,
+                &mut process_info,
+                &mut result,
+            )
         };
+        let result_document = take_result_document(result);
         if wait_hr != 0 {
-            let details = operation_result_string(operation);
             // SAFETY: operation and process_handle (if non-null) are valid
             // handles being released on the error path.
             unsafe {
@@ -590,8 +614,14 @@ mod native {
                     HcsCloseProcess(process_handle);
                 }
             }
+            let detail = if result_document.is_empty() {
+                String::new()
+            } else {
+                format!(" result={result_document}")
+            };
             return Err(IsolationError::HcsError(format!(
-                "HcsGetOperationResultAndProcessInfo HRESULT={wait_hr:#010x}{details}"
+                "HcsWaitForOperationResultAndProcessInfo {}{detail}",
+                describe_hresult(wait_hr)
             )));
         }
         // SAFETY: operation is valid; standard cleanup after reading its result.
@@ -619,7 +649,8 @@ mod native {
         let hr = unsafe { HcsWaitForProcessExit(handle as HCS_PROCESS, u32::MAX, &mut result) };
         if hr != 0 {
             return Err(IsolationError::HcsError(format!(
-                "HcsWaitForProcessExit HRESULT={hr:#010x}"
+                "HcsWaitForProcessExit {}",
+                describe_hresult(hr)
             )));
         }
         if result.is_null() {
@@ -664,12 +695,168 @@ mod native {
         if hr != 0 || result.is_null() {
             return String::new();
         }
-        let value = widestr_to_string(result);
+        let value = take_result_document(result);
         if value.is_empty() {
             String::new()
         } else {
             format!(" result={value}")
         }
+    }
+
+    /// Read an HCS result document and release it.
+    ///
+    /// HCS allocates result documents with `LocalAlloc` and transfers
+    /// ownership to the caller, so every out-parameter of this kind has to be
+    /// handed to `LocalFree`. Nothing in this module used to do that; each
+    /// call leaked the document.
+    fn take_result_document(ptr: PWSTR) -> String {
+        if ptr.is_null() {
+            return String::new();
+        }
+        let value = widestr_to_string(ptr);
+        // SAFETY: `ptr` is a non-null document allocated by computecore and
+        // owned by us per the HCS contract. It is not read after this call.
+        unsafe { LocalFree(ptr as HLOCAL) };
+        value
+    }
+
+    /// Name the well-known HCS failures instead of emitting a bare HRESULT.
+    ///
+    /// This is not cosmetic. `0x8037011b` on its own is what kept this
+    /// module's real problem — the daemon not holding Hyper-V Administrators
+    /// rights — unreadable once the crash above it was fixed. A caller who
+    /// sees the name can act on it; a caller who sees the hex cannot.
+    ///
+    /// Matched against the `windows_sys` constants rather than literals on
+    /// purpose: a hand-written table of these was wrong in more entries than
+    /// it was right when checked against the real values.
+    fn hcs_error_name(hr: i32) -> Option<&'static str> {
+        // `ACCESS_DENIED` carries the remedy, since it is the one a correctly
+        // configured host still hits and the one with a non-obvious fix.
+        if hr == HCS_E_ACCESS_DENIED {
+            return Some(
+                "HCS_E_ACCESS_DENIED -- the caller is not an administrator and not a \
+                 member of the Hyper-V Administrators group (see https://aka.ms/hcsadmin)",
+            );
+        }
+        let name = match hr {
+            HCS_E_CONNECTION_CLOSED => "HCS_E_CONNECTION_CLOSED",
+            HCS_E_CONNECTION_TIMEOUT => "HCS_E_CONNECTION_TIMEOUT",
+            HCS_E_CONNECT_FAILED => "HCS_E_CONNECT_FAILED",
+            HCS_E_GUEST_CRITICAL_ERROR => "HCS_E_GUEST_CRITICAL_ERROR",
+            HCS_E_HYPERV_NOT_INSTALLED => "HCS_E_HYPERV_NOT_INSTALLED",
+            HCS_E_IMAGE_MISMATCH => "HCS_E_IMAGE_MISMATCH",
+            HCS_E_INVALID_JSON => "HCS_E_INVALID_JSON",
+            HCS_E_INVALID_LAYER => "HCS_E_INVALID_LAYER",
+            HCS_E_INVALID_STATE => "HCS_E_INVALID_STATE",
+            HCS_E_OPERATION_ALREADY_CANCELLED => "HCS_E_OPERATION_ALREADY_CANCELLED",
+            HCS_E_OPERATION_ALREADY_STARTED => "HCS_E_OPERATION_ALREADY_STARTED",
+            HCS_E_OPERATION_NOT_STARTED => "HCS_E_OPERATION_NOT_STARTED",
+            HCS_E_OPERATION_PENDING => "HCS_E_OPERATION_PENDING",
+            HCS_E_OPERATION_RESULT_ALLOCATION_FAILED => "HCS_E_OPERATION_RESULT_ALLOCATION_FAILED",
+            HCS_E_OPERATION_TIMEOUT => "HCS_E_OPERATION_TIMEOUT",
+            HCS_E_PROCESS_ALREADY_STOPPED => "HCS_E_PROCESS_ALREADY_STOPPED",
+            HCS_E_PROCESS_INFO_NOT_AVAILABLE => "HCS_E_PROCESS_INFO_NOT_AVAILABLE",
+            HCS_E_PROTOCOL_ERROR => "HCS_E_PROTOCOL_ERROR",
+            HCS_E_SERVICE_DISCONNECT => "HCS_E_SERVICE_DISCONNECT",
+            HCS_E_SERVICE_NOT_AVAILABLE => "HCS_E_SERVICE_NOT_AVAILABLE",
+            HCS_E_SYSTEM_ALREADY_EXISTS => "HCS_E_SYSTEM_ALREADY_EXISTS",
+            HCS_E_SYSTEM_ALREADY_STOPPED => "HCS_E_SYSTEM_ALREADY_STOPPED",
+            HCS_E_SYSTEM_NOT_CONFIGURED_FOR_OPERATION => {
+                "HCS_E_SYSTEM_NOT_CONFIGURED_FOR_OPERATION"
+            }
+            HCS_E_SYSTEM_NOT_FOUND => "HCS_E_SYSTEM_NOT_FOUND",
+            HCS_E_TERMINATED => "HCS_E_TERMINATED",
+            HCS_E_TERMINATED_DURING_START => "HCS_E_TERMINATED_DURING_START",
+            HCS_E_UNEXPECTED_EXIT => "HCS_E_UNEXPECTED_EXIT",
+            HCS_E_UNKNOWN_MESSAGE => "HCS_E_UNKNOWN_MESSAGE",
+            HCS_E_UNSUPPORTED_PROTOCOL_VERSION => "HCS_E_UNSUPPORTED_PROTOCOL_VERSION",
+            HCS_E_WINDOWS_INSIDER_REQUIRED => "HCS_E_WINDOWS_INSIDER_REQUIRED",
+            _ => return None,
+        };
+        Some(name)
+    }
+
+    fn describe_hresult(hr: i32) -> String {
+        match hcs_error_name(hr) {
+            Some(name) => format!("HRESULT={hr:#010x} ({name})"),
+            None => format!("HRESULT={hr:#010x}"),
+        }
+    }
+
+    /// How long to wait for a single HCS operation to complete.
+    ///
+    /// Bounded rather than infinite on purpose: these calls run on a session's
+    /// thread, and an HCS operation that never completes would otherwise wedge
+    /// that session permanently with no way to observe why.
+    const OPERATION_TIMEOUT_MS: u32 = 60_000;
+
+    /// Run one asynchronous HCS call to completion.
+    ///
+    /// **Every mutating HCS API is asynchronous.** It takes an
+    /// `HCS_OPERATION`, returns once the request is *queued*, and reports the
+    /// real outcome through that operation. Two consequences, and getting
+    /// either wrong is a process fault rather than an error return:
+    ///
+    /// 1. **The operation handle must be valid.** `HcsStartComputeSystem` and
+    ///    `HcsTerminateComputeSystem` were previously passed a null one, with
+    ///    a comment claiming a "synchronous-start pattern". No such pattern
+    ///    exists — computecore dereferences the handle unconditionally, so the
+    ///    process died with `STATUS_ACCESS_VIOLATION` before any HRESULT could
+    ///    come back. That is the whole of docs/briefs/006.
+    /// 2. **The result must be waited for.** `S_OK` from the call itself means
+    ///    "accepted", not "done". `HcsCreateComputeSystem` returned `S_OK` and
+    ///    a non-null handle on a host that cannot actually run containers.
+    ///
+    /// The operation is closed on every path, including the error paths.
+    fn run_operation<F>(name: &str, call: F) -> Result<String, IsolationError>
+    where
+        F: FnOnce(HCS_OPERATION) -> i32,
+    {
+        // SAFETY: the documented way to create an operation with no completion
+        // callback. A null context is only read back by a callback, and there
+        // is none.
+        let operation = unsafe { HcsCreateOperation(std::ptr::null(), None) };
+        if operation.is_null() {
+            return Err(IsolationError::HcsError(format!(
+                "{name}: HcsCreateOperation returned null"
+            )));
+        }
+
+        let hr = call(operation);
+        if hr != 0 {
+            let details = operation_result_string(operation);
+            // SAFETY: `operation` is non-null (checked above) and is closed
+            // exactly once on this path.
+            unsafe { HcsCloseOperation(operation) };
+            return Err(IsolationError::HcsError(format!(
+                "{name} {}{details}",
+                describe_hresult(hr)
+            )));
+        }
+
+        let mut result: PWSTR = std::ptr::null_mut();
+        // SAFETY: `operation` is valid and was accepted by the call above;
+        // `result` is an out-parameter whose document we take ownership of.
+        let wait_hr =
+            unsafe { HcsWaitForOperationResult(operation, OPERATION_TIMEOUT_MS, &mut result) };
+        let document = take_result_document(result);
+        // SAFETY: `operation` is valid; closed exactly once, after its result
+        // has been read.
+        unsafe { HcsCloseOperation(operation) };
+
+        if wait_hr != 0 {
+            let detail = if document.is_empty() {
+                String::new()
+            } else {
+                format!(" result={document}")
+            };
+            return Err(IsolationError::HcsError(format!(
+                "{name} failed asynchronously: {}{detail}",
+                describe_hresult(wait_hr)
+            )));
+        }
+        Ok(document)
     }
 }
 

@@ -141,18 +141,22 @@ fn windows_isolation_paths_are_not_claimed_on_other_platforms() {
 
 /// Probe: can this host actually create an HCS compute system?
 ///
-/// Ignored because the answer is host-dependent and this is a diagnostic, not
-/// an assertion. Run with:
-/// `cargo test -p malt-platform --test isolation_reality hcs_probe -- --ignored --nocapture`
+/// **The assertion is that this test returns at all.** It used to terminate
+/// the process with `STATUS_ACCESS_VIOLATION`, because
+/// `HcsStartComputeSystem` was called with a null `HCS_OPERATION` handle and
+/// computecore dereferences it unconditionally. No configuration can make a
+/// crash acceptable: a request for an unavailable tier must produce an error a
+/// caller can read, and a faulting daemon takes every other session with it.
+/// So this runs unconditionally rather than `#[ignore]`d — an ignored test
+/// cannot catch that regression, and for months it did not.
 ///
-/// The distinction it exists to draw: `hcs_available()` checks for
-/// `computecore.dll`, which ships with Windows regardless of whether the
-/// Containers feature is enabled. So "available" is a weaker claim than
-/// "usable", and this prints which one holds here.
+/// It deliberately does *not* assert `Ok`. Whether a compute system can be
+/// created is genuinely host-dependent: it needs the Windows Containers
+/// feature, Hyper-V Administrators rights, and a base image layer. The
+/// outcome is printed so a reader can see which of those this host lacks.
 #[cfg(windows)]
 #[test]
-#[ignore]
-fn hcs_probe_reports_what_this_host_can_actually_do() {
+fn hcs_create_never_faults_whatever_this_host_supports() {
     use malt_platform::isolation::hcs;
 
     println!("hcs_available() = {}", hcs::hcs_available());
@@ -175,8 +179,29 @@ fn hcs_probe_reports_what_this_host_can_actually_do() {
                 "create_compute_system() = Ok (handle {})",
                 system.raw_handle()
             );
+            // Tearing down exercises the other call site that passed a null
+            // operation handle, so it faulted for the same reason. A host that
+            // can create a compute system must also be able to destroy one.
+            let handle = system.raw_handle();
+            std::mem::forget(system);
+            hcs::terminate_compute_system(handle)
+                .expect("a compute system that could be created must be terminable");
         }
-        Err(e) => println!("create_compute_system() = Err: {e}"),
+        Err(e) => {
+            let message = e.to_string();
+            println!("create_compute_system() = Err: {message}");
+            // A bare `HRESULT=0x8037011b` is what kept the real cause -- the
+            // daemon not holding Hyper-V Administrators rights -- unreadable
+            // once the crash was fixed. Every HCS HRESULT this module reports
+            // goes through the decoder, so a raw code with no name means a
+            // call site bypassed it.
+            if message.contains("HRESULT=0x8037") {
+                assert!(
+                    message.contains("HCS_E_"),
+                    "HCS errors must name the failure, not just its hex code: {message}"
+                );
+            }
+        }
     }
 }
 

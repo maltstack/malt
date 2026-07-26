@@ -1,81 +1,129 @@
 # Brief 006 — The HCS backend access-violates on a real call
 
 **Severity**: High · **Verified**: 2026-07-26 · **Source**: probing 007's T028
+**Status**: **RESOLVED 2026-07-26.** Root cause found, fixed, and covered by a
+test that runs unconditionally. Kept as the record, because how it was
+diagnosed matters more than the fix.
 
-## What is wrong
+---
+
+## What was wrong
 
 Building `malt-platform` with `--features hcs` and calling
-`hcs::create_compute_system` with a structurally valid minimal Windows
-container document terminates the process with
+`hcs::create_compute_system` terminated the process with
 **`STATUS_ACCESS_VIOLATION` (0xc0000005)**.
 
-Reproduce:
+**Root cause:** `HcsStartComputeSystem` was called with a **null
+`HCS_OPERATION` handle**:
 
-```
-cargo test -p malt-platform --features hcs --test isolation_reality hcs_probe -- --ignored --nocapture
-```
-
-Output on this host:
-
-```
-hcs_available() = true
-ensure_hcs_runtime() = Ok
-error: ... (exit code: 0xc0000005, STATUS_ACCESS_VIOLATION)
+```rust
+// crates/malt-platform/src/isolation/hcs.rs, before the fix
+let hr = unsafe {
+    HcsStartComputeSystem(handle, std::ptr::null_mut() as HCS_OPERATION, std::ptr::null())
+};
 ```
 
-It crashes **after** `ensure_hcs_runtime()` succeeds — so the prerequisites
-resolve and the fault is inside `native::create_compute_system`
-(`crates/malt-platform/src/isolation/hcs.rs`, the `mod native` block), in or
-around `HcsCreateComputeSystem` / `operation_result_string`.
+Every mutating HCS API is asynchronous. It takes an operation handle, returns
+once the request is *queued*, and reports the real outcome through that
+operation. computecore dereferences the handle unconditionally, so a null one
+faults before any HRESULT can come back.
 
-The cause is not yet identified. Candidates worth checking first, in order:
+`terminate_compute_system` had the identical defect, meaning teardown faulted
+for the same reason as startup.
 
-- `HcsCreateComputeSystem` is asynchronous and typically returns
-  `HCS_E_OPERATION_PENDING`; `operation_result_string(operation)` is then
-  called on an operation that has not completed.
-- `HcsCreateOperation(null, None)` — confirm the context/callback pair is the
-  documented null form for this API version.
-- The out-parameter and lifetime handling of `id_wide` / `cfg_wide` across
-  the call.
+The comment above the call claimed this was "the synchronous-start pattern
+used throughout this module". **There is no such pattern** — the same function
+creates a real operation for the create call twenty lines earlier. The comment
+asserted a convention that the code it described did not follow, which is why
+it read as deliberate.
 
-## Why it matters
+## How it was found, and why that matters
 
-It is the reason feature 007's T028 could not be completed, and it was
-misattributed. The task was recorded as **blocked on an unavailable external
-platform**. It is not: `computecore.dll` is present, `vmcompute` and `hns` are
-running, the `hcs` feature compiles, and `ensure_hcs_runtime()` returns `Ok`.
-The host is fine. **The binding is broken.**
+All three hypotheses recorded in the original version of this brief were
+**wrong**:
 
-That distinction matters because "blocked on missing platform" implies waiting
-for hardware or CI, while "crashes on a real call" is work that can be done
-now, on this machine.
+| Hypothesis | Reality |
+|---|---|
+| `HcsCreateComputeSystem` returns `HCS_E_OPERATION_PENDING`; the result is read too early | It returned **`S_OK`** with a valid non-null handle |
+| `HcsCreateOperation(null, None)` is the wrong null form | Correct as written; returned a valid operation |
+| `id_wide`/`cfg_wide` lifetime or out-parameter handling | Fine |
 
-It is also the third defect of its exact shape found here: two in
-`job_objects.rs` in 2026-07, and now this — all in code whose tests never
-called the real OS API. AGENTS.md already records that lesson; this is it
-recurring in the neighbouring module.
+They were plausible, ordered by likelihood, and none survived contact with
+four `eprintln!` statements. The fault was two calls later than every one of
+them predicted. **Reasoning about which FFI call is wrong is not a substitute
+for printing where execution stops.**
 
-## What done looks like
+## What the fix was
 
-- `create_compute_system` returns an `Err` for an unusable configuration and
-  never faults. **No input should be able to access-violate the daemon.**
-- A test that calls it for real, with the `hcs` feature on, and asserts a
-  clean error — the `hcs_probe` test in
-  `crates/malt-platform/tests/isolation_reality.rs` is the starting point;
-  promote it from `#[ignore]` once it cannot crash.
-- If a valid compute system *can* be created on a properly configured host,
-  a test that does so and tears it down, which is what 007's T028 needs.
-- The `hcs` feature is exercised somewhere in CI or a documented local run;
-  today nothing builds with it, which is why this survived.
+A single `run_operation(name, call)` helper in the `native` module now owns the
+whole lifecycle — create operation, invoke, **wait for the result**, close on
+every path — and all three async call sites go through it or follow its shape:
 
-## Gotchas
+- `HcsCreateComputeSystem`, `HcsStartComputeSystem` and
+  `HcsTerminateComputeSystem` all get a valid operation handle.
+- Results are collected with `HcsWaitForOperationResult` rather than assumed
+  from the call's own HRESULT. `S_OK` from the call means *accepted*, not
+  *done* — `HcsCreateComputeSystem` returned `S_OK` on a host that cannot run
+  containers at all.
+- `create_process` moved from `HcsGetOperationResultAndProcessInfo` to
+  `HcsWaitForOperationResultAndProcessInfo`. The non-waiting variant returns
+  whatever state the operation is in, so process launch succeeded or failed
+  by timing.
+- Result documents are `LocalFree`d. Every one of them leaked before.
+- HRESULTs are decoded to names via the `windows_sys` constants.
 
-- **Do not enable the `hcs` feature by default to "fix" this.** A crash
-  reachable from a session request is worse than a missing tier. The feature
-  gate is currently the only thing keeping the fault unreachable.
-- The fake mode (`MALT_HCS_FAKE=1`) bypasses the native path entirely. A test
-  that passes under fake mode proves nothing about this bug — check which
-  mode a test runs in before trusting it.
-- Fixing the crash does not by itself deliver `Contained`: creating a usable
-  Windows container also needs a base image layer. Those are separate, and
-  conflating them will make the fix look incomplete when it is not.
+## What it revealed underneath
+
+With the crash gone, the real answer appeared:
+
+```
+create_compute_system() = Err: HcsCreateComputeSystem failed asynchronously:
+  HRESULT=0x8037011b (HCS_E_ACCESS_DENIED -- the caller is not an administrator
+  and not a member of the Hyper-V Administrators group)
+```
+
+So the host **can** run containers; the daemon lacks the rights. This is the
+same conclusion vexil-v2 reached independently — it runs HCS from a
+**LocalSystem Windows service** (`windows_container_service.rs`, installed via
+`ensure_installed_for_contained`) precisely because an unprivileged daemon
+cannot make these calls. A privileged-helper design is therefore not optional
+for `Contained` on Windows; it is a requirement the API imposes.
+
+The error decoder was added for this reason and is asserted by the test: a
+bare `0x8037011b` is unreadable, and it is what would have hidden this next.
+
+## vexil-v2 has the identical bug
+
+`vexil-platform/src/hcs.rs:691-697` passes the same null operation handle to
+`HcsStartComputeSystem`. Its HCS path is wired all the way to `vexil-bin` and
+its HTTP routes, and it still cannot have completed a create-and-start.
+
+**This is the single most important finding for the vendoring decision.**
+Reachability was the evidence used to argue vexil-v2's isolation stack is more
+mature than MALT's. It is more *wired*, which is not the same thing, and this
+is the counter-example. Anything taken from it needs the same treatment this
+module just got: run it, print where it stops, and do not trust the comments.
+
+## Regression cover
+
+`hcs_create_never_faults_whatever_this_host_supports` in
+`crates/malt-platform/tests/isolation_reality.rs`, no longer `#[ignore]`d.
+It asserts the call *returns* — no host configuration makes a fault
+acceptable, and a faulting daemon takes every other session with it. It does
+not assert `Ok`, because creating a compute system legitimately depends on
+host rights, the Containers feature, and a base layer.
+
+Note it previously carried `#[ignore]`, which is why the crash survived: an
+ignored test cannot catch a regression.
+
+## What remains (not this brief)
+
+Fixing the crash does not deliver `Contained`. Still needed:
+
+- **Privileged execution** — a LocalSystem helper or equivalent, per the
+  `HCS_E_ACCESS_DENIED` above.
+- **A base image layer** — no compute system is useful without one, and MALT
+  has no OCI/image-store concept at all.
+
+Both are properly scoped work, not follow-ups to this fix. Conflating them
+with the crash is what made T028 look like it was blocked on hardware.
