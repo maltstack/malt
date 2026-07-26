@@ -55,11 +55,13 @@ struct CreateSessionRequest<'a> {
     name: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     isolation: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    isolation_policy: Option<&'a str>,
 }
 
 impl<'a> CreateSessionRequest<'a> {
-    fn new(name: Option<&'a str>, isolation: Option<&'a str>) -> Self {
-        Self { name, isolation }
+    fn new(name: Option<&'a str>, isolation: Option<&'a str>, isolation_policy: Option<&'a str>) -> Self {
+        Self { name, isolation, isolation_policy }
     }
 }
 
@@ -189,10 +191,11 @@ impl MaltClient {
         &self,
         name: Option<&str>,
         isolation: Option<&str>,
+        isolation_policy: Option<&str>,
     ) -> Result<SessionData> {
         let req = self
             .authed(self.http.post(self.url("/sessions")))
-            .json(&CreateSessionRequest::new(name, isolation));
+            .json(&CreateSessionRequest::new(name, isolation, isolation_policy));
         let resp = req.send().context("failed to reach daemon")?;
         let envelope: ApiEnvelope<SessionData> =
             resp.json().context("invalid create session response")?;
@@ -361,22 +364,22 @@ mod tests {
 
     #[test]
     fn create_session_payload_preserves_legacy_and_selected_tier_shapes() {
-        let empty = CreateSessionRequest::new(None, None);
+        let empty = CreateSessionRequest::new(None, None, None);
         assert_eq!(serde_json::to_value(empty).unwrap(), serde_json::json!({}));
 
-        let named = CreateSessionRequest::new(Some("build"), None);
+        let named = CreateSessionRequest::new(Some("build"), None, None);
         assert_eq!(
             serde_json::to_value(named).unwrap(),
             serde_json::json!({ "name": "build" })
         );
 
-        let tier_only = CreateSessionRequest::new(None, Some("restricted"));
+        let tier_only = CreateSessionRequest::new(None, Some("restricted"), None);
         assert_eq!(
             serde_json::to_value(tier_only).unwrap(),
             serde_json::json!({ "isolation": "restricted" })
         );
 
-        let named_tier = CreateSessionRequest::new(Some("build"), Some("capped"));
+        let named_tier = CreateSessionRequest::new(Some("build"), Some("capped"), None);
         assert_eq!(
             serde_json::to_value(named_tier).unwrap(),
             serde_json::json!({ "name": "build", "isolation": "capped" })

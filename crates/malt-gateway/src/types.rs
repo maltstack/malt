@@ -37,6 +37,7 @@ pub struct PaneResponse {
 pub struct CreateSessionRequest {
     pub name: Option<String>,
     pub isolation: Option<String>,
+    pub isolation_policy: Option<String>,
 }
 
 /// Request body for executing a command.

@@ -44,6 +44,9 @@ pub enum GatewayError {
     #[error("input buffer full: {0}")]
     InputBufferFull(String),
 
+    #[error("isolation unavailable: {0}")]
+    IsolationUnavailable(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -79,6 +82,9 @@ impl IntoResponse for GatewayError {
             GatewayError::SessionDormant(_) => (StatusCode::CONFLICT, "session_dormant"),
             GatewayError::InputBufferFull(_) => {
                 (StatusCode::TOO_MANY_REQUESTS, "input_buffer_full")
+            }
+            GatewayError::IsolationUnavailable(_) => {
+                (StatusCode::CONFLICT, "isolation_unavailable")
             }
             GatewayError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };

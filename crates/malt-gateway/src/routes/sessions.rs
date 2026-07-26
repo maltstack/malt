@@ -35,7 +35,7 @@ pub async fn create(
     State(backend): State<Arc<dyn GatewayBackend>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<ApiResponse<crate::types::SessionResponse>>, GatewayError> {
-    let session = backend.create_session(req.name, req.isolation)?;
+    let session = backend.create_session_with_policy(req.name, req.isolation, req.isolation_policy)?;
     Ok(Json(ApiResponse::success(session)))
 }
 

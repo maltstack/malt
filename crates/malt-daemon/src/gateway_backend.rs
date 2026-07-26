@@ -10,7 +10,7 @@ use malt_gateway::types::{
     CommandHistoryEntry, ExecResult, LifecycleEventDto, OutputChunkDto, PaneResponse,
     SessionResponse,
 };
-use malt_protocol::common::{IsolationTier, SessionId};
+use malt_protocol::common::{IsolationPolicy, IsolationTier, SessionId};
 use malt_protocol::shell::OutputStream;
 use std::sync::{Arc, Mutex};
 
@@ -189,6 +189,19 @@ fn parse_isolation(s: Option<String>) -> Result<IsolationTier, GatewayError> {
     }
 }
 
+fn parse_isolation_policy(s: Option<String>, tier: IsolationTier) -> Result<IsolationPolicy, GatewayError> {
+    match s.as_deref() {
+        None if tier == IsolationTier::Bare => Ok(IsolationPolicy::Disabled),
+        None => Ok(IsolationPolicy::Required),
+        Some("required") => Ok(IsolationPolicy::Required),
+        Some("preferred") => Ok(IsolationPolicy::Preferred),
+        Some("disabled") => Ok(IsolationPolicy::Disabled),
+        Some(other) => Err(GatewayError::BadRequest(format!(
+            "unrecognized isolation policy {other:?} (expected one of: required, preferred, disabled)"
+        ))),
+    }
+}
+
 impl GatewayBackend for DaemonBackend {
     fn list_sessions(&self) -> Result<Vec<SessionResponse>, GatewayError> {
         let coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
@@ -210,17 +223,32 @@ impl GatewayBackend for DaemonBackend {
         name: Option<String>,
         isolation: Option<String>,
     ) -> Result<SessionResponse, GatewayError> {
+        self.create_session_with_policy(name, isolation, None)
+    }
+
+    fn create_session_with_policy(
+        &self,
+        name: Option<String>,
+        isolation: Option<String>,
+        isolation_policy: Option<String>,
+    ) -> Result<SessionResponse, GatewayError> {
         let tier = parse_isolation(isolation)?;
+        let policy = parse_isolation_policy(isolation_policy, tier)?;
         let mut coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
         let session_id = coord
-            .create_session(name.clone(), tier, None)
-            .map_err(|e| GatewayError::Internal(e.to_string()))?;
+            .create_session_with_policy(name.clone(), tier, policy, None)
+            .map_err(|e| match e {
+                DaemonError::IsolationUnavailable(detail) => GatewayError::IsolationUnavailable(format!(
+                    "{tier:?} was required but could not be established: {detail}. Retry with isolation_policy=preferred to accept a lower level."
+                )),
+                other => GatewayError::Internal(other.to_string()),
+            })?;
 
         Ok(SessionResponse {
             id: session_id.0,
             name,
             pane_count: 1,
-            isolation: format!("{:?}", tier),
+            isolation: coord.list_sessions().into_iter().find(|s| s.session_id == session_id).map(|s| format!("{:?}", s.isolation)).unwrap_or_else(|| format!("{:?}", tier)),
             state: "Active".to_string(),
         })
     }

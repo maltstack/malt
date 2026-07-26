@@ -33,6 +33,9 @@ pub enum Command {
         /// Isolation tier for processes started in this session
         #[arg(long, value_enum)]
         isolation: Option<IsolationTierArg>,
+        /// Whether the requested isolation must be established.
+        #[arg(long, value_enum)]
+        isolation_policy: Option<IsolationPolicyArg>,
     },
     /// Attach to a session
     Attach { session_id: Option<u32> },
@@ -70,6 +73,15 @@ pub enum IsolationTierArg {
     Restricted,
     Capped,
     Contained,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum IsolationPolicyArg { Required, Preferred, Disabled }
+
+impl IsolationPolicyArg {
+    pub const fn request_value(self) -> &'static str {
+        match self { Self::Required => "required", Self::Preferred => "preferred", Self::Disabled => "disabled" }
+    }
 }
 
 impl IsolationTierArg {
@@ -115,7 +127,7 @@ mod tests {
     fn parse_new_with_name() {
         let cli = Cli::try_parse_from(["malt", "new", "--name", "foo"]).unwrap();
         match cli.command {
-            Some(Command::New { name, isolation }) => {
+            Some(Command::New { name, isolation, .. }) => {
                 assert_eq!(name, Some("foo".to_string()));
                 assert_eq!(isolation, None);
             }
@@ -133,7 +145,7 @@ mod tests {
         ] {
             let cli = Cli::try_parse_from(["malt", "new", "--isolation", value]).unwrap();
             match cli.command {
-                Some(Command::New { name, isolation }) => {
+                Some(Command::New { name, isolation, .. }) => {
                     assert_eq!(name, None);
                     assert_eq!(isolation, Some(expected));
                 }

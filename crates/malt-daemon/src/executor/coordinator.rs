@@ -10,7 +10,7 @@ use crate::store::{DebouncedStore, StoreError};
 use crate::supervisor::ProcessSupervisor;
 use crate::DaemonError;
 use malt_protocol::common::{
-    ClientCapabilities, GroupId, IsolationBasis, IsolationStatus, IsolationTier, PaneId, SessionId, SessionInfo, SessionState,
+    ClientCapabilities, GroupId, IsolationBasis, IsolationPolicy, IsolationStatus, IsolationTier, PaneId, SessionId, SessionInfo, SessionState,
 };
 use malt_protocol::input::KeyEvent;
 use malt_protocol::persist::daemon::DaemonState;
@@ -39,6 +39,9 @@ struct SessionHandle {
     id: SessionId,
     name: Option<String>,
     isolation: IsolationTier,
+    isolation_requested: IsolationTier,
+    isolation_basis: IsolationBasis,
+    isolation_detail: Option<String>,
     lifecycle: SessionLifecycle,
     /// The session's one pane, under today's single-pane model. Stable
     /// across Active<->Dormant transitions since it lives on the outer
@@ -100,6 +103,9 @@ impl Coordinator {
                                     id: persisted.id.clone(),
                                     name: persisted.name.clone(),
                                     isolation: persisted.isolation,
+                                    isolation_requested: persisted.isolation,
+                                    isolation_basis: if persisted.isolation == IsolationTier::Bare { IsolationBasis::None } else { IsolationBasis::Assumed },
+                                    isolation_detail: Some("restored isolation is not yet re-verified".to_string()),
                                     first_pane,
                                     lifecycle: SessionLifecycle::Dormant { persisted },
                                 },
@@ -141,6 +147,50 @@ impl Coordinator {
     /// already exists, numeric suffixes `-2`, `-3` … `-100` are tried in order.
     /// Returns `DaemonError::NameConflict` if all 100 suffixes are taken.
     pub fn create_session(
+        &mut self,
+        name: Option<String>,
+        isolation: IsolationTier,
+        _group: Option<GroupId>,
+    ) -> Result<SessionId, DaemonError> {
+        self.create_session_with_policy(name, isolation, IsolationPolicy::Required, _group)
+    }
+
+    /// Create a session according to the requested isolation policy. A
+    /// required tier is never downgraded; preferred retries exactly once at
+    /// Bare and records the downgrade in the session's single status value.
+    pub fn create_session_with_policy(
+        &mut self,
+        name: Option<String>,
+        isolation: IsolationTier,
+        policy: IsolationPolicy,
+        group: Option<GroupId>,
+    ) -> Result<SessionId, DaemonError> {
+        if policy == IsolationPolicy::Disabled {
+            let id = self.create_session_inner(name, IsolationTier::Bare, group)?;
+            self.set_isolation_status(id.clone(), isolation, IsolationBasis::None, Some("isolation disabled by caller".to_string()));
+            return Ok(id);
+        }
+        match self.create_session_inner(name.clone(), isolation, group.clone()) {
+            Ok(id) => Ok(id),
+            Err(error @ DaemonError::IsolationUnavailable(_)) if policy == IsolationPolicy::Preferred => {
+                let detail = format!("{isolation:?} unavailable: {error}");
+                let id = self.create_session_inner(name, IsolationTier::Bare, group)?;
+                self.set_isolation_status(id.clone(), isolation, IsolationBasis::None, Some(detail));
+                Ok(id)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn set_isolation_status(&mut self, id: SessionId, requested: IsolationTier, basis: IsolationBasis, detail: Option<String>) {
+        if let Some(handle) = self.sessions.get_mut(&id.0) {
+            handle.isolation_requested = requested;
+            handle.isolation_basis = basis;
+            handle.isolation_detail = detail;
+        }
+    }
+
+    fn create_session_inner(
         &mut self,
         name: Option<String>,
         isolation: IsolationTier,
@@ -196,6 +246,9 @@ impl Coordinator {
                 id: session_id.clone(),
                 name: Some(final_name),
                 isolation,
+                isolation_requested: isolation,
+                isolation_basis: if isolation == IsolationTier::Bare { IsolationBasis::None } else { IsolationBasis::Assumed },
+                isolation_detail: None,
                 first_pane: pane_id,
                 lifecycle: SessionLifecycle::Active {
                     cmd_tx: spawned.control_tx,
@@ -626,10 +679,10 @@ impl Coordinator {
                 },
                 isolation: IsolationStatus {
                     effective: h.isolation,
-                    requested: h.isolation,
-                    basis: if h.isolation == IsolationTier::Bare { IsolationBasis::None } else { IsolationBasis::Assumed },
+                    requested: h.isolation_requested,
+                    basis: h.isolation_basis,
                     mechanism: None,
-                    detail: None,
+                    detail: h.isolation_detail.clone(),
                     _unknown: Vec::new(),
                 },
                 state: match &h.lifecycle {

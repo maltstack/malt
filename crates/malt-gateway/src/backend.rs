@@ -17,6 +17,16 @@ pub trait GatewayBackend: Send + Sync + 'static {
         isolation: Option<String>,
     ) -> Result<SessionResponse, GatewayError>;
 
+    fn create_session_with_policy(
+        &self,
+        name: Option<String>,
+        isolation: Option<String>,
+        isolation_policy: Option<String>,
+    ) -> Result<SessionResponse, GatewayError> {
+        let _ = isolation_policy;
+        self.create_session(name, isolation)
+    }
+
     fn get_session(&self, id: u32) -> Result<SessionResponse, GatewayError>;
 
     fn destroy_session(&self, id: u32) -> Result<(), GatewayError>;

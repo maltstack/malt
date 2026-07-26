@@ -7,7 +7,7 @@ mod output;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Command, IsolationTierArg};
+use cli::{Cli, Command, IsolationPolicyArg, IsolationTierArg};
 use client::{MaltClient, SessionData};
 
 fn main() -> Result<()> {
@@ -21,7 +21,7 @@ fn main() -> Result<()> {
         Some(Command::Start) => handle_start(),
         Some(Command::Stop) => handle_stop(&client),
         Some(Command::List) => handle_list(&client),
-        Some(Command::New { name, isolation }) => handle_new(&client, name.as_deref(), isolation),
+        Some(Command::New { name, isolation, isolation_policy }) => handle_new(&client, name.as_deref(), isolation, isolation_policy),
         Some(Command::Attach { session_id }) => handle_attach(&cli.api_addr, session_id),
         Some(Command::Kill { session_id }) => handle_kill(&client, session_id),
         Some(Command::Exec {
@@ -76,7 +76,7 @@ fn handle_default(api_addr: &str, client: &MaltClient) -> Result<()> {
     let session_id = if sessions.is_empty() {
         // Create a new session
         eprintln!("creating session...");
-        let session = client.create_session(None, None)?;
+        let session = client.create_session(None, None, None)?;
         // Give shell a moment to start
         std::thread::sleep(std::time::Duration::from_millis(500));
         session.id
@@ -135,9 +135,10 @@ fn handle_new(
     client: &MaltClient,
     name: Option<&str>,
     isolation: Option<IsolationTierArg>,
+    isolation_policy: Option<IsolationPolicyArg>,
 ) -> Result<()> {
     let expected_tier = expected_isolation_tier(isolation);
-    let session = client.create_session(name, isolation.map(IsolationTierArg::request_value))?;
+    let session = client.create_session(name, isolation.map(IsolationTierArg::request_value), isolation_policy.map(IsolationPolicyArg::request_value))?;
     validate_created_session(&session, expected_tier)?;
     println!("{}", creation_message(&session));
     Ok(())
