@@ -123,8 +123,12 @@ fn apply_session_isolation(
     #[cfg(not(windows))]
     {
         let _ = session_id;
-        if isolation == IsolationTier::Bare { Ok(()) } else {
-            Err(DaemonError::IsolationUnavailable("no session isolation backend is wired on this platform".to_string()))
+        if isolation == IsolationTier::Bare {
+            Ok(())
+        } else {
+            Err(DaemonError::IsolationUnavailable(
+                "no session isolation backend is wired on this platform".to_string(),
+            ))
         }
     }
 }

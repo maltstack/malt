@@ -76,11 +76,19 @@ pub enum IsolationTierArg {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum IsolationPolicyArg { Required, Preferred, Disabled }
+pub enum IsolationPolicyArg {
+    Required,
+    Preferred,
+    Disabled,
+}
 
 impl IsolationPolicyArg {
     pub const fn request_value(self) -> &'static str {
-        match self { Self::Required => "required", Self::Preferred => "preferred", Self::Disabled => "disabled" }
+        match self {
+            Self::Required => "required",
+            Self::Preferred => "preferred",
+            Self::Disabled => "disabled",
+        }
     }
 }
 
@@ -127,7 +135,9 @@ mod tests {
     fn parse_new_with_name() {
         let cli = Cli::try_parse_from(["malt", "new", "--name", "foo"]).unwrap();
         match cli.command {
-            Some(Command::New { name, isolation, .. }) => {
+            Some(Command::New {
+                name, isolation, ..
+            }) => {
                 assert_eq!(name, Some("foo".to_string()));
                 assert_eq!(isolation, None);
             }
@@ -145,7 +155,9 @@ mod tests {
         ] {
             let cli = Cli::try_parse_from(["malt", "new", "--isolation", value]).unwrap();
             match cli.command {
-                Some(Command::New { name, isolation, .. }) => {
+                Some(Command::New {
+                    name, isolation, ..
+                }) => {
                     assert_eq!(name, None);
                     assert_eq!(isolation, Some(expected));
                 }

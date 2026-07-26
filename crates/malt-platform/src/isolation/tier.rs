@@ -59,10 +59,30 @@ pub struct TierRequirements {
 
 pub fn tier_requirements(tier: IsolationTier) -> TierRequirements {
     match tier {
-        IsolationTier::Bare => TierRequirements { tier, mechanism: IsolationMechanism::None, constraints: &[] },
-        IsolationTier::Restricted => TierRequirements { tier, mechanism: IsolationMechanism::JobObject, constraints: &[TierConstraint::ProcessGroup] },
-        IsolationTier::Capped => TierRequirements { tier, mechanism: IsolationMechanism::JobObject, constraints: &[TierConstraint::ProcessGroup, TierConstraint::MemoryLimit, TierConstraint::CpuLimit] },
-        IsolationTier::Contained => TierRequirements { tier, mechanism: IsolationMechanism::Hcs, constraints: &[TierConstraint::ContainerBoundary] },
+        IsolationTier::Bare => TierRequirements {
+            tier,
+            mechanism: IsolationMechanism::None,
+            constraints: &[],
+        },
+        IsolationTier::Restricted => TierRequirements {
+            tier,
+            mechanism: IsolationMechanism::JobObject,
+            constraints: &[TierConstraint::ProcessGroup],
+        },
+        IsolationTier::Capped => TierRequirements {
+            tier,
+            mechanism: IsolationMechanism::JobObject,
+            constraints: &[
+                TierConstraint::ProcessGroup,
+                TierConstraint::MemoryLimit,
+                TierConstraint::CpuLimit,
+            ],
+        },
+        IsolationTier::Contained => TierRequirements {
+            tier,
+            mechanism: IsolationMechanism::Hcs,
+            constraints: &[TierConstraint::ContainerBoundary],
+        },
     }
 }
 

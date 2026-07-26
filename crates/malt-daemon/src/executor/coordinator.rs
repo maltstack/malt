@@ -10,7 +10,8 @@ use crate::store::{DebouncedStore, StoreError};
 use crate::supervisor::ProcessSupervisor;
 use crate::DaemonError;
 use malt_protocol::common::{
-    ClientCapabilities, GroupId, IsolationBasis, IsolationPolicy, IsolationStatus, IsolationTier, PaneId, SessionId, SessionInfo, SessionState,
+    ClientCapabilities, GroupId, IsolationBasis, IsolationPolicy, IsolationStatus, IsolationTier,
+    PaneId, SessionId, SessionInfo, SessionState,
 };
 use malt_protocol::input::KeyEvent;
 use malt_protocol::persist::daemon::DaemonState;
@@ -104,8 +105,14 @@ impl Coordinator {
                                     name: persisted.name.clone(),
                                     isolation: persisted.isolation,
                                     isolation_requested: persisted.isolation,
-                                    isolation_basis: if persisted.isolation == IsolationTier::Bare { IsolationBasis::None } else { IsolationBasis::Assumed },
-                                    isolation_detail: Some("restored isolation is not yet re-verified".to_string()),
+                                    isolation_basis: if persisted.isolation == IsolationTier::Bare {
+                                        IsolationBasis::None
+                                    } else {
+                                        IsolationBasis::Assumed
+                                    },
+                                    isolation_detail: Some(
+                                        "restored isolation is not yet re-verified".to_string(),
+                                    ),
                                     first_pane,
                                     lifecycle: SessionLifecycle::Dormant { persisted },
                                 },
@@ -167,22 +174,40 @@ impl Coordinator {
     ) -> Result<SessionId, DaemonError> {
         if policy == IsolationPolicy::Disabled {
             let id = self.create_session_inner(name, IsolationTier::Bare, group)?;
-            self.set_isolation_status(id.clone(), isolation, IsolationBasis::None, Some("isolation disabled by caller".to_string()));
+            self.set_isolation_status(
+                id.clone(),
+                isolation,
+                IsolationBasis::None,
+                Some("isolation disabled by caller".to_string()),
+            );
             return Ok(id);
         }
         match self.create_session_inner(name.clone(), isolation, group.clone()) {
             Ok(id) => Ok(id),
-            Err(error @ DaemonError::IsolationUnavailable(_)) if policy == IsolationPolicy::Preferred => {
+            Err(error @ DaemonError::IsolationUnavailable(_))
+                if policy == IsolationPolicy::Preferred =>
+            {
                 let detail = format!("{isolation:?} unavailable: {error}");
                 let id = self.create_session_inner(name, IsolationTier::Bare, group)?;
-                self.set_isolation_status(id.clone(), isolation, IsolationBasis::None, Some(detail));
+                self.set_isolation_status(
+                    id.clone(),
+                    isolation,
+                    IsolationBasis::None,
+                    Some(detail),
+                );
                 Ok(id)
             }
             Err(error) => Err(error),
         }
     }
 
-    fn set_isolation_status(&mut self, id: SessionId, requested: IsolationTier, basis: IsolationBasis, detail: Option<String>) {
+    fn set_isolation_status(
+        &mut self,
+        id: SessionId,
+        requested: IsolationTier,
+        basis: IsolationBasis,
+        detail: Option<String>,
+    ) {
         if let Some(handle) = self.sessions.get_mut(&id.0) {
             handle.isolation_requested = requested;
             handle.isolation_basis = basis;
@@ -247,7 +272,11 @@ impl Coordinator {
                 name: Some(final_name),
                 isolation,
                 isolation_requested: isolation,
-                isolation_basis: if isolation == IsolationTier::Bare { IsolationBasis::None } else { IsolationBasis::Assumed },
+                isolation_basis: if isolation == IsolationTier::Bare {
+                    IsolationBasis::None
+                } else {
+                    IsolationBasis::Assumed
+                },
                 isolation_detail: None,
                 first_pane: pane_id,
                 lifecycle: SessionLifecycle::Active {

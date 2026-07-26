@@ -293,7 +293,9 @@ fn linux_seccomp_report() -> CapabilityReport {
 fn windows_job_objects_report() -> CapabilityReport {
     // Job Objects have been available on every supported Windows version;
     // unlike HCS there's no optional feature to check for.
-    CapabilityReport::assumed("Job Objects are expected on supported Windows versions; not created during probe")
+    CapabilityReport::assumed(
+        "Job Objects are expected on supported Windows versions; not created during probe",
+    )
 }
 #[cfg(not(target_os = "windows"))]
 fn windows_job_objects_report() -> CapabilityReport {
@@ -338,7 +340,9 @@ fn windows_hcs_report() -> CapabilityReport {
 
 #[cfg(target_os = "macos")]
 fn macos_sandbox_report() -> CapabilityReport {
-    CapabilityReport::assumed("sandbox_init availability is assumed; sandbox not initialized during probe")
+    CapabilityReport::assumed(
+        "sandbox_init availability is assumed; sandbox not initialized during probe",
+    )
 }
 #[cfg(not(target_os = "macos"))]
 fn macos_sandbox_report() -> CapabilityReport {

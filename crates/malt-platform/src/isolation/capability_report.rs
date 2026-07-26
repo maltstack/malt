@@ -134,7 +134,10 @@ mod tests {
     #[test]
     fn supported_is_usable() {
         assert!(CapabilityReport::supported().is_usable());
-        assert_eq!(CapabilityReport::supported().basis, CapabilityBasis::Verified);
+        assert_eq!(
+            CapabilityReport::supported().basis,
+            CapabilityBasis::Verified
+        );
     }
 
     #[test]

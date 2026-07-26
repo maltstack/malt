@@ -1,8 +1,8 @@
 //! Session runtime and lifecycle state machine.
 
 use malt_protocol::common::{
-    GroupId, InputAuthority, IsolationBasis, IsolationStatus, IsolationTier, LayoutNode, PaneId, SessionId, SessionInfo,
-    SessionState,
+    GroupId, InputAuthority, IsolationBasis, IsolationStatus, IsolationTier, LayoutNode, PaneId,
+    SessionId, SessionInfo, SessionState,
 };
 
 /// Opaque client identifier assigned by the daemon on connection.
@@ -309,7 +309,11 @@ impl SessionRuntime {
             isolation: IsolationStatus {
                 effective: self.isolation,
                 requested: self.isolation,
-                basis: if self.isolation == IsolationTier::Bare { IsolationBasis::None } else { IsolationBasis::Assumed },
+                basis: if self.isolation == IsolationTier::Bare {
+                    IsolationBasis::None
+                } else {
+                    IsolationBasis::Assumed
+                },
                 mechanism: None,
                 detail: None,
                 _unknown: Vec::new(),
