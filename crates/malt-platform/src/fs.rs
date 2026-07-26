@@ -278,6 +278,17 @@ pub fn is_writable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve both paths and report whether `candidate` remains under `root`.
+///
+/// Canonicalization resolves `..` components and symlinks before the prefix
+/// comparison, so callers cannot validate a lexical path and then follow a
+/// link outside the authority they were granted.
+pub fn canonical_path_within(root: &Path, candidate: &Path) -> io::Result<bool> {
+    let root = fs::canonicalize(root)?;
+    let candidate = fs::canonicalize(candidate)?;
+    Ok(candidate.starts_with(root))
+}
+
 /// Create a symbolic link.
 pub fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
     #[cfg(unix)]
@@ -442,6 +453,19 @@ mod tests {
         );
         assert_eq!(try_drive_prefix("home/user"), None);
         assert_eq!(try_drive_prefix("123/abc"), None);
+    }
+
+    #[test]
+    fn canonical_path_within_rejects_parent_escape() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("root");
+        let outside = parent.path().join("outside.txt");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("inside.txt"), "inside").unwrap();
+        fs::write(&outside, "outside").unwrap();
+
+        assert!(canonical_path_within(&root, &root.join("inside.txt")).unwrap());
+        assert!(!canonical_path_within(&root, &root.join("..").join("outside.txt")).unwrap());
     }
 
     #[test]
