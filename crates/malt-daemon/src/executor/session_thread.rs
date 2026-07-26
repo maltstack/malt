@@ -30,29 +30,35 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tracing::{info, warn};
 
-/// Placeholder Job Object resource caps for the Capped/Contained tiers,
+/// Placeholder Job Object resource caps for the Capped tier,
 /// pending a real per-session/group configuration surface (see
 /// `docs/BACKLOG.md`'s isolation-policy item). Deliberately conservative-but-
-/// generous rather than tuned: the point of this pass is that Capped and
-/// Contained sessions actually get *some* real, different-from-Restricted
-/// resource limit, not that these specific numbers are load-bearing.
+/// generous rather than tuned: the point of this pass is that Capped sessions
+/// get a real, different-from-Restricted resource limit, not that these
+/// specific numbers are load-bearing.
 #[cfg(windows)]
 const CAPPED_MEMORY_LIMIT_MB: u64 = 2048;
 #[cfg(windows)]
 const CAPPED_CPU_RATE_PERCENT: u32 = 200;
 
-/// Job Object `(memory_limit_mb, cpu_rate)` for a given tier. `Bare` is
-/// never passed in (callers return before reaching this); `Restricted` gets
-/// an uncapped Job Object (group-kill only); `Capped`/`Contained` get real
-/// limits. Pulled out as a pure function so it's unit-testable without
-/// creating a real Windows Job Object.
+/// Job Object limits only for tiers whose declared mechanism is a Job Object.
+/// `Contained` intentionally has no mapping: it denotes HCS and must be
+/// refused until an HCS-aware MASH spawn path exists.
 #[cfg(windows)]
-fn job_object_limits_for_tier(isolation: IsolationTier) -> (u64, u32) {
-    match isolation {
-        IsolationTier::Bare | IsolationTier::Restricted => (0, 0),
-        IsolationTier::Capped | IsolationTier::Contained => {
-            (CAPPED_MEMORY_LIMIT_MB, CAPPED_CPU_RATE_PERCENT)
-        }
+fn job_object_limits_for_tier(isolation: IsolationTier) -> Option<(u64, u32)> {
+    let platform_tier = match isolation {
+        IsolationTier::Bare => malt_platform::isolation::IsolationTier::Bare,
+        IsolationTier::Restricted => malt_platform::isolation::IsolationTier::Restricted,
+        IsolationTier::Capped => malt_platform::isolation::IsolationTier::Capped,
+        IsolationTier::Contained => malt_platform::isolation::IsolationTier::Contained,
+    };
+    match malt_platform::isolation::tier_requirements(platform_tier).mechanism {
+        malt_platform::isolation::IsolationMechanism::JobObject => Some(match isolation {
+            IsolationTier::Restricted => (0, 0),
+            IsolationTier::Capped => (CAPPED_MEMORY_LIMIT_MB, CAPPED_CPU_RATE_PERCENT),
+            _ => return None,
+        }),
+        _ => None,
     }
 }
 
@@ -108,7 +114,12 @@ fn apply_session_isolation(
                     .to_string(),
             ));
         }
-        let (memory_limit_mb, cpu_rate) = job_object_limits_for_tier(isolation);
+        let (memory_limit_mb, cpu_rate) =
+            job_object_limits_for_tier(isolation).ok_or_else(|| {
+                DaemonError::IsolationUnavailable(format!(
+                    "{isolation:?} is not provided by a Job Object on this platform"
+                ))
+            })?;
         let job_name = format!("malt-session-{}", session_id.0);
         match malt_platform::isolation::job_objects::create_job_object(
             &job_name,
@@ -1895,31 +1906,25 @@ mod isolation_tier_tests {
     use super::*;
 
     #[test]
-    fn bare_and_restricted_get_uncapped_job_objects() {
-        assert_eq!(job_object_limits_for_tier(IsolationTier::Bare), (0, 0));
+    fn only_job_object_tiers_have_job_object_limits() {
+        assert_eq!(job_object_limits_for_tier(IsolationTier::Bare), None);
         assert_eq!(
             job_object_limits_for_tier(IsolationTier::Restricted),
-            (0, 0),
+            Some((0, 0)),
             "Restricted should be group-kill only, no resource caps"
         );
     }
 
     #[test]
-    fn capped_and_contained_get_real_nonzero_limits() {
-        let capped = job_object_limits_for_tier(IsolationTier::Capped);
-        let contained = job_object_limits_for_tier(IsolationTier::Contained);
+    fn capped_is_limited_and_contained_is_never_relabelled_as_a_job() {
+        let capped = job_object_limits_for_tier(IsolationTier::Capped).unwrap();
         assert_ne!(
             capped,
             (0, 0),
             "Capped must get a real resource limit, not the same uncapped \
              treatment as Restricted -- that was the confirmed tier-blind bug"
         );
-        assert_eq!(
-            capped, contained,
-            "Contained doesn't yet get anything beyond Capped-level Job \
-             Object containment (see the doc comment on apply_session_isolation) \
-             -- this test pins that honestly rather than silently drifting"
-        );
+        assert_eq!(job_object_limits_for_tier(IsolationTier::Contained), None);
     }
 
     #[test]
