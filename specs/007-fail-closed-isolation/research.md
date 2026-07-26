@@ -189,3 +189,20 @@ than by assumption:
   bugs found only when a test finally called Win32 instead of constructing
   structs. Assume nothing about the other twelve.
 - **The per-tier mechanism binding** (R4), which depends on the above.
+
+---
+
+## R9. AppContainer is not an alternative for `Contained` in this feature
+
+**Decision.** AppContainer is out of scope for feature 007. Although
+`vexil-v2` has an AppContainer implementation, MALT has no owned
+AppContainer backend and, more importantly, no MASH external-process spawn
+path that could launch a command under one. Porting the platform code without
+that integration would create a resource whose process set is empty and then
+report `Contained`, which is exactly the false claim this feature prohibits.
+
+**Consequence.** On Windows, `Contained` is named as HCS only. Until MASH is
+HCS-aware, a required request is refused and a preferred request is reported
+as a visible downgrade. The capability endpoint reports it unavailable with
+the same reason. AppContainer remains a separately scoped, owned-source
+proposal; it is never a silent fallback.
