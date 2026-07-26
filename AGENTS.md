@@ -76,7 +76,7 @@ including its "what this survey did not establish" section. A survey that
 only records what was found, and not what remains unverified, invites the
 next person to over-trust it.
 
-## What is MALT?## What is MALT?
+## What is MALT?
 
 MALT (structured terminal platform) inverts the traditional terminal model: the daemon is the authority, not the renderer. The daemon owns session state, layout, pane identity, and structured output. Clients are interchangeable consumers of a typed RenderCommand stream. All inter-component communication uses VNP (Vexil Native Protocol) — typed, schema-defined, bitpack-encoded messages.
 
@@ -126,6 +126,10 @@ docs/
                                 # not conclusions, the "how do we know this" record
   BACKLOG.md                   # Living, prioritized "what's next and why" — check before
                                 # picking up new work
+  briefs/                      # Actionable work briefs — between a backlog line and a
+                               # Spec Kit feature: what to do, what done looks like, and
+                               # what will go wrong. Every claim verified against code at
+                               # a stated date. See docs/briefs/README.md
 docs/superpowers/              # DEPRECATED 2026-07-24 — no longer used, no new content goes here.
                                 # Historical specs/plans left as point-in-time record.
 plans/                          # RETIRED 2026-07-24 — original Phase 0-2 implementation plans,
