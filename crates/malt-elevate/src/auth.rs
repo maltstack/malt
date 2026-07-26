@@ -5,7 +5,9 @@
 //! to prove it has read access to the nonce file (which is restricted to
 //! the owning user via directory permissions 0700 / Windows ACLs).
 
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::error::ElevateError;
 
@@ -13,6 +15,55 @@ use crate::error::ElevateError;
 #[derive(Debug)]
 pub struct NonceAuth {
     nonce: u64,
+}
+
+/// Bounded replay guard for per-request nonces. A nonce is consumed before an
+/// operation is dispatched, so a captured envelope cannot be retried after a
+/// handler has started.
+#[derive(Debug)]
+pub struct ReplayGuard {
+    capacity: usize,
+    seen: Mutex<HashSet<u64>>,
+    order: Mutex<VecDeque<u64>>,
+}
+
+impl ReplayGuard {
+    /// Create a bounded guard. Capacity zero would silently disable replay
+    /// protection, so it is rejected at construction.
+    pub fn new(capacity: usize) -> Result<Self, ElevateError> {
+        if capacity == 0 {
+            return Err(ElevateError::InvalidArg(
+                "replay capacity must be non-zero".into(),
+            ));
+        }
+        Ok(Self {
+            capacity,
+            seen: Mutex::new(HashSet::new()),
+            order: Mutex::new(VecDeque::new()),
+        })
+    }
+
+    /// Consume `nonce`, returning false if it was already observed.
+    pub fn consume(&self, nonce: u64) -> bool {
+        let mut seen = match self.seen.lock() {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+        if !seen.insert(nonce) {
+            return false;
+        }
+        let mut order = match self.order.lock() {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+        order.push_back(nonce);
+        if order.len() > self.capacity {
+            if let Some(expired) = order.pop_front() {
+                seen.remove(&expired);
+            }
+        }
+        true
+    }
 }
 
 impl NonceAuth {
@@ -83,5 +134,15 @@ mod tests {
         let auth = NonceAuth::from_value(u64::MAX);
         assert!(auth.validate(u64::MAX));
         assert!(!auth.validate(u64::MAX - 1));
+    }
+
+    #[test]
+    fn replay_guard_consumes_each_nonce_once() {
+        let guard = ReplayGuard::new(2).expect("valid capacity");
+        assert!(guard.consume(10));
+        assert!(!guard.consume(10));
+        assert!(guard.consume(11));
+        assert!(guard.consume(12));
+        assert!(guard.consume(10), "bounded window releases expired nonce");
     }
 }

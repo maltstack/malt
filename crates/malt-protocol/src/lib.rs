@@ -7,6 +7,11 @@ pub mod framing;
 pub mod identity;
 pub mod priority;
 
+/// Vexil wire primitives used by generated message types. Consumers that need
+/// to frame a generated protocol message use this re-export instead of taking
+/// a second, potentially divergent runtime dependency.
+pub use vexil_runtime;
+
 // Envelope: hand-written helpers wrapping the generated type
 pub mod envelope;
 
