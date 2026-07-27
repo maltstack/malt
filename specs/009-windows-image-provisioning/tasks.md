@@ -136,7 +136,7 @@ new evidence actually satisfies.
 - [ ] T043 Run the complete Windows validation from `specs/009-windows-image-provisioning/quickstart.md`, capture exact host/image/helper/session/cleanup evidence in `docs/findings/2026-07-27-windows-image-provisioning.md`, and prove Docker engine independence.
 - [ ] T044 Use the successful live evidence to check only the satisfied HCS/quickstart tasks in `specs/008-privileged-helper/tasks.md`; retain T030 unchecked unless a human has actually declined UAC.
 - [X] T045 Run `cargo fmt --check`, strict clippy, the exact full `cargo test --workspace` suite, and the affected real Windows HCS tests; record fresh command outcomes in `docs/findings/2026-07-27-windows-image-provisioning.md`.
-- [ ] T046 Re-run `speckit-converge` for `specs/009-windows-image-provisioning/`, append any genuinely unbuilt work as new unchecked tasks, and only then mark the feature tasks complete.
+- [X] T046 Re-run `speckit-converge` for `specs/009-windows-image-provisioning/`, append any genuinely unbuilt work as new unchecked tasks, and only then mark the feature tasks complete.
 
 ---
 
@@ -216,3 +216,11 @@ must share the final typed helper protocol, not invent a second transport.
 ## Phase 8: Convergence
 
 - [X] T053 [US3] Diagnose and remediate the HCS prepared-layer removal sharing violation so an unused image removes its MALT-owned prepared state and record without restarting unrelated host services; add a Windows-real removal test that proves no prepared state remains after the last contained session. Evidence: `malt image remove sha256:852bbe55ef9eddac52f2e11b90d24d0d5b0d2518344ec813cf14891f76a8d47f` returned `DestroyLayer HRESULT=0x80070020` after helper restart, daemon restart, `active: 0`, and no MALT system in `hcsdiag list`, per FR-008/FR-010, US3/AC3, and SC-006 (partial).
+
+---
+
+## Phase 9: Convergence
+
+- [ ] T054 [US3] Add authenticated integration coverage for two distinct helper-owned image records: hold one in an active contained session, prove its removal names that session, and prove removal of the other record does not remove or alter the first record or workspace, per US3/AC1-3 and SC-006 (partial).
+- [ ] T055 [US2] Add a deterministic post-workspace HCS-construction failure seam and integration proof that required containment publishes no session and leaves no compute system or helper-owned writable workspace, per US2/AC3, FR-006, FR-010, and SC-003 (partial).
+- [ ] T056 [US1] Record a repeatable quickstart refusal check for a non-Windows/wrong-platform image reference and an invalid immutable reference, proving neither leaves a selectable helper-owned image record, per US1/AC2, FR-002, and SC-004 (partial).
