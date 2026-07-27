@@ -178,6 +178,11 @@ impl MaltClient {
         let resp = self
             .authed(self.http.post(self.url("/images")))
             .json(&serde_json::json!({"reference":reference}))
+            // A verified public Windows image can take longer than reqwest's
+            // default request timeout to download and materialize. The
+            // helper remains synchronous for this operation, so an ordinary
+            // CLI timeout would otherwise misreport an in-flight preparation.
+            .timeout(std::time::Duration::from_secs(900))
             .send()
             .context("failed to reach daemon")?;
         resp.json::<ApiEnvelope<ImageData>>()
