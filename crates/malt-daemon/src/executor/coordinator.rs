@@ -1006,7 +1006,7 @@ impl Coordinator {
         let ids: Vec<u32> = self.sessions.keys().copied().collect();
         for id in ids {
             let session_id = SessionId(id);
-            let (cmd_tx_clone, session_name, session_isolation, selected_image) = {
+            let (cmd_tx_clone, session_name, session_isolation, selected_image, contained_teardown) = {
                 let handle = match self.sessions.get(&session_id.0) {
                     Some(h) => h,
                     None => continue,
@@ -1017,6 +1017,7 @@ impl Coordinator {
                         handle.name.clone(),
                         handle.current_isolation().effective,
                         handle.selected_image.clone(),
+                        contained_teardown_for_handle(handle),
                     ),
                     SessionLifecycle::Dormant { .. } => continue,
                 }
@@ -1033,6 +1034,12 @@ impl Coordinator {
             match reply_rx.recv_timeout(Duration::from_secs(5)) {
                 Ok(persisted) => {
                     self.store.mark_dirty(session_id.clone(), persisted.clone());
+                    // Containment is ephemeral. Request helper teardown while
+                    // this daemon is still authenticated and alive; a process
+                    // reaper would be abandoned with the daemon and could
+                    // leave an in-use helper workspace behind.
+                    let contained_teardown_complete =
+                        tear_down_contained_session(contained_teardown.clone());
                     // Shut down thread and transition to Dormant.
                     if let Some(handle) = self.sessions.get_mut(&session_id.0) {
                         if let SessionLifecycle::Active {
@@ -1050,7 +1057,11 @@ impl Coordinator {
                             spawn_session_reaper(control_thread.take(), worker_thread.take());
                         }
                         handle.lifecycle = SessionLifecycle::Dormant { persisted };
-                        handle.isolation_context = None;
+                        if contained_teardown_complete {
+                            handle.isolation_context = None;
+                        } else {
+                            warn!(?session_id, "shutdown_graceful: contained teardown was not confirmed; retaining isolation context until process exit");
+                        }
                     }
                 }
                 Err(_) => {
@@ -1060,6 +1071,7 @@ impl Coordinator {
                     );
                     // Shut down thread anyway so it doesn't linger.
                     let _ = cmd_tx_clone.send(SessionCommand::Shutdown);
+                    let _ = tear_down_contained_session(contained_teardown);
                     if let Some(handle) = self.sessions.get_mut(&session_id.0) {
                         if let SessionLifecycle::Active {
                             ingress,
@@ -1405,6 +1417,12 @@ fn spawn_session_reaper_after_worker(
     let _ = std::thread::Builder::new()
         .name("malt-session-reaper".to_string())
         .spawn(move || {
+            // A contained child can be blocked on its HCS input pipe. It
+            // cannot be allowed to make teardown wait forever: terminate the
+            // helper-owned compute system first, which closes its processes
+            // and streams, then join the worker that was waiting on them.
+            // For a non-contained session this is a deliberate no-op.
+            tear_down_contained_session(contained_teardown);
             if let Some(thread) = worker_thread {
                 let _ = thread.join();
             }
@@ -1412,7 +1430,6 @@ fn spawn_session_reaper_after_worker(
             if let Some(thread) = control_thread {
                 let _ = thread.join();
             }
-            tear_down_contained_session(contained_teardown);
         });
 }
 
