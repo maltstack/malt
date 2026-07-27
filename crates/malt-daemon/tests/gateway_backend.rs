@@ -275,16 +275,8 @@ fn granted_capped_session_names_its_job_object_mechanism() {
 }
 
 #[test]
-fn capabilities_match_the_required_creation_path() {
+fn required_contained_session_refuses_without_an_image() {
     let backend = make_backend();
-    let capabilities = backend.isolation_capabilities().unwrap();
-    let contained = capabilities
-        .iter()
-        .find(|capability| capability.tier == "contained")
-        .expect("contained capability must be reported");
-    assert!(!contained.available);
-    assert_eq!(contained.basis, "none");
-
     let result = backend.create_session_with_policy(
         None,
         Some("contained".to_string()),

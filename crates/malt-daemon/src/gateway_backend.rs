@@ -283,6 +283,118 @@ fn image_response(
     Ok(to_image_response(image))
 }
 
+/// Derive the contained-session capability from the helper's owned image
+/// inventory. The platform report deliberately cannot make this claim on its
+/// own: a live HCS route still needs a helper-owned prepared image selected by
+/// the daemon.
+fn contained_capability_from_images(
+    images: &[malt_protocol::elevate::ProvisionedImage],
+) -> IsolationCapabilityResponse {
+    let ready_image = images
+        .iter()
+        .filter(|image| image.ready)
+        .max_by_key(|image| image.readiness_evidence == "live-proven");
+
+    match ready_image {
+        Some(image) => IsolationCapabilityResponse {
+            tier: "contained".to_string(),
+            available: true,
+            basis: "verified".to_string(),
+            mechanism: Some("hcs-container".to_string()),
+            detail: Some(format!(
+                "helper reported {} image {}; session creation revalidates host compatibility immediately before HCS construction",
+                image.readiness_evidence, image.id
+            )),
+        },
+        None => IsolationCapabilityResponse {
+            tier: "contained".to_string(),
+            available: false,
+            basis: "none".to_string(),
+            mechanism: None,
+            detail: Some(
+                "the helper reported no HCS-prepared Windows image selectable by the contained session path"
+                    .to_string(),
+            ),
+        },
+    }
+}
+
+/// Query the privilege boundary rather than inferring contained availability
+/// from a host primitive. A failed query is itself actionable evidence that
+/// this daemon cannot currently use the helper-owned HCS route.
+fn contained_capability_from_helper() -> IsolationCapabilityResponse {
+    let result = (|| -> Result<_, GatewayError> {
+        let response =
+            crate::elevate_client::manage_image(malt_protocol::elevate::ImageOperation::List {})
+                .map_err(|error| GatewayError::Internal(error.to_string()))?;
+        let payload = performed_payload(response)?;
+        let mut reader = malt_protocol::vexil_runtime::BitReader::new(&payload);
+        <malt_protocol::elevate::ProvisionedImageList as malt_protocol::vexil_runtime::Unpack>::unpack(
+            &mut reader,
+        )
+        .map_err(|error| GatewayError::Internal(error.to_string()))
+    })();
+
+    match result {
+        Ok(images) => contained_capability_from_images(&images.images),
+        Err(error) => IsolationCapabilityResponse {
+            tier: "contained".to_string(),
+            available: false,
+            basis: "none".to_string(),
+            mechanism: None,
+            detail: Some(format!(
+                "the helper-owned HCS session path could not be assessed: {error}"
+            )),
+        },
+    }
+}
+
+#[cfg(test)]
+mod contained_capability_tests {
+    use super::contained_capability_from_images;
+    use malt_protocol::elevate::ProvisionedImage;
+
+    fn image(id: &str, ready: bool, readiness_evidence: &str) -> ProvisionedImage {
+        ProvisionedImage {
+            id: id.to_string(),
+            manifest_digest: id.to_string(),
+            platform: "windows/amd64".to_string(),
+            os_version: Some("10.0.20348.0".to_string()),
+            ready,
+            reason: None,
+            active_sessions: 0,
+            readiness_evidence: readiness_evidence.to_string(),
+            _unknown: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn contained_capability_requires_a_helper_prepared_image() {
+        let capability =
+            contained_capability_from_images(&[image("sha256:acquired", false, "acquired")]);
+
+        assert!(!capability.available);
+        assert_eq!(capability.basis, "none");
+        assert!(capability.mechanism.is_none());
+    }
+
+    #[test]
+    fn contained_capability_prefers_live_proven_helper_evidence() {
+        let capability = contained_capability_from_images(&[
+            image("sha256:prepared", true, "hcs-prepared"),
+            image("sha256:live", true, "live-proven"),
+        ]);
+
+        assert!(capability.available);
+        assert_eq!(capability.basis, "verified");
+        assert_eq!(capability.mechanism.as_deref(), Some("hcs-container"));
+        assert!(capability
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("live-proven image sha256:live")));
+    }
+}
+
 impl GatewayBackend for DaemonBackend {
     fn provision_image(&self, reference: String) -> Result<ImageResponse, GatewayError> {
         image_response(
@@ -349,7 +461,7 @@ impl GatewayBackend for DaemonBackend {
         Ok(())
     }
     fn isolation_capabilities(&self) -> Result<Vec<IsolationCapabilityResponse>, GatewayError> {
-        Ok(malt_platform::isolation::session_tier_capabilities()
+        let mut capabilities = malt_platform::isolation::session_tier_capabilities()
             .into_iter()
             .map(|capability| IsolationCapabilityResponse {
                 tier: format!("{:?}", capability.tier).to_ascii_lowercase(),
@@ -360,7 +472,14 @@ impl GatewayBackend for DaemonBackend {
                     .map(|mechanism| format!("{:?}", mechanism).to_ascii_lowercase()),
                 detail: capability.detail,
             })
-            .collect())
+            .collect::<Vec<_>>();
+        if let Some(contained) = capabilities
+            .iter_mut()
+            .find(|capability| capability.tier == "contained")
+        {
+            *contained = contained_capability_from_helper();
+        }
+        Ok(capabilities)
     }
 
     fn list_sessions(&self) -> Result<Vec<SessionResponse>, GatewayError> {
