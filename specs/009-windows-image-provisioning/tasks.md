@@ -204,7 +204,7 @@ must share the final typed helper protocol, not invent a second transport.
 
 ## Phase 7: Convergence
 
-- [ ] T047 Implement authoritative image-to-session reference accounting and expose it in image views; refuse removal with the dependent session identity rather than the current hard-coded `active_sessions: 0`, per FR-008/FR-009 and US3/AC1-2 (partial).
+- [X] T047 Implement authoritative image-to-session reference accounting and expose it in image views; refuse removal with the dependent session identity rather than the current hard-coded `active_sessions: 0`, per FR-008/FR-009 and US3/AC1-2.
 - [X] T048 Re-evaluate a prepared image against the current HCS/host version policy immediately before contained-session construction, preserving a concrete unavailable reason instead of accepting `record.prepared` as permanent readiness, per FR-003/FR-011.
 - [X] T049 Make contained HCS process stdin lifecycle complete one-shot commands without a manual `malt eof`, while preserving explicit raw-input/EOF semantics for interactive commands, per US2/AC2 and SC-002.
 - [x] T050 Persist and report the selected immutable image digest on a contained session creation/result surface, per US2/AC1 and SC-002.

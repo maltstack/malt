@@ -10,7 +10,7 @@ use malt_gateway::types::{
     CommandHistoryEntry, ExecResult, ImageResponse, IsolationCapabilityResponse,
     IsolationStatusResponse, LifecycleEventDto, OutputChunkDto, PaneResponse, SessionResponse,
 };
-use malt_protocol::common::{IsolationPolicy, IsolationTier, SessionId};
+use malt_protocol::common::{IsolationPolicy, IsolationTier, SessionId, SessionState};
 use malt_protocol::shell::OutputStream;
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +26,26 @@ impl DaemonBackend {
 
     pub fn coordinator(&self) -> &Arc<Mutex<Coordinator>> {
         &self.coordinator
+    }
+
+    /// Return the coordinator's currently live contained-session references
+    /// for an immutable image id. The helper has a separate, narrower registry
+    /// of HCS workspaces; this view survives an uncertain helper reply and
+    /// prevents the gateway from treating a live daemon session as removable.
+    fn active_image_sessions(&self, image_id: &str) -> Result<Vec<u32>, GatewayError> {
+        let coordinator = self
+            .coordinator
+            .lock()
+            .map_err(|_| GatewayError::Internal("coordinator lock poisoned".to_string()))?;
+        Ok(coordinator
+            .list_sessions()
+            .into_iter()
+            .filter(|session| {
+                session.state == SessionState::Active
+                    && session.selected_image.as_deref() == Some(image_id)
+            })
+            .map(|session| session.session_id.0)
+            .collect())
     }
 }
 
@@ -241,6 +261,15 @@ fn to_image_response(image: malt_protocol::elevate::ProvisionedImage) -> ImageRe
         readiness_evidence: image.readiness_evidence,
     }
 }
+
+fn reconcile_image_response(mut image: ImageResponse, daemon_sessions: &[u32]) -> ImageResponse {
+    let daemon_count = u32::try_from(daemon_sessions.len()).map_or(u32::MAX, |count| count);
+    // The helper is authoritative for its live compute systems; the daemon is
+    // authoritative for session admission. Keep the conservative maximum when
+    // a helper restart or lost response makes either observation incomplete.
+    image.active_sessions = image.active_sessions.max(daemon_count);
+    image
+}
 fn image_response(
     response: malt_protocol::elevate::ElevateResponse,
 ) -> Result<ImageResponse, GatewayError> {
@@ -270,17 +299,47 @@ impl GatewayBackend for DaemonBackend {
         let payload = performed_payload(response)?;
         let mut reader = malt_protocol::vexil_runtime::BitReader::new(&payload);
         let list = <malt_protocol::elevate::ProvisionedImageList as malt_protocol::vexil_runtime::Unpack>::unpack(&mut reader).map_err(|e| GatewayError::Internal(e.to_string()))?;
-        Ok(list.images.into_iter().map(to_image_response).collect())
+        list.images
+            .into_iter()
+            .map(|image| {
+                let image = to_image_response(image);
+                let sessions = self.active_image_sessions(&image.id)?;
+                Ok(reconcile_image_response(image, &sessions))
+            })
+            .collect()
     }
     fn inspect_image(&self, id: String) -> Result<ImageResponse, GatewayError> {
-        image_response(
+        let image = image_response(
             crate::elevate_client::manage_image(malt_protocol::elevate::ImageOperation::Inspect {
                 id,
             })
             .map_err(|e| GatewayError::Internal(e.to_string()))?,
-        )
+        )?;
+        let sessions = self.active_image_sessions(&image.id)?;
+        Ok(reconcile_image_response(image, &sessions))
     }
     fn remove_image(&self, id: String) -> Result<(), GatewayError> {
+        let dependent_sessions = self.active_image_sessions(&id)?;
+        if !dependent_sessions.is_empty() {
+            return Err(GatewayError::BadRequest(format!(
+                "cannot remove image while contained session{} {} {} active",
+                if dependent_sessions.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                dependent_sessions
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if dependent_sessions.len() == 1 {
+                    "is"
+                } else {
+                    "are"
+                },
+            )));
+        }
         let _ = performed_payload(
             crate::elevate_client::manage_image(malt_protocol::elevate::ImageOperation::Remove {
                 id,
