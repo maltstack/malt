@@ -1,4 +1,9 @@
 //! Outcome and capability cross-checks over every schema-generated operation.
+//! Windows-only: this exercises `capability` and `dispatch`, which are compiled out
+//! off Windows because the privileged helper binds to Windows service,
+//! named-pipe and HCS primitives (see `lib.rs`). Gating the test target
+//! keeps it running where the helper exists rather than deleting cover.
+#![cfg(windows)]
 
 use malt_elevate::capability::capabilities;
 use malt_elevate::dispatch::dispatch_request;

@@ -1,6 +1,10 @@
 //! Integration tests for helper authentication and real symlink dispatch.
 
 use malt_elevate::auth::NonceAuth;
+// `dispatch` is compiled out off Windows (see lib.rs); the nonce tests below
+// are portable and keep running everywhere, so only this import and the one
+// test that uses it are gated rather than the whole target.
+#[cfg(windows)]
 use malt_elevate::dispatch::dispatch_request;
 use malt_elevate::protocol::{ElevateRequest, OutcomeKind, ReasonCode};
 
@@ -30,6 +34,7 @@ fn nonce_from_file_missing_is_refused() {
     assert!(NonceAuth::from_file(&dir.path().join("missing")).is_err());
 }
 
+#[cfg(windows)]
 #[test]
 fn symlink_creation_is_only_reported_performed_when_created() {
     let dir = tempfile::tempdir().expect("temp directory");
