@@ -221,6 +221,6 @@ must share the final typed helper protocol, not invent a second transport.
 
 ## Phase 9: Convergence
 
-- [ ] T054 [US3] Add authenticated integration coverage for two distinct helper-owned image records: hold one in an active contained session, prove its removal names that session, and prove removal of the other record does not remove or alter the first record or workspace, per US3/AC1-3 and SC-006 (partial).
+- [X] T054 [US3] Add authenticated integration coverage for two distinct helper-owned image records: hold one in an active contained session, prove its removal names that session, and prove removal of the other record does not remove or alter the first record or workspace, per US3/AC1-3 and SC-006 (partial).
 - [ ] T055 [US2] Add a deterministic post-workspace HCS-construction failure seam and integration proof that required containment publishes no session and leaves no compute system or helper-owned writable workspace, per US2/AC3, FR-006, FR-010, and SC-003 (partial).
 - [X] T056 [US1] Record a repeatable quickstart refusal check for a non-Windows/wrong-platform image reference and an invalid immutable reference, proving neither leaves a selectable helper-owned image record, per US1/AC2, FR-002, and SC-004 (partial).

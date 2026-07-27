@@ -95,3 +95,14 @@ The Docker Hub alias is normalized to `registry-1.docker.io` before invoking
 the OCI Distribution API. This avoids treating Docker Hub's web hostname as a
 successful manifest response and lets the first request reach the intended
 Windows-platform selection refusal.
+
+## Two-image active-use evidence
+
+Two distinct prepared MALT-owned images were present at once: Nano Server
+LTSC 2022 (`sha256:852bbe...a8d47f`, OS `10.0.20348.5386`) and Nano Server
+1809 (`sha256:fbd86b...0a67a2`, OS `10.0.17763.9020`). A required contained
+session 129 was created from the LTSC 2022 image. While it was active,
+removing that image exited nonzero and named session 129. Removal of the 1809
+image then succeeded, and inspection of the LTSC 2022 image still reported
+`active: 1`. After `malt kill 129`, removal of the LTSC 2022 image succeeded;
+the final image list was empty.
