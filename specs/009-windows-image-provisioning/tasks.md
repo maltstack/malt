@@ -10,6 +10,14 @@
 constitution. Every Windows FFI path must have focused real-API evidence on a
 Windows host in addition to deterministic fake/rollback coverage.
 
+> **Reconciliation — 2026-07-27:** T003–T044 were implemented in the
+> image-foundation through contained-image commits but were left unchecked
+> while convergence work continued. Their requirements are covered by the
+> current source-local, gateway, and Windows-real tests (some landed in more
+> appropriate files than the initially proposed paths), and by
+> `docs/findings/2026-07-27-windows-image-provisioning.md`. The original task
+> IDs are retained as history; the later convergence phases remain append-only.
+
 **Organization**: Tasks are grouped by user story. The foundational phase is
 intentionally small and security-critical because every story crosses the
 existing authenticated elevation boundary.
@@ -21,9 +29,9 @@ fixtures without adding a direct daemon-to-HCS route.
 
 - [X] T001 Add the ADR-required `malt-image` L1 member and its minimal crate skeleton to `Cargo.toml` and `crates/malt-image/Cargo.toml` after explicit dependency approval.
 - [X] T002 Define public image-domain error, digest, platform, descriptor, and immutable manifest types in `crates/malt-image/src/lib.rs` and `crates/malt-image/src/model.rs`.
-- [ ] T003 [P] Add feature-local fixture manifests and intentionally corrupt descriptor samples in `crates/malt-image/tests/fixtures/`.
-- [ ] T004 [P] Add typed opaque image-ID, readiness, and image-operation messages to `schemas/elevate.vexil` and regenerate/update `malt-protocol` exports in `crates/malt-protocol/src/`.
-- [ ] T005 Add VNP round-trip and rejection tests for the new opaque image messages in `crates/malt-protocol/tests/roundtrip.rs`.
+- [X] T003 [P] Add feature-local fixture manifests and intentionally corrupt descriptor samples in `crates/malt-image/tests/fixtures/`.
+- [X] T004 [P] Add typed opaque image-ID, readiness, and image-operation messages to `schemas/elevate.vexil` and regenerate/update `malt-protocol` exports in `crates/malt-protocol/src/`.
+- [X] T005 Add VNP round-trip and rejection tests for the new opaque image messages in `crates/malt-protocol/tests/roundtrip.rs`.
 
 ---
 
@@ -37,16 +45,16 @@ verification, ownership, and HCS transaction tests in this phase pass.
 
 - [X] T006 Implement immutable SHA-256 digest parsing, canonical formatting, and streaming verification in `crates/malt-image/src/digest.rs` with tests in `crates/malt-image/src/digest.rs`.
 - [X] T007 [P] Implement Windows/amd64 manifest-list selection and host-version-policy inputs in `crates/malt-image/src/manifest.rs` with malformed, non-Windows, wrong-architecture, and ambiguous-selection tests.
-- [ ] T008 [P] Implement bounded public-registry manifest/blob retrieval and size-aware descriptor verification in `crates/malt-image/src/registry.rs` with local fixture-server tests in `crates/malt-image/tests/registry.rs`.
-- [ ] T009 Implement safe OCI layer archive validation/extraction that rejects traversal, duplicate entries, symbolic links, and special files while allowing only hard links to verified regular files in the same layer after complete archive validation in `crates/malt-image/src/archive.rs` with adversarial tests in `crates/malt-image/src/archive.rs`.
-- [ ] T010 Implement atomic helper-owned blob/image-record publication and transaction rollback in `crates/malt-image/src/store.rs` with interrupted/corrupt-state tests in `crates/malt-image/src/store.rs`.
-- [ ] T011 Add owned-root, owner-marker, and canonical-containment validation in `crates/malt-platform/src/isolation/layers.rs` with unit tests beside the module.
-- [ ] T012 Implement Windows HCS parent-layer import/materialization, asynchronous operation-result checking, and rollback in `crates/malt-platform/src/isolation/layers.rs` with a deterministic fake backend test seam in that module.
-- [ ] T013 Implement session-scoped writable-layer initialization, storage-filter attach/detach, and owner-checked cleanup in `crates/malt-platform/src/isolation/layers.rs` with ordered rollback tests beside the module.
-- [ ] T014 Add Windows-only real HCS layer/scratch lifecycle tests, skipped with an explicit capability reason when Containers is unavailable, in `crates/malt-platform/tests/hcs_layers.rs`.
-- [ ] T015 Extend `crates/malt-elevate/src/dispatch.rs` and `crates/malt-elevate/src/protocol.rs` to resolve only helper-owned opaque image IDs and dispatch provision/list/inspect/remove/workspace operations.
-- [ ] T016 Add authenticated-helper tests proving raw paths, raw HCS storage JSON, unknown IDs, and unowned removal targets are refused in `crates/malt-elevate/src/dispatch.rs`.
-- [ ] T017 Integrate helper-owned image readiness assessment, including host-change re-evaluation and sanitized reasons, in `crates/malt-elevate/src/dispatch.rs` with tests in `crates/malt-elevate/src/dispatch.rs`.
+- [X] T008 [P] Implement bounded public-registry manifest/blob retrieval and size-aware descriptor verification in `crates/malt-image/src/registry.rs` with local fixture-server tests in `crates/malt-image/tests/registry.rs`.
+- [X] T009 Implement safe OCI layer archive validation/extraction that rejects traversal, duplicate entries, symbolic links, and special files while allowing only hard links to verified regular files in the same layer after complete archive validation in `crates/malt-image/src/archive.rs` with adversarial tests in `crates/malt-image/src/archive.rs`.
+- [X] T010 Implement atomic helper-owned blob/image-record publication and transaction rollback in `crates/malt-image/src/store.rs` with interrupted/corrupt-state tests in `crates/malt-image/src/store.rs`.
+- [X] T011 Add owned-root, owner-marker, and canonical-containment validation in `crates/malt-platform/src/isolation/layers.rs` with unit tests beside the module.
+- [X] T012 Implement Windows HCS parent-layer import/materialization, asynchronous operation-result checking, and rollback in `crates/malt-platform/src/isolation/layers.rs` with a deterministic fake backend test seam in that module.
+- [X] T013 Implement session-scoped writable-layer initialization, storage-filter attach/detach, and owner-checked cleanup in `crates/malt-platform/src/isolation/layers.rs` with ordered rollback tests beside the module.
+- [X] T014 Add Windows-only real HCS layer/scratch lifecycle tests, skipped with an explicit capability reason when Containers is unavailable, in `crates/malt-platform/tests/hcs_layers.rs`.
+- [X] T015 Extend `crates/malt-elevate/src/dispatch.rs` and `crates/malt-elevate/src/protocol.rs` to resolve only helper-owned opaque image IDs and dispatch provision/list/inspect/remove/workspace operations.
+- [X] T016 Add authenticated-helper tests proving raw paths, raw HCS storage JSON, unknown IDs, and unowned removal targets are refused in `crates/malt-elevate/src/dispatch.rs`.
+- [X] T017 Integrate helper-owned image readiness assessment, including host-change re-evaluation and sanitized reasons, in `crates/malt-elevate/src/dispatch.rs` with tests in `crates/malt-elevate/src/dispatch.rs`.
 
 **Checkpoint**: A verified helper-owned image record and prepared parent chain
 can be represented and rolled back, but no daemon or CLI claim yet says a
@@ -64,13 +72,13 @@ the helper, inspect its manifest/layers/platform/readiness, then prove
 non-Windows, tampered, and failed preparations do not create a selectable
 record.
 
-- [ ] T018 [P] [US1] Add daemon image client methods for provision/list/inspect and typed helper-result mapping in `crates/malt-daemon/src/elevate_client.rs`.
-- [ ] T019 [US1] Implement daemon-side immutable image views and persistent display records in `crates/malt-daemon/src/image_manager.rs` and export them from `crates/malt-daemon/src/lib.rs`.
-- [ ] T020 [US1] Add authenticated image-management gateway backend methods in `crates/malt-daemon/src/gateway_backend.rs` without exposing privileged paths.
-- [ ] T021 [US1] Add image-management routes and request validation in `crates/malt-gateway/src/routes/images.rs` and register them from `crates/malt-gateway/src/lib.rs`.
-- [ ] T022 [US1] Add the `malt image provision`, `list`, and `inspect` command grammar and output formatting in `crates/malt-bin/src/cli.rs` and `crates/malt-bin/src/main.rs` per `contracts/image-cli.md`.
-- [ ] T023 [US1] Add daemon/gateway integration tests for immutable display identity, host-readiness reasons, and failed-provisioning invisibility in `crates/malt-daemon/tests/image_provisioning.rs`.
-- [ ] T024 [US1] Add CLI parsing/output tests for provision/list/inspect and no-privileged-path disclosure in `crates/malt-bin/src/main.rs`.
+- [X] T018 [P] [US1] Add daemon image client methods for provision/list/inspect and typed helper-result mapping in `crates/malt-daemon/src/elevate_client.rs`.
+- [X] T019 [US1] Implement daemon-side immutable image views and persistent display records in `crates/malt-daemon/src/image_manager.rs` and export them from `crates/malt-daemon/src/lib.rs`.
+- [X] T020 [US1] Add authenticated image-management gateway backend methods in `crates/malt-daemon/src/gateway_backend.rs` without exposing privileged paths.
+- [X] T021 [US1] Add image-management routes and request validation in `crates/malt-gateway/src/routes/images.rs` and register them from `crates/malt-gateway/src/lib.rs`.
+- [X] T022 [US1] Add the `malt image provision`, `list`, and `inspect` command grammar and output formatting in `crates/malt-bin/src/cli.rs` and `crates/malt-bin/src/main.rs` per `contracts/image-cli.md`.
+- [X] T023 [US1] Add daemon/gateway integration tests for immutable display identity, host-readiness reasons, and failed-provisioning invisibility in `crates/malt-daemon/tests/image_provisioning.rs`.
+- [X] T024 [US1] Add CLI parsing/output tests for provision/list/inspect and no-privileged-path disclosure in `crates/malt-bin/src/main.rs`.
 
 **Checkpoint**: User Story 1 is independently complete when an operator can
 obtain and inspect a verified, helper-owned image record without Docker.
@@ -88,16 +96,16 @@ execute `cmd /c ver` through `malt exec`, observe containment established and
 the selected digest, then inject failure after workspace creation and prove no
 session, compute system, or scratch state remains.
 
-- [ ] T025 [US2] Add opaque contained-image selection to session creation requests in `crates/malt-protocol/src/` and `crates/malt-gateway/src/routes/sessions.rs`.
-- [ ] T026 [US2] Add `--image` selection, single-ready-image resolution, and selected-digest reporting to `crates/malt-bin/src/cli.rs` and `crates/malt-bin/src/main.rs`.
-- [ ] T027 [US2] Extend coordinator session records with selected image and active workspace reference state in `crates/malt-daemon/src/executor/coordinator.rs`.
-- [ ] T028 [US2] Call helper readiness/workspace construction before reporting a contained session created in `crates/malt-daemon/src/executor/session_thread.rs`.
-- [ ] T029 [US2] Replace the empty parent-layer HCS configuration in `crates/malt-elevate/src/dispatch.rs` with helper-resolved verified layers and a session-scoped writable workspace.
-- [ ] T030 [US2] Preserve the existing `HcsProcessSpawner` process-only handoff while binding it to the prepared helper workspace in `crates/malt-daemon/src/executor/session_thread.rs` and `crates/malt-elevate/src/dispatch.rs`.
-- [ ] T031 [US2] Implement rollback that tears down helper compute/workspace state before coordinator session publication in `crates/malt-daemon/src/executor/coordinator.rs` and `crates/malt-daemon/src/executor/session_thread.rs`.
-- [ ] T032 [US2] Tear down contained compute/workspace state on session destroy and dormancy before clearing isolation context in `crates/malt-daemon/src/executor/coordinator.rs`.
-- [ ] T033 [US2] Add daemon integration tests for required refusal, explicit preferred downgrade, selected-image reporting, process-spawner routing, and injected-construction rollback in `crates/malt-daemon/tests/elevate_boundary.rs`.
-- [ ] T034 [US2] Add Windows-only real HCS contained external-command and cleanup test in `crates/malt-daemon/tests/contained_image_session.rs`.
+- [X] T025 [US2] Add opaque contained-image selection to session creation requests in `crates/malt-protocol/src/` and `crates/malt-gateway/src/routes/sessions.rs`.
+- [X] T026 [US2] Add `--image` selection, single-ready-image resolution, and selected-digest reporting to `crates/malt-bin/src/cli.rs` and `crates/malt-bin/src/main.rs`.
+- [X] T027 [US2] Extend coordinator session records with selected image and active workspace reference state in `crates/malt-daemon/src/executor/coordinator.rs`.
+- [X] T028 [US2] Call helper readiness/workspace construction before reporting a contained session created in `crates/malt-daemon/src/executor/session_thread.rs`.
+- [X] T029 [US2] Replace the empty parent-layer HCS configuration in `crates/malt-elevate/src/dispatch.rs` with helper-resolved verified layers and a session-scoped writable workspace.
+- [X] T030 [US2] Preserve the existing `HcsProcessSpawner` process-only handoff while binding it to the prepared helper workspace in `crates/malt-daemon/src/executor/session_thread.rs` and `crates/malt-elevate/src/dispatch.rs`.
+- [X] T031 [US2] Implement rollback that tears down helper compute/workspace state before coordinator session publication in `crates/malt-daemon/src/executor/coordinator.rs` and `crates/malt-daemon/src/executor/session_thread.rs`.
+- [X] T032 [US2] Tear down contained compute/workspace state on session destroy and dormancy before clearing isolation context in `crates/malt-daemon/src/executor/coordinator.rs`.
+- [X] T033 [US2] Add daemon integration tests for required refusal, explicit preferred downgrade, selected-image reporting, process-spawner routing, and injected-construction rollback in `crates/malt-daemon/tests/elevate_boundary.rs`.
+- [X] T034 [US2] Add Windows-only real HCS contained external-command and cleanup test in `crates/malt-daemon/tests/contained_image_session.rs`.
 
 **Checkpoint**: User Story 2 is complete only with a real HCS-contained
 external command and verified cleanup; a green fake test alone is insufficient.
@@ -113,11 +121,11 @@ including in-use protection and post-host-change diagnosis.
 one, prove the in-use image is refused, then destroy the session and remove
 only its record without affecting the other.
 
-- [ ] T035 [P] [US3] Implement helper-side active-workspace/reference checks and owner-marked image removal transaction in `crates/malt-elevate/src/dispatch.rs`.
-- [ ] T036 [US3] Implement daemon image-use reference accounting and reconciliation after uncertain helper results in `crates/malt-daemon/src/image_manager.rs`.
-- [ ] T037 [US3] Add authenticated remove route/backend and `malt image remove` output/error behavior in `crates/malt-gateway/src/routes/images.rs`, `crates/malt-daemon/src/gateway_backend.rs`, and `crates/malt-bin/src/main.rs`.
-- [ ] T038 [US3] Add integration tests for list/inspect active-use counts, in-use removal refusal, last-reference release, idempotent missing-record reporting, and stale-host reassessment in `crates/malt-daemon/tests/image_provisioning.rs`.
-- [ ] T039 [US3] Add Windows-only removal test that verifies owned prepared state is gone and unrelated directories are untouched in `crates/malt-elevate/tests/image_cleanup.rs`.
+- [X] T035 [P] [US3] Implement helper-side active-workspace/reference checks and owner-marked image removal transaction in `crates/malt-elevate/src/dispatch.rs`.
+- [X] T036 [US3] Implement daemon image-use reference accounting and reconciliation after uncertain helper results in `crates/malt-daemon/src/image_manager.rs`.
+- [X] T037 [US3] Add authenticated remove route/backend and `malt image remove` output/error behavior in `crates/malt-gateway/src/routes/images.rs`, `crates/malt-daemon/src/gateway_backend.rs`, and `crates/malt-bin/src/main.rs`.
+- [X] T038 [US3] Add integration tests for list/inspect active-use counts, in-use removal refusal, last-reference release, idempotent missing-record reporting, and stale-host reassessment in `crates/malt-daemon/tests/image_provisioning.rs`.
+- [X] T039 [US3] Add Windows-only removal test that verifies owned prepared state is gone and unrelated directories are untouched in `crates/malt-elevate/tests/image_cleanup.rs`.
 
 **Checkpoint**: Every image lifecycle state is observable, and only unused,
 MALT-owned artifacts can be removed.
@@ -130,11 +138,11 @@ MALT-owned artifacts can be removed.
 preserve cross-platform honesty, and close only the Spec 008 tasks that the
 new evidence actually satisfies.
 
-- [ ] T040 [P] Add cross-platform unavailable responses and Docker-independent assertions to `crates/malt-daemon/tests/image_provisioning.rs` and `crates/malt-bin/src/main.rs`.
-- [ ] T041 [P] Add negative protocol/fuzz-style bounds tests for malformed image references, response sizes, and archive metadata in `crates/malt-image/tests/` and `crates/malt-elevate/src/dispatch.rs`.
-- [ ] T042 Update capability/status documentation and command help in `docs/BACKLOG.md`, `docs/design/architecture.md`, and `crates/malt-bin/src/main.rs` to distinguish acquired, prepared, and live-proven containment.
-- [ ] T043 Run the complete Windows validation from `specs/009-windows-image-provisioning/quickstart.md`, capture exact host/image/helper/session/cleanup evidence in `docs/findings/2026-07-27-windows-image-provisioning.md`, and prove Docker engine independence.
-- [ ] T044 Use the successful live evidence to check only the satisfied HCS/quickstart tasks in `specs/008-privileged-helper/tasks.md`; retain T030 unchecked unless a human has actually declined UAC.
+- [X] T040 [P] Add cross-platform unavailable responses and Docker-independent assertions to `crates/malt-daemon/tests/image_provisioning.rs` and `crates/malt-bin/src/main.rs`.
+- [X] T041 [P] Add negative protocol/fuzz-style bounds tests for malformed image references, response sizes, and archive metadata in `crates/malt-image/tests/` and `crates/malt-elevate/src/dispatch.rs`.
+- [X] T042 Update capability/status documentation and command help in `docs/BACKLOG.md`, `docs/design/architecture.md`, and `crates/malt-bin/src/main.rs` to distinguish acquired, prepared, and live-proven containment.
+- [X] T043 Run the complete Windows validation from `specs/009-windows-image-provisioning/quickstart.md`, capture exact host/image/helper/session/cleanup evidence in `docs/findings/2026-07-27-windows-image-provisioning.md`, and prove Docker engine independence.
+- [X] T044 Use the successful live evidence to check only the satisfied HCS/quickstart tasks in `specs/008-privileged-helper/tasks.md`; retain T030 unchecked unless a human has actually declined UAC.
 - [X] T045 Run `cargo fmt --check`, strict clippy, the exact full `cargo test --workspace` suite, and the affected real Windows HCS tests; record fresh command outcomes in `docs/findings/2026-07-27-windows-image-provisioning.md`.
 - [X] T046 Re-run `speckit-converge` for `specs/009-windows-image-provisioning/`, append any genuinely unbuilt work as new unchecked tasks, and only then mark the feature tasks complete.
 
