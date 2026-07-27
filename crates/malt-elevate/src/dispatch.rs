@@ -264,6 +264,55 @@ fn prepare_image(
     Ok(record)
 }
 
+/// Re-evaluate the image immediately before a contained session consumes it.
+/// `prepared` is historical storage state, not a promise that this host still
+/// has the HCS runtime and layer chain needed to construct a compute system.
+fn revalidate_contained_image(
+    store: &malt_image::ImageStore,
+    record: &malt_image::ImageRecord,
+) -> Result<Vec<malt_platform::isolation::layers::PreparedLayer>, String> {
+    if !record.prepared {
+        return Err("image is acquired but has not completed HCS preparation".to_string());
+    }
+    if !record.platform.is_windows_amd64() {
+        return Err(format!(
+            "image platform {}/{} is not Windows/amd64",
+            record.platform.os, record.platform.architecture
+        ));
+    }
+    if record
+        .platform
+        .os_version
+        .as_deref()
+        .is_none_or(str::is_empty)
+    {
+        return Err("image does not declare a Windows os.version for host assessment".to_string());
+    }
+    malt_platform::isolation::hcs::ensure_hcs_runtime()
+        .map_err(|error| format!("HCS runtime is unavailable on this host: {error}"))?;
+    if record.manifest.layers.is_empty() {
+        return Err("image manifest contains no filesystem layers".to_string());
+    }
+    let digest = record
+        .manifest_digest
+        .to_string()
+        .trim_start_matches("sha256:")
+        .to_string();
+    (0..record.manifest.layers.len())
+        .map(|index| {
+            malt_platform::isolation::layers::prepared_layer(
+                store
+                    .root()
+                    .join("prepared")
+                    .join(&digest)
+                    .join("layers")
+                    .join(index.to_string()),
+            )
+            .map_err(|error| format!("prepared layer {index} is unavailable: {error}"))
+        })
+        .collect()
+}
+
 fn helper_image_store() -> Result<malt_image::ImageStore, String> {
     let program_data = std::env::var_os("ProgramData")
         .ok_or_else(|| "ProgramData is not set for the elevated helper".to_string())?;
@@ -600,30 +649,13 @@ fn create_hcs_container(
             _ => return refused(request_id, ReasonCode::InvalidParameters, "contained session requires an explicit image selector because multiple ready helper-owned images exist"),
             },
         };
-        let digest = record
-            .manifest_digest
-            .to_string()
-            .trim_start_matches("sha256:")
-            .to_string();
-        let parents = (0..record.manifest.layers.len())
-            .map(|index| {
-                malt_platform::isolation::layers::prepared_layer(
-                    store
-                        .root()
-                        .join("prepared")
-                        .join(&digest)
-                        .join("layers")
-                        .join(index.to_string()),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>();
-        let parents = match parents {
+        let parents = match revalidate_contained_image(&store, record) {
             Ok(parents) => parents,
-            Err(error) => {
+            Err(detail) => {
                 return refused(
                     request_id,
-                    ReasonCode::OsError,
-                    format!("could not reopen helper-owned prepared layers: {error}"),
+                    ReasonCode::InvalidParameters,
+                    format!("selected image can no longer be used on this host: {detail}"),
                 )
             }
         };
