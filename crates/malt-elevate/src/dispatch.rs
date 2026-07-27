@@ -907,14 +907,14 @@ fn hcs_config(
     parents: &[malt_platform::isolation::layers::PreparedLayer],
 ) -> String {
     let mut container = serde_json::json!({
-        "Storage": { "Path": storage_root, "Layers": parents.iter().map(|parent| serde_json::json!({ "ID": parent.id, "Path": parent.path, "PathType": "AbsolutePath" })).collect::<Vec<_>>() },
+        "Storage": { "Path": storage_root, "Layers": parents.iter().map(|parent| serde_json::json!({ "Id": parent.id, "Path": parent.path })).collect::<Vec<_>>() },
         "GuestOs": { "HostName": hostname },
     });
     if let Some(limit) = memory_limit_mb {
         container["Memory"] = serde_json::json!({ "SizeInMB": limit });
     }
     serde_json::json!({
-        "SchemaVersion": { "Major": 2, "Minor": 1 },
+        "SchemaVersion": { "Major": 2, "Minor": 0 },
         "Owner": format!("malt-session-{id}"),
         "ShouldTerminateOnLastHandleClosed": true,
         "Container": container,
@@ -1035,6 +1035,9 @@ mod tests {
         assert!(json.contains(r#""Path":"C:\\session-root""#));
         assert!(json.contains(r#""SizeInMB":512"#));
         assert!(json.contains("layer-test"));
+        assert!(json.contains(r#""SchemaVersion":{"Major":2,"Minor":0}"#));
+        assert!(json.contains(r#""Id":"layer-test"#));
+        assert!(!json.contains(r#""PathType""#));
         assert!(!json.contains("config_json"));
     }
 
