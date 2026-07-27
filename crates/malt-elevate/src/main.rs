@@ -2,18 +2,23 @@
 
 use std::process::ExitCode;
 
+#[cfg(windows)]
 use malt_elevate::error::ElevateError;
+#[cfg(windows)]
 use malt_elevate::server::{serve, ServerConfig};
+#[cfg(windows)]
 use malt_platform::service::run_service;
 
 pub const SERVICE_NAME: &str = "MALT-Elevate";
 
+#[cfg(windows)]
 struct Args {
     service: bool,
     pipe_name: String,
     authorized_principal: String,
 }
 
+#[cfg(windows)]
 fn parse_args() -> Result<Args, ElevateError> {
     let mut args = std::env::args_os().skip(1);
     let mut service = false;
@@ -62,6 +67,7 @@ fn parse_args() -> Result<Args, ElevateError> {
     })
 }
 
+#[cfg(windows)]
 fn next_value(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
     flag: &str,
@@ -70,10 +76,12 @@ fn next_value(
         .ok_or_else(|| ElevateError::InvalidArg(format!("{flag} requires a value")))
 }
 
+#[cfg(windows)]
 fn print_usage() {
     eprintln!("malt-elevate --service --pipe <NAME> --authorized-principal <SID>");
 }
 
+#[cfg(windows)]
 fn run() -> Result<(), ElevateError> {
     let args = parse_args()?;
     if !args.service {
@@ -91,6 +99,7 @@ fn run() -> Result<(), ElevateError> {
     .map_err(ElevateError::Connection)
 }
 
+#[cfg(windows)]
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -99,4 +108,16 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The helper cannot run here, and says so rather than starting and failing
+/// later. Spec 008 FR-003 requires "helper not installed" to stay
+/// distinguishable from "operation unsupported here"; this binary existing but
+/// refusing to start is the honest form of the latter.
+#[cfg(not(windows))]
+fn main() -> ExitCode {
+    eprintln!(
+        "{SERVICE_NAME}: the MALT privileged helper requires Windows. It binds to          Windows service control, named pipes and the Host Compute System, none          of which this platform provides."
+    );
+    ExitCode::FAILURE
 }
