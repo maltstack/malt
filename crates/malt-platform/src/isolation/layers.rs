@@ -119,7 +119,7 @@ pub fn layer_data_json(parents: &[PreparedLayer]) -> String {
     json!({
         "SchemaVersion": { "Major": 2, "Minor": 1 },
         "Layers": parents.iter().map(|parent| json!({
-            "Id": parent.id,
+            "ID": parent.id,
             "Path": parent.path,
             "PathType": "AbsolutePath",
         })).collect::<Vec<_>>(),
@@ -456,6 +456,7 @@ mod tests {
             path: PathBuf::from(r"C:\\MALT\\layers\\a"),
         }]);
         assert!(json.contains("layer-a"));
+        assert!(json.contains("\"ID\""));
         assert!(json.contains("AbsolutePath"));
     }
 

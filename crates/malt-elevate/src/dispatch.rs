@@ -907,7 +907,7 @@ fn hcs_config(
     parents: &[malt_platform::isolation::layers::PreparedLayer],
 ) -> String {
     let mut container = serde_json::json!({
-        "Storage": { "Path": storage_root, "Layers": parents.iter().map(|parent| serde_json::json!({ "Id": parent.id, "Path": parent.path, "PathType": "AbsolutePath" })).collect::<Vec<_>>() },
+        "Storage": { "Path": storage_root, "Layers": parents.iter().map(|parent| serde_json::json!({ "ID": parent.id, "Path": parent.path, "PathType": "AbsolutePath" })).collect::<Vec<_>>() },
         "GuestOs": { "HostName": hostname },
     });
     if let Some(limit) = memory_limit_mb {
