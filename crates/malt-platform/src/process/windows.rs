@@ -169,17 +169,19 @@ pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
 pub(super) fn child_from_hcs_process(
     process_id: u32,
     process_handle: u64,
-    stdin_handle: u64,
+    stdin_handle: Option<u64>,
     stdout_handle: u64,
     stderr_handle: u64,
 ) -> Result<Child, SpawnError> {
     let process_handle = checked_handle(process_handle, "HCS process")?;
     let stdout_handle = checked_handle(stdout_handle, "HCS stdout")?;
     let stderr_handle = checked_handle(stderr_handle, "HCS stderr")?;
-    let stdin_handle = checked_handle(stdin_handle, "HCS stdin")?;
+    let stdin = stdin_handle
+        .map(|handle| checked_handle(handle, "HCS stdin"))
+        .transpose()?;
     // SAFETY: each handle was duplicated into this daemon by the authenticated
     // elevated helper. The new OwnedHandle/File owners close them exactly once.
-    let stdin = unsafe { std::fs::File::from_raw_handle(stdin_handle as RawHandle) };
+    let stdin = stdin.map(|handle| unsafe { std::fs::File::from_raw_handle(handle as RawHandle) });
     // SAFETY: see the ownership statement for stdin above.
     let stdout = unsafe { std::fs::File::from_raw_handle(stdout_handle as RawHandle) };
     // SAFETY: see the ownership statement for stdin above.
@@ -189,7 +191,7 @@ pub(super) fn child_from_hcs_process(
         inner: ChildInner::Native {
             handle: process_handle as RawHandle,
         },
-        stdin: Some(super::ChildStdinHandle::Sync(stdin)),
+        stdin: stdin.map(super::ChildStdinHandle::Sync),
         stdout: Some(super::ChildStdoutHandle::Sync(stdout)),
         stderr: Some(super::ChildStderrHandle::Sync(stderr)),
         io_workers: Vec::new(),

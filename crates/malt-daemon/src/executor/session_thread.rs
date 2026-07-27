@@ -47,16 +47,10 @@ impl mash::env::ExternalProcessSpawner for HcsProcessSpawner {
         let request = hcs_process_request(&self.container_id, &config)?;
         let launch = crate::elevate_client::start_hcs_process(self.session_id.clone(), request)
             .map_err(malt_platform::process::SpawnError::Io)?;
-        let stdin_handle = launch.stdin_handle.ok_or_else(|| {
-            malt_platform::process::SpawnError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "helper returned an HCS process without an stdin pipe",
-            ))
-        })?;
         let mut child = malt_platform::process::child_from_hcs_process(
             launch.process_id,
             launch.process_handle,
-            stdin_handle,
+            launch.stdin_handle,
             launch.stdout_handle,
             launch.stderr_handle,
         )?;
@@ -121,7 +115,7 @@ fn hcs_process_request(
             .as_ref()
             .map(|argv0| unicode(argv0, "argv0"))
             .transpose()?,
-        create_stdin_pipe: true,
+        create_stdin_pipe: !matches!(config.stdin, malt_platform::process::Io::Null),
         _unknown: Vec::new(),
     })
 }
@@ -160,7 +154,14 @@ fn install_hcs_stdio_relays(
                 copy_ignoring_broken_pipe(&mut source, &mut destination)
             }));
         }
-        Io::Null => drop(child.take_stdin()),
+        Io::Null => {
+            if child.take_stdin().is_some() {
+                return Err(malt_platform::process::SpawnError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "helper returned an HCS stdin pipe for a no-stdin command",
+                )));
+            }
+        }
         Io::Inherit => {
             let mut destination = child.take_stdin().ok_or_else(missing_hcs_stream)?;
             child.add_io_worker(thread::spawn(move || {

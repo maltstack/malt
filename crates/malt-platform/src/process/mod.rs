@@ -645,7 +645,7 @@ pub fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
 pub fn child_from_hcs_process(
     process_id: u32,
     process_handle: u64,
-    stdin_handle: u64,
+    stdin_handle: Option<u64>,
     stdout_handle: u64,
     stderr_handle: u64,
 ) -> Result<Child, SpawnError> {
