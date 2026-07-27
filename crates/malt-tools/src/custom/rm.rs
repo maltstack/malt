@@ -20,39 +20,44 @@ pub fn rm(
     let mut recursive = false;
     let mut force = false;
     let mut paths: Vec<&str> = Vec::new();
+    let mut options_ended = false;
 
     for arg in args {
+        if options_ended {
+            paths.push(arg);
+            continue;
+        }
+
+        if arg == "--" {
+            options_ended = true;
+            continue;
+        }
+
         match arg.as_str() {
             "-r" | "-R" | "--recursive" => recursive = true,
             "-f" | "--force" => force = true,
             "-i" | "--interactive" => { /* ignored */ }
             _ => {
-                if arg == "--" {
-                    continue;
-                }
                 if let Some(flags) = arg.strip_prefix('-') {
                     if !flags.is_empty() {
-                        let mut recognized = true;
                         for flag in flags.chars() {
                             match flag {
                                 'r' | 'R' => recursive = true,
                                 'f' => force = true,
                                 'i' => {}
                                 _ => {
-                                    recognized = false;
-                                    break;
+                                    return BuiltinResult {
+                                        exit_code: 1,
+                                        stdout: Vec::new(),
+                                        stderr: format!("rm: invalid option -- '{}'\n", flag)
+                                            .into_bytes(),
+                                    };
                                 }
                             }
                         }
-                        if recognized {
-                            continue;
-                        }
+                        continue;
                     }
                 }
-                // NOTE: an unrecognized `-flag` is currently treated as a
-                // path. Real `rm` rejects it as an invalid option. Preserved
-                // as-is here because changing it is a behavior change needing
-                // its own tests -- see `docs/BACKLOG.md`.
                 paths.push(arg);
             }
         }
@@ -168,6 +173,41 @@ mod tests {
             String::from_utf8_lossy(&r.stderr)
         );
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn rm_rejects_unknown_option_without_removing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("target.txt");
+        fs::write(&path, "content").unwrap();
+
+        let result = rm(
+            &["-z".into(), path.display().to_string()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
+
+        assert_eq!(result.exit_code, 1);
+        assert!(String::from_utf8_lossy(&result.stderr).contains("rm: invalid option"));
+        assert!(String::from_utf8_lossy(&result.stderr).contains("'z'"));
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn rm_rejects_unknown_option_in_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("target.txt");
+        fs::write(&path, "content").unwrap();
+
+        let result = rm(
+            &["-fz".into(), path.display().to_string()],
+            &mut &b""[..],
+            &mut std::io::sink(),
+        );
+
+        assert_eq!(result.exit_code, 1);
+        assert!(String::from_utf8_lossy(&result.stderr).contains("'z'"));
+        assert!(path.exists());
     }
 
     #[test]
