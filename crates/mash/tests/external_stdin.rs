@@ -17,9 +17,10 @@ use mash::env::Env;
 use std::io::Write;
 
 /// Run `script` with a never-EOF pipe at fd 0 pre-loaded with input.
-fn run(script: &str) -> (i32, String) {
+fn run_with_stdin_mode(script: &str, close_external_stdin: bool) -> (i32, String, String) {
     let mut env = Env::from_os();
     env.set_interactive(true);
+    env.set_close_external_stdin(close_external_stdin);
     let (read_end, mut write_end) = malt_platform::io::create_pipe().expect("pipe");
     write_end.write_all(b"through-external\n").expect("write");
     write_end.flush().expect("flush");
@@ -33,7 +34,12 @@ fn run(script: &str) -> (i32, String) {
     (
         result.exit_code,
         String::from_utf8_lossy(&result.stdout).into_owned(),
+        String::from_utf8_lossy(&result.stderr).into_owned(),
     )
+}
+
+fn run(script: &str) -> (i32, String, String) {
+    run_with_stdin_mode(script, false)
 }
 
 /// An interpreter that genuinely spawns, i.e. is not shadowed by a tool.
@@ -65,18 +71,72 @@ fn an_external_process_reads_a_registered_fd_zero() {
         )
     };
 
-    let (code, out) = run(&script);
-    assert_eq!(code, 0, "interpreter should exit cleanly, got {out:?}");
+    let (code, out, err) = run(&script);
+    assert_eq!(
+        code, 0,
+        "interpreter should exit cleanly, got stdout={out:?}, stderr={err:?}"
+    );
     assert!(
         out.contains("got=[through-external]"),
         "an external process should read the registered fd 0, got {out:?}"
     );
 }
 
+/// Gateway executions are one-shot, so their external children must not keep
+/// the session input relay open. The preloaded pipe makes this a positive
+/// assertion: the child must see EOF, not merely happen to finish.
+#[test]
+fn a_one_shot_external_process_receives_eof_instead_of_session_input() {
+    let interpreter = external_interpreter();
+    let script = if interpreter == "perl" {
+        "perl -e 'my $l = <STDIN>; $l //= q{}; chomp $l; print \"got=[$l]\\n\"'".to_string()
+    } else {
+        format!(
+            "{interpreter} -c \"import sys; data = '' if sys.stdin is None else sys.stdin.readline().strip(); print('got=[' + data + ']')\""
+        )
+    };
+
+    let (code, out, err) = run_with_stdin_mode(&script, true);
+    assert_eq!(
+        code, 0,
+        "one-shot interpreter should exit cleanly, got stdout={out:?}, stderr={err:?}"
+    );
+    assert!(
+        out.contains("got=[]"),
+        "a one-shot external process must receive EOF instead of session input, got {out:?}"
+    );
+}
+
+/// Pipeline stage zero has no pipeline input of its own. It must therefore
+/// receive the same one-shot EOF as an ordinary external command, while later
+/// stages remain free to consume the pipe.
+#[test]
+fn a_one_shot_pipeline_first_stage_receives_eof() {
+    let interpreter = external_interpreter();
+    let script = if interpreter == "perl" {
+        "perl -e 'my $l = <STDIN>; $l //= q{}; chomp $l; print \"got=[$l]\\n\"' | /usr/bin/head -n1"
+            .to_string()
+    } else {
+        format!(
+            "{interpreter} -c \"import sys; data = '' if sys.stdin is None else sys.stdin.readline().strip(); print('got=[' + data + ']')\" | /usr/bin/head -n1"
+        )
+    };
+
+    let (code, out, err) = run_with_stdin_mode(&script, true);
+    assert_eq!(
+        code, 0,
+        "one-shot pipeline should exit cleanly, got stdout={out:?}, stderr={err:?}"
+    );
+    assert!(
+        out.contains("got=[]"),
+        "a one-shot pipeline's first external stage must receive EOF, got {out:?}"
+    );
+}
+
 /// The `read` builtin reads the same descriptor in-process.
 #[test]
 fn the_read_builtin_reads_a_registered_fd_zero() {
-    let (_, out) = run("read -r X; echo builtin=[$X]");
+    let (_, out, _) = run("read -r X; echo builtin=[$X]");
     assert!(
         out.contains("builtin=[through-external]"),
         "the read builtin should see client input, got {out:?}"
@@ -89,7 +149,7 @@ fn the_read_builtin_reads_a_registered_fd_zero() {
 /// everywhere: a pipeline must still feed the tool.
 #[test]
 fn a_pipeline_still_feeds_an_in_process_tool() {
-    let (_, out) = run("echo piped-in | /usr/bin/head -n1");
+    let (_, out, _) = run("echo piped-in | /usr/bin/head -n1");
     assert!(
         out.contains("piped-in"),
         "a pipeline should still feed the tool, got {out:?}"
@@ -108,7 +168,7 @@ fn a_pipeline_still_feeds_an_in_process_tool() {
 /// exactly `num_lines` rather than reading one more and then breaking.
 #[test]
 fn an_in_process_tool_reads_session_stdin_and_stops_early() {
-    let (_, out) = run("/usr/bin/head -n1");
+    let (_, out, _) = run("/usr/bin/head -n1");
     assert!(
         out.contains("through-external"),
         "an in-process tool should read client input, got {out:?}"

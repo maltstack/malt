@@ -1349,8 +1349,9 @@ fn execute_simple_with_io(
     config.args = argv.iter().map(|a| a.into()).collect();
     configure_command_spawn_identity(&mut config, &resolved_cmd_name, &program);
 
-    // stdin: explicit redirect wins, then pipeline, then a registered fd 0,
-    // then inherit.
+    // stdin: explicit redirect and pipeline input win. A one-shot request
+    // then receives EOF; interactive requests retain the registered session
+    // fd 0 before falling back to inherited stdin.
     //
     // The fd-0 step matters when mash runs inside the daemon: the session
     // registers its input pipe there, so an interactive child (a REPL, a
@@ -1361,6 +1362,7 @@ fn execute_simple_with_io(
         Some(f) => malt_platform::process::Io::File(f),
         None => match stdin_file {
             Some(f) => malt_platform::process::Io::File(f),
+            None if env.close_external_stdin() => malt_platform::process::Io::Null,
             None => match env.open_fd_read(0) {
                 Ok(f) => malt_platform::process::Io::File(f),
                 Err(_) => malt_platform::process::Io::Inherit,
@@ -5805,6 +5807,7 @@ fn execute_shell_script_with_io(
         Some(f) => malt_platform::process::Io::File(f),
         None => match stdin_file {
             Some(f) => malt_platform::process::Io::File(f),
+            None if env.close_external_stdin() => malt_platform::process::Io::Null,
             None => match env.open_fd_read(0) {
                 Ok(f) => malt_platform::process::Io::File(f),
                 Err(_) => malt_platform::process::Io::Inherit,
