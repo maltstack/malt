@@ -505,9 +505,6 @@ enum ChildInner {
     Native {
         handle: ::windows_sys::Win32::Foundation::HANDLE,
     },
-    Hcs {
-        handle: isize,
-    },
 }
 
 #[cfg(windows)]
@@ -519,11 +516,6 @@ impl Drop for ChildInner {
                 // DuplicateHandle that we own exclusively.
                 unsafe {
                     ::windows_sys::Win32::Foundation::CloseHandle(*handle);
-                }
-            }
-            Self::Hcs { handle } => {
-                if let Err(error) = crate::isolation::hcs::close_process_handle(*handle) {
-                    tracing::warn!(%error, "failed to close HCS process handle");
                 }
             }
         }
@@ -556,9 +548,6 @@ impl Child {
         let status = {
             match self.inner {
                 ChildInner::Native { handle } => windows::wait_blocking(handle),
-                ChildInner::Hcs { handle } => crate::isolation::hcs::wait_process_exit(handle)
-                    .map(ExitStatus::from_raw)
-                    .map_err(|error| SpawnError::Io(std::io::Error::other(error.to_string()))),
             }
         };
         #[cfg(not(any(unix, windows)))]
@@ -577,9 +566,6 @@ impl Child {
         let result = {
             match self.inner {
                 ChildInner::Native { handle } => windows::try_wait(handle),
-                ChildInner::Hcs { handle } => crate::isolation::hcs::try_wait_process_exit(handle)
-                    .map(|result| result.map(ExitStatus::from_raw))
-                    .map_err(|error| SpawnError::Io(std::io::Error::other(error.to_string()))),
             }
         };
         #[cfg(not(any(unix, windows)))]
@@ -651,9 +637,10 @@ pub fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
     }
 }
 
-/// Adopt HCS process and standard-stream handles already duplicated into this
-/// process by the privileged helper. The helper authenticates the daemon peer
-/// before duplication; this function takes ownership only after that transfer.
+/// Adopt an ordinary Win32 process handle plus HCS standard-stream handles
+/// already duplicated into this process by the privileged helper. The helper
+/// authenticates the daemon peer before duplication; this function takes
+/// ownership only after that transfer.
 #[cfg(windows)]
 pub fn child_from_hcs_process(
     process_id: u32,

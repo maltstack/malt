@@ -108,7 +108,7 @@ impl Drop for HcsProcessLaunch {
 }
 
 impl HcsProcessLaunch {
-    /// Duplicate this launch's process and standard handles into one daemon.
+    /// Duplicate this launch's OS process and standard handles into one daemon.
     /// The privileged helper obtains the target PID from the authenticated
     /// named-pipe peer; it is deliberately not supplied by the request.
     pub fn duplicate_into_process(
@@ -124,16 +124,19 @@ impl HcsProcessLaunch {
         let stderr_handle = self.stderr_handle.ok_or_else(|| {
             IsolationError::HcsError("HCS launch did not return a stderr pipe".to_string())
         })?;
-        duplicate_handles_into_process(
+        let process_handle = if hcs_fake_mode_enabled() {
+            self.process.raw_handle()
+        } else {
+            open_process_handle(self.process.process_id)?
+        };
+        let duplicated = duplicate_handles_into_process(
             target_process_id,
-            [
-                self.process.raw_handle(),
-                stdin_handle,
-                stdout_handle,
-                stderr_handle,
-            ],
-        )
-        .map(|handles| HcsDuplicatedProcessLaunch {
+            [process_handle, stdin_handle, stdout_handle, stderr_handle],
+        );
+        if !hcs_fake_mode_enabled() {
+            close_process_handle_source(process_handle);
+        }
+        duplicated.map(|handles| HcsDuplicatedProcessLaunch {
             process_id: self.process.process_id,
             process_handle: handles[0] as u64,
             stdin_handle: handles[1] as u64,
@@ -142,6 +145,44 @@ impl HcsProcessLaunch {
         })
     }
 }
+
+#[cfg(windows)]
+fn open_process_handle(process_id: u32) -> Result<isize, IsolationError> {
+    use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    // SAFETY: HCS returned process_id for the process this helper just created.
+    // The resulting ordinary process handle is used only for wait/query exit
+    // operations after transfer to the authenticated daemon.
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+            0,
+            process_id,
+        )
+    };
+    if handle.is_null() {
+        return Err(IsolationError::IoError(std::io::Error::last_os_error()));
+    }
+    Ok(handle as isize)
+}
+
+#[cfg(windows)]
+fn close_process_handle_source(handle: isize) {
+    // SAFETY: open_process_handle returned this ordinary Win32 process handle
+    // solely as a source for DuplicateHandle.
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(handle as _) };
+}
+
+#[cfg(not(windows))]
+fn open_process_handle(_process_id: u32) -> Result<isize, IsolationError> {
+    Err(IsolationError::UnsupportedPlatform(
+        "HCS process handle transfer requires Windows".to_string(),
+    ))
+}
+
+#[cfg(not(windows))]
+fn close_process_handle_source(_handle: isize) {}
 
 /// Cheap, always-on check for whether HCS is available on this machine.
 ///

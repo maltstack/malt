@@ -186,8 +186,8 @@ pub(super) fn child_from_hcs_process(
     let stderr = unsafe { std::fs::File::from_raw_handle(stderr_handle as RawHandle) };
     Ok(Child {
         pid: process_id,
-        inner: ChildInner::Hcs {
-            handle: process_handle as isize,
+        inner: ChildInner::Native {
+            handle: process_handle as RawHandle,
         },
         stdin: Some(super::ChildStdinHandle::Sync(stdin)),
         stdout: Some(super::ChildStdoutHandle::Sync(stdout)),
