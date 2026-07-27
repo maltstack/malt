@@ -2,7 +2,7 @@ use malt_daemon::executor::coordinator::Coordinator;
 use malt_daemon::executor::pools::PoolConfig;
 use malt_daemon::executor::session_thread::ClientMessage;
 use malt_daemon::store::{DebouncedStore, SessionStore};
-use malt_protocol::common::{IsolationTier, SessionId, SessionState};
+use malt_protocol::common::{IsolationPolicy, IsolationTier, SessionId, SessionState};
 use std::sync::mpsc;
 
 fn make_store(dir: &tempfile::TempDir) -> DebouncedStore {
@@ -56,8 +56,20 @@ fn list_sessions() {
     coord
         .create_session(Some("alpha".to_string()), IsolationTier::Bare, None)
         .unwrap();
+    // Preferred, not the `create_session` default of Required. This test is
+    // about listing, not isolation: on a platform with no wired backend --
+    // Linux and macOS today -- a Required request is correctly refused by
+    // spec 007's fail-closed rule, and the test would fail for a reason that
+    // has nothing to do with what it asserts. Preferred says what is actually
+    // meant: take Restricted if it is there, and carry on visibly downgraded
+    // if it is not.
     coord
-        .create_session(Some("beta".to_string()), IsolationTier::Restricted, None)
+        .create_session_with_policy(
+            Some("beta".to_string()),
+            IsolationTier::Restricted,
+            IsolationPolicy::Preferred,
+            None,
+        )
         .unwrap();
     let sessions = coord.list_sessions();
     assert_eq!(sessions.len(), 2);
