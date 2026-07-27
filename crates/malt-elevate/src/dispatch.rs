@@ -1056,7 +1056,10 @@ mod tests {
 
     #[test]
     fn prepared_layer_ids_are_full_guid_shaped_values() {
-        let id = prepared_layer_id("852bbe55ef9eddac52f2e11b90d24d0d5b0d2518344ec813cf14891f76a8d47f", 7);
+        let id = prepared_layer_id(
+            "852bbe55ef9eddac52f2e11b90d24d0d5b0d2518344ec813cf14891f76a8d47f",
+            7,
+        );
         assert_eq!(id, "852bbe55-ef9e-ddac-52f2-e11b00000007");
         assert_eq!(id.len(), 36);
         assert_eq!(id.as_bytes()[8], b'-');
