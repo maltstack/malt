@@ -165,6 +165,23 @@ fn vi_dd_clears_line() {
 }
 
 #[test]
+fn vi_dd_pending_state_is_per_editor() {
+    let mut editor_a = Editor::new(EditMode::Vi);
+    let mut editor_b = Editor::new(EditMode::Vi);
+    editor_a.feed(InputEvent::Char('a'));
+    editor_b.feed(InputEvent::Char('b'));
+    editor_a.feed(InputEvent::Key(SpecialKey::Escape));
+    editor_b.feed(InputEvent::Key(SpecialKey::Escape));
+
+    editor_a.feed(InputEvent::Char('d'));
+    editor_b.feed(InputEvent::Char('d'));
+    assert_eq!(editor_b.line(), "b");
+
+    editor_b.feed(InputEvent::Char('d'));
+    assert_eq!(editor_b.line(), "");
+}
+
+#[test]
 fn vi_d_capital_kills_to_end() {
     let mut ed = Editor::new(EditMode::Vi);
     for c in "hello".chars() {

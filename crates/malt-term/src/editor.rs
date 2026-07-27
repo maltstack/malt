@@ -425,6 +425,7 @@ pub struct Editor {
     line: LineState,
     mode: EditMode,
     vi_mode: ViMode,
+    vi_dd_pending: bool,
     kill_ring: KillRing,
     undo_stack: UndoStack,
     prompt: String,
@@ -437,6 +438,7 @@ impl Editor {
             line: LineState::new(),
             mode,
             vi_mode: ViMode::Insert,
+            vi_dd_pending: false,
             kill_ring: KillRing::default(),
             undo_stack: UndoStack::default(),
             prompt: String::new(),
@@ -506,12 +508,21 @@ impl Editor {
         self.vi_mode = ViMode::Normal;
     }
 
+    pub(crate) fn vi_dd_pending(&self) -> bool {
+        self.vi_dd_pending
+    }
+
+    pub(crate) fn set_vi_dd_pending(&mut self, pending: bool) {
+        self.vi_dd_pending = pending;
+    }
+
     /// Clear the current line buffer and return to Insert mode (for Vi) or
     /// the start state (for Emacs). Call this after Accept, Interrupt, or Eof
     /// so the editor is ready for the next line without constructing a new instance.
     pub fn reset(&mut self) {
         self.line.clear();
         self.vi_mode = ViMode::Insert;
+        self.vi_dd_pending = false;
         self.undo_stack = UndoStack::default();
     }
 }

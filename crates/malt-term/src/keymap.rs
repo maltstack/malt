@@ -232,15 +232,10 @@ pub(crate) fn handle_vi_insert(ed: &mut Editor, event: InputEvent) -> EditResult
 // Vi Normal mode
 // ---------------------------------------------------------------------------
 
-/// State for tracking `dd` sequence in vi normal mode.
-static DD_SENTINEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 pub(crate) fn handle_vi_normal(ed: &mut Editor, event: InputEvent) -> EditResult {
-    use std::sync::atomic::Ordering;
-
     // If we previously saw a 'd', check for the second 'd'.
-    if DD_SENTINEL.load(Ordering::Relaxed) {
-        DD_SENTINEL.store(false, Ordering::Relaxed);
+    if ed.vi_dd_pending() {
+        ed.set_vi_dd_pending(false);
         if event == InputEvent::Char('d') {
             return with_undo(ed, |ed| {
                 let killed = ed.line_mut().clear();
@@ -319,7 +314,7 @@ pub(crate) fn handle_vi_normal(ed: &mut Editor, event: InputEvent) -> EditResult
         }),
 
         InputEvent::Char('d') => {
-            DD_SENTINEL.store(true, Ordering::Relaxed);
+            ed.set_vi_dd_pending(true);
             EditResult::Continue
         }
 
