@@ -115,7 +115,11 @@ fn hcs_process_request(
             .as_ref()
             .map(|argv0| unicode(argv0, "argv0"))
             .transpose()?,
-        create_stdin_pipe: !matches!(config.stdin, malt_platform::process::Io::Null),
+        // HCS may return a standard-input handle even when `CreateStdInPipe`
+        // is false.  Request the handle consistently, then close the daemon's
+        // copy below for a one-shot command.  Closing the actual handle is the
+        // only reliable EOF signal across the HCS implementations we support.
+        create_stdin_pipe: true,
         _unknown: Vec::new(),
     })
 }
@@ -154,14 +158,10 @@ fn install_hcs_stdio_relays(
                 copy_ignoring_broken_pipe(&mut source, &mut destination)
             }));
         }
-        Io::Null => {
-            if child.take_stdin().is_some() {
-                return Err(malt_platform::process::SpawnError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "helper returned an HCS stdin pipe for a no-stdin command",
-                )));
-            }
-        }
+        // One-shot commands must see EOF rather than the session's live input
+        // relay. Dropping the daemon's write end establishes that EOF while
+        // preserving `Pipe`, `File`, and `Inherit` for interactive commands.
+        Io::Null => drop(child.take_stdin()),
         Io::Inherit => {
             let mut destination = child.take_stdin().ok_or_else(missing_hcs_stream)?;
             child.add_io_worker(thread::spawn(move || {
