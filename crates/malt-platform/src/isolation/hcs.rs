@@ -33,6 +33,9 @@ pub struct HcsProcessParameters {
     pub command_line: String,
     pub working_directory: Option<String>,
     pub environment: Vec<(String, String)>,
+    /// Request console semantics for terminal commands while retaining the
+    /// explicit standard streams returned by HCS.
+    pub emulate_console: bool,
     /// Ask HCS for the daemon-facing write end of the child's standard input.
     pub create_stdin_pipe: bool,
     /// Ask HCS for the daemon-facing read end of the child's standard output.
@@ -818,6 +821,7 @@ mod native {
             "CommandLine": params.command_line,
             "WorkingDirectory": params.working_directory,
             "Environment": params.environment.iter().cloned().collect::<BTreeMap<_, _>>(),
+            "EmulateConsole": params.emulate_console,
             "CreateStdInPipe": params.create_stdin_pipe,
             "CreateStdOutPipe": params.create_stdout_pipe,
             "CreateStdErrPipe": params.create_stderr_pipe

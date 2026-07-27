@@ -715,6 +715,7 @@ fn start_hcs_process(
             .iter()
             .map(|entry| (entry.key.clone(), entry.value.clone()))
             .collect(),
+        emulate_console: true,
         create_stdin_pipe: true,
         create_stdout_pipe: true,
         create_stderr_pipe: true,
