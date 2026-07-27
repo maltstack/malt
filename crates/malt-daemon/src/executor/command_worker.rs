@@ -72,6 +72,10 @@ pub type ExecutionReply = mpsc::Sender<Result<CommandOutput, DaemonError>>;
 pub struct ExecutionRequest {
     pub sequence: u64,
     pub command: String,
+    /// A gateway `exec` request is one-shot: its external children must see
+    /// EOF rather than keep an HCS stdin relay open indefinitely. Interactive
+    /// editor requests deliberately retain the session input stream.
+    pub close_external_stdin: bool,
     pub reply: ExecutionReply,
 }
 
@@ -169,7 +173,26 @@ impl ExecutionIngress {
         self.state.capacity
     }
 
+    /// Queue an interactive command whose external children retain fd 0.
     pub fn submit(&self, command: String, reply: ExecutionReply) -> Result<(), DaemonError> {
+        self.submit_with_stdin(command, false, reply)
+    }
+
+    /// Queue a gateway one-shot command whose external children receive EOF.
+    pub fn submit_one_shot(
+        &self,
+        command: String,
+        reply: ExecutionReply,
+    ) -> Result<(), DaemonError> {
+        self.submit_with_stdin(command, true, reply)
+    }
+
+    fn submit_with_stdin(
+        &self,
+        command: String,
+        close_external_stdin: bool,
+        reply: ExecutionReply,
+    ) -> Result<(), DaemonError> {
         match self.state.state.load(Ordering::Acquire) {
             CLOSING => {
                 return Err(DaemonError::SessionShuttingDown(
@@ -196,6 +219,7 @@ impl ExecutionIngress {
         match sender.try_send(ExecutionRequest {
             sequence,
             command,
+            close_external_stdin,
             reply,
         }) {
             Ok(()) => Ok(()),
@@ -328,6 +352,7 @@ pub fn spawn_command_worker(
                     command_id: next_command_id,
                     control_tx: control_tx.clone(),
                 }));
+                env.set_close_external_stdin(request.close_external_stdin);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     run_command(&mut env, &request.command, next_command_id)
                 }))
@@ -337,6 +362,7 @@ pub fn spawn_command_worker(
                     env_snapshot: env.to_snapshot(),
                 })
                 .map_err(|_| DaemonError::ExecutionUnavailable(session_id.clone()));
+                env.set_close_external_stdin(false);
                 env.take_output_sink();
 
                 let worker_failed = result.is_err();

@@ -1728,6 +1728,7 @@ fn execute_simple(
     // Apply redirect files to the spawn config.
     config.stdin = match resolved_io.stdin {
         Some(f) => malt_platform::process::Io::File(f),
+        None if env.close_external_stdin() => malt_platform::process::Io::Null,
         None => match env.open_fd_read(0) {
             Ok(f) => malt_platform::process::Io::File(f),
             Err(_) => malt_platform::process::Io::Inherit,
@@ -6016,6 +6017,7 @@ fn execute_expanded_command(
     // input pipe, and must win over inheriting the daemon's console.
     config.stdin = match resolved_io.stdin {
         Some(f) => malt_platform::process::Io::File(f),
+        None if env.close_external_stdin() => malt_platform::process::Io::Null,
         None => match env.open_fd_read(0) {
             Ok(f) => malt_platform::process::Io::File(f),
             Err(_) => malt_platform::process::Io::Inherit,

@@ -1729,7 +1729,7 @@ impl SessionExecutor {
 
     fn submit_legacy_command(&mut self, command: String, reply: mpsc::Sender<CommandOutput>) {
         let (worker_reply, worker_result) = mpsc::channel();
-        match self.ingress.submit(command, worker_reply) {
+        match self.ingress.submit_one_shot(command, worker_reply) {
             Ok(()) => {
                 // A legacy SessionCommand caller expects a plain CommandOutput.
                 // Keep that compatibility without making the control actor wait.

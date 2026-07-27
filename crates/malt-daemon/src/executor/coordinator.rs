@@ -779,7 +779,7 @@ impl Coordinator {
         match &handle.lifecycle {
             SessionLifecycle::Active { ingress, .. } => {
                 let (reply, receiver) = mpsc::channel();
-                ingress.submit(command, reply)?;
+                ingress.submit_one_shot(command, reply)?;
                 Ok(receiver)
             }
             SessionLifecycle::Dormant { .. } => Err(DaemonError::SessionDormant(session_id)),

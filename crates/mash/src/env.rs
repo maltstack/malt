@@ -323,6 +323,9 @@ pub struct Env {
     /// MASH does not interpret this; it's passed to platform spawn traits.
     isolation_context: Option<malt_platform::isolation::IsolationContext>,
     external_process_spawner: Option<Arc<dyn ExternalProcessSpawner>>,
+    /// Whether the current gateway one-shot execution must give external
+    /// children EOF instead of the session's long-lived fd 0.
+    close_external_stdin: bool,
     /// Windows Job Object every externally-spawned child in this session gets
     /// assigned to, if the session's isolation tier is above Bare. Shared
     /// (`Arc`) across `Env::clone()` (subshells) so the whole session's
@@ -379,6 +382,7 @@ impl Clone for Env {
             job_tasks: self.job_tasks.clone(),
             isolation_context: self.isolation_context.clone(),
             external_process_spawner: self.external_process_spawner.clone(),
+            close_external_stdin: self.close_external_stdin,
             fd_registry,
             fd_aliases: Arc::new(Mutex::new(self.fd_aliases_lock().clone())),
             fd_snapshots: Arc::new(Mutex::new(self.fd_snapshots_lock().clone())),
@@ -417,6 +421,7 @@ impl Env {
             job_tasks: Arc::new(Mutex::new(HashMap::new())),
             isolation_context: None,
             external_process_spawner: None,
+            close_external_stdin: false,
             fd_registry: malt_platform::vfs::SharedFdRegistry::new(),
             fd_aliases: Arc::new(Mutex::new(HashMap::new())),
             fd_snapshots: Arc::new(Mutex::new(HashMap::new())),
@@ -1306,6 +1311,14 @@ impl Env {
     /// Install the authoritative process launcher for this session.
     pub fn set_external_process_spawner(&mut self, spawner: Arc<dyn ExternalProcessSpawner>) {
         self.external_process_spawner = Some(spawner);
+    }
+
+    pub fn set_close_external_stdin(&mut self, close: bool) {
+        self.close_external_stdin = close;
+    }
+
+    pub fn close_external_stdin(&self) -> bool {
+        self.close_external_stdin
     }
 
     /// Spawn an external command through the session-owned launcher when one
