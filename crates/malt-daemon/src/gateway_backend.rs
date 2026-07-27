@@ -314,6 +314,7 @@ impl GatewayBackend for DaemonBackend {
                 pane_count: s.pane_count,
                 isolation: isolation_status_response(s.isolation),
                 state: format!("{:?}", s.state),
+                selected_image: s.selected_image,
             })
             .collect())
     }
@@ -358,15 +359,17 @@ impl GatewayBackend for DaemonBackend {
                 other => GatewayError::Internal(other.to_string()),
             })?;
 
+        let session = coord
+            .list_sessions()
+            .into_iter()
+            .find(|s| s.session_id == session_id);
         Ok(SessionResponse {
             id: session_id.0,
             name,
             pane_count: 1,
-            isolation: coord
-                .list_sessions()
-                .into_iter()
-                .find(|s| s.session_id == session_id)
-                .map(|s| isolation_status_response(s.isolation))
+            isolation: session
+                .as_ref()
+                .map(|s| isolation_status_response(s.isolation.clone()))
                 .unwrap_or(IsolationStatusResponse {
                     effective: format!("{tier:?}").to_ascii_lowercase(),
                     requested: format!("{tier:?}").to_ascii_lowercase(),
@@ -375,6 +378,7 @@ impl GatewayBackend for DaemonBackend {
                     detail: None,
                 }),
             state: "Active".to_string(),
+            selected_image: session.and_then(|s| s.selected_image),
         })
     }
 
@@ -390,6 +394,7 @@ impl GatewayBackend for DaemonBackend {
                 pane_count: s.pane_count,
                 isolation: isolation_status_response(s.isolation),
                 state: format!("{:?}", s.state),
+                selected_image: s.selected_image,
             })
             .ok_or(GatewayError::SessionNotFound(id))
     }

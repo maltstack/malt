@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::protocol::{
-    ContainerOperation, ElevateRequest, ElevateResponse, HcsProcessLaunch, HcsProcessRequest,
-    ImageOperation, OutcomeKind, ProvisionedImage, ProvisionedImageList, ReasonCode,
+    ContainerOperation, ElevateRequest, ElevateResponse, HcsContainerCreated, HcsProcessLaunch,
+    HcsProcessRequest, ImageOperation, OutcomeKind, ProvisionedImage, ProvisionedImageList,
+    ReasonCode,
 };
 
 /// Dispatch a request to the operation handler.
@@ -659,6 +660,24 @@ fn create_hcs_container(
             "compute-system id is already registered for this helper lifetime",
         );
     }
+    let payload = {
+        let created = HcsContainerCreated {
+            id: id.clone(),
+            selected_image: selected_image.clone(),
+            _unknown: Vec::new(),
+        };
+        let mut writer = malt_protocol::vexil_runtime::BitWriter::new();
+        match malt_protocol::vexil_runtime::Pack::pack(&created, &mut writer) {
+            Ok(()) => writer.finish(),
+            Err(error) => {
+                return refused(
+                    request_id,
+                    ReasonCode::OsError,
+                    format!("could not encode contained HCS creation result: {error}"),
+                )
+            }
+        }
+    };
     let config = hcs_config(&id, hostname, &root, memory_limit_mb, &parents);
     let config = malt_platform::isolation::hcs::HcsConfig {
         id: id.clone(),
@@ -670,7 +689,7 @@ fn create_hcs_container(
                 id.clone(),
                 ManagedContainer {
                     session_id,
-                    image_id: selected_image,
+                    image_id: selected_image.clone(),
                     system,
                     workspace,
                 },
@@ -682,7 +701,7 @@ fn create_hcs_container(
                 detail: Some(format!(
                     "ManageHcsContainer created and started helper-owned compute system {id}"
                 )),
-                payload: Some(id.into_bytes()),
+                payload: Some(payload),
                 _unknown: Vec::new(),
             }
         }
@@ -1163,8 +1182,11 @@ mod tests {
             &mut containers,
         );
         assert_eq!(created.kind, OutcomeKind::Performed, "{created:?}");
-        let id = String::from_utf8(created.payload.expect("container id payload"))
-            .expect("container id is UTF-8");
+        let payload = created.payload.expect("container creation payload");
+        let mut reader = malt_protocol::vexil_runtime::BitReader::new(&payload);
+        let id = <HcsContainerCreated as malt_protocol::vexil_runtime::Unpack>::unpack(&mut reader)
+            .expect("container creation payload is valid")
+            .id;
         assert!(
             malt_platform::isolation::hcs::open_compute_system(&id).is_ok(),
             "performed creation must leave a helper-owned compute system"
@@ -1218,8 +1240,11 @@ mod tests {
             },
             &mut containers,
         );
-        let id = String::from_utf8(created.payload.expect("container id payload"))
-            .expect("container id is UTF-8");
+        let payload = created.payload.expect("container creation payload");
+        let mut reader = malt_protocol::vexil_runtime::BitReader::new(&payload);
+        let id = <HcsContainerCreated as malt_protocol::vexil_runtime::Unpack>::unpack(&mut reader)
+            .expect("container creation payload is valid")
+            .id;
 
         let response = dispatch_entitled_request(
             42,

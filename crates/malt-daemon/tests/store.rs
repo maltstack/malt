@@ -35,6 +35,9 @@ fn make_session(id: u32) -> PersistedSession {
         theme: None,
         group: None,
         isolation: IsolationTier::Bare,
+        selected_image: Some(
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+        ),
         _unknown: Vec::new(),
     }
 }
@@ -60,6 +63,7 @@ fn save_and_load_session() {
     assert_eq!(loaded.id, SessionId(1));
     assert_eq!(loaded.name, Some("session-1".to_string()));
     assert_eq!(loaded.schema_version, 1);
+    assert_eq!(loaded.selected_image, session.selected_image);
 }
 
 #[test]
@@ -215,6 +219,7 @@ fn roundtrip_app_pane() {
         theme: None,
         group: None,
         isolation: IsolationTier::Bare,
+        selected_image: None,
         _unknown: Vec::new(),
     };
 
@@ -262,6 +267,7 @@ fn roundtrip_compat_pane() {
         theme: None,
         group: None,
         isolation: IsolationTier::Bare,
+        selected_image: None,
         _unknown: Vec::new(),
     };
 
@@ -333,6 +339,7 @@ fn roundtrip_complex_layout() {
         theme: None,
         group: None,
         isolation: IsolationTier::Bare,
+        selected_image: None,
         _unknown: Vec::new(),
     };
 

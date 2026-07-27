@@ -130,6 +130,7 @@ fn handshake_includes_session_list() {
             _unknown: Vec::new(),
         },
         state: malt_protocol::common::SessionState::Active,
+        selected_image: None,
         _unknown: Vec::new(),
     }];
 
@@ -194,6 +195,7 @@ fn a_session_named(name: &str) -> malt_protocol::common::SessionInfo {
             _unknown: Vec::new(),
         },
         state: malt_protocol::common::SessionState::Active,
+        selected_image: None,
         _unknown: Vec::new(),
     }
 }

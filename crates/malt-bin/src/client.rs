@@ -21,6 +21,21 @@ impl<T> ApiEnvelope<T> {
             )),
         }
     }
+
+    /// Accept an explicitly successful no-content API operation. The gateway
+    /// represents deletion as `{ "ok": true, "data": null }`; requiring a
+    /// payload here would report an effect that completed as a client error.
+    fn into_unit(self, operation: &str) -> Result<()> {
+        if self.ok {
+            return Ok(());
+        }
+        Err(anyhow::anyhow!(
+            "{}",
+            self.error
+                .map(ApiError::into_message)
+                .unwrap_or_else(|| format!("{operation} failed"))
+        ))
+    }
 }
 
 /// Error representations returned by gateway endpoints.
@@ -46,6 +61,8 @@ pub struct SessionData {
     pub pane_count: u32,
     pub isolation: IsolationData,
     pub state: String,
+    #[serde(default)]
+    pub selected_image: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -319,8 +336,7 @@ impl MaltClient {
             .context("failed to reach daemon")?;
         let envelope: ApiEnvelope<serde_json::Value> =
             resp.json().context("invalid destroy session response")?;
-        let _: serde_json::Value = envelope.into_data("destroy session")?;
-        Ok(())
+        envelope.into_unit("destroy session")
     }
 
     pub fn exec_command(&self, id: u32, cmd: &str) -> Result<ExecResultData> {
@@ -510,6 +526,15 @@ mod tests {
                 "image": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             })
         );
+    }
+
+    #[test]
+    fn successful_empty_response_is_accepted_for_effect_only_operations() {
+        let response: ApiEnvelope<serde_json::Value> =
+            serde_json::from_str(r#"{"ok":true,"data":null}"#).expect("decode response");
+        response
+            .into_unit("destroy session")
+            .expect("success is accepted");
     }
 
     #[test]

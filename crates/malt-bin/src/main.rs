@@ -398,13 +398,19 @@ fn validate_created_session(session: &SessionData, expected_tier: IsolationTierA
 
 fn creation_message(session: &SessionData) -> String {
     let mechanism = session.isolation.mechanism.as_deref().unwrap_or("none");
+    let image = session
+        .selected_image
+        .as_deref()
+        .map(|image| format!("; image: {image}"))
+        .unwrap_or_default();
     format!(
-        "created session {} ({}) [{}; basis: {}; mechanism: {}]",
+        "created session {} ({}) [{}; basis: {}; mechanism: {}{}]",
         session.id,
         session.name.as_deref().unwrap_or("-"),
         session.isolation.effective,
         session.isolation.basis,
         mechanism,
+        image,
     )
 }
 
@@ -672,6 +678,7 @@ mod tests {
                 detail: None,
             },
             state: "Active".to_string(),
+            selected_image: None,
         }
     }
 
@@ -693,6 +700,18 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn contained_creation_reports_helper_resolved_digest() {
+        let mut session = session_with_isolation("contained");
+        session.selected_image = Some(
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+        );
+        assert_eq!(
+            creation_message(&session),
+            "created session 42 (build) [contained; basis: none; mechanism: none; image: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef]"
+        );
     }
 
     #[test]

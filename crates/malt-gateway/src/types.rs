@@ -21,6 +21,8 @@ pub struct SessionResponse {
     pub pane_count: u16,
     pub isolation: IsolationStatusResponse,
     pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_image: Option<String>,
 }
 
 /// Pane summary returned by the API.

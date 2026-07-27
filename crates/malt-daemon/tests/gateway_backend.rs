@@ -1018,6 +1018,7 @@ fn snapshot_during_execution_uses_the_last_finalized_env_snapshot() {
                     reply,
                     name: Some("snapshot".to_string()),
                     isolation: IsolationTier::Bare,
+                    selected_image: None,
                 },
             )
             .unwrap();

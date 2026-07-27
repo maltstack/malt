@@ -67,6 +67,12 @@ message HcsProcessLaunch {
     stderr_handle  @4 : u64
 }
 
+@doc("Helper-owned contained session created from a resolved immutable image identity.")
+message HcsContainerCreated {
+    id             @0 : string
+    selected_image @1 : optional<string>
+}
+
 @doc("Sanitized immutable identity and readiness of one helper-owned Windows image.")
 message ProvisionedImage {
     id              @0 : string

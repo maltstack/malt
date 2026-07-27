@@ -359,6 +359,7 @@ fn spawn_with_cwd_uses_provided_directory() {
             reply: reply_tx,
             name: Some("test".to_string()),
             isolation: IsolationTier::Bare,
+            selected_image: None,
         })
         .unwrap();
 
@@ -668,6 +669,7 @@ fn app_restore_returns_error() {
         theme: None,
         group: None,
         isolation: IsolationTier::Bare,
+        selected_image: None,
         _unknown: vec![],
     };
     store.mark_dirty(sid.clone(), persisted);
@@ -766,6 +768,7 @@ fn restore_compat_pane_relaunches_process_and_forwards_real_output() {
         theme: None,
         group: None,
         isolation: IsolationTier::Bare,
+        selected_image: None,
         _unknown: vec![],
     };
     store.mark_dirty(sid.clone(), persisted);

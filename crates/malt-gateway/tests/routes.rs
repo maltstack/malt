@@ -37,6 +37,7 @@ impl MockBackend {
                     detail: None,
                 },
                 state: "Active".to_string(),
+                selected_image: None,
             }],
         }
     }
@@ -76,6 +77,7 @@ impl GatewayBackend for MockBackend {
                 detail: None,
             },
             state: "Active".to_string(),
+            selected_image: None,
         })
     }
 

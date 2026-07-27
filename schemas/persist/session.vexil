@@ -16,6 +16,8 @@ message PersistedSession {
     theme          @6 : optional<ThemeOverride>
     group          @7 : optional<GroupId>
     isolation      @8 : IsolationTier
+    @doc("Resolved immutable helper-owned image identity for a contained session.")
+    selected_image @9 : optional<string>
 }
 
 @doc("Persisted pane state within a session.")

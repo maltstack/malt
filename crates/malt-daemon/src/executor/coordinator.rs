@@ -47,6 +47,9 @@ struct SessionHandle {
     /// established state is shared, so status refreshes observe the actual
     /// live mechanism rather than a separately maintained report.
     isolation_context: Option<malt_platform::isolation::IsolationContext>,
+    /// Resolved immutable helper-owned image identity retained across session
+    /// lifecycle transitions. It comes from the helper, never user input.
+    selected_image: Option<String>,
     lifecycle: SessionLifecycle,
     /// The session's one pane, under today's single-pane model. Stable
     /// across Active<->Dormant transitions since it lives on the outer
@@ -196,6 +199,7 @@ impl Coordinator {
                                         _unknown: Vec::new(),
                                     },
                                     isolation_context: None,
+                                    selected_image: persisted.selected_image.clone(),
                                     first_pane,
                                     lifecycle: SessionLifecycle::Dormant { persisted },
                                 },
@@ -369,6 +373,7 @@ impl Coordinator {
                 name: Some(final_name),
                 isolation: established_status,
                 isolation_context: Some(spawned.isolation_context),
+                selected_image: spawned.selected_image,
                 first_pane: pane_id,
                 lifecycle: SessionLifecycle::Active {
                     cmd_tx: spawned.control_tx,
@@ -809,6 +814,7 @@ impl Coordinator {
                     SessionLifecycle::Active { .. } => SessionState::Active,
                     SessionLifecycle::Dormant { .. } => SessionState::Dormant,
                 },
+                selected_image: h.selected_image.clone(),
                 _unknown: Vec::new(),
             })
             .collect()
@@ -1000,7 +1006,7 @@ impl Coordinator {
         let ids: Vec<u32> = self.sessions.keys().copied().collect();
         for id in ids {
             let session_id = SessionId(id);
-            let (cmd_tx_clone, session_name, session_isolation) = {
+            let (cmd_tx_clone, session_name, session_isolation, selected_image) = {
                 let handle = match self.sessions.get(&session_id.0) {
                     Some(h) => h,
                     None => continue,
@@ -1010,6 +1016,7 @@ impl Coordinator {
                         cmd_tx.clone(),
                         handle.name.clone(),
                         handle.current_isolation().effective,
+                        handle.selected_image.clone(),
                     ),
                     SessionLifecycle::Dormant { .. } => continue,
                 }
@@ -1021,6 +1028,7 @@ impl Coordinator {
                 reply: reply_tx,
                 name: session_name,
                 isolation: session_isolation,
+                selected_image,
             });
             match reply_rx.recv_timeout(Duration::from_secs(5)) {
                 Ok(persisted) => {
@@ -1100,7 +1108,7 @@ impl Coordinator {
     /// paths are not yet implemented.  On success the lifecycle transitions from
     /// `Dormant` to `Active` and `persist_daemon_state` is called.
     fn restore_session(&mut self, id: SessionId) -> Result<(), DaemonError> {
-        let (persisted, _session_name, session_isolation) = {
+        let (persisted, _session_name, session_isolation, selected_image) = {
             let handle = self
                 .sessions
                 .get(&id.0)
@@ -1110,6 +1118,7 @@ impl Coordinator {
                     persisted.clone(),
                     handle.name.clone(),
                     handle.current_isolation().effective,
+                    handle.selected_image.clone(),
                 ),
                 SessionLifecycle::Active { .. } => return Ok(()),
             }
@@ -1135,13 +1144,14 @@ impl Coordinator {
                 let env_snapshot = env_snapshot
                     .as_ref()
                     .map(crate::executor::session_thread::from_persisted_env_snapshot);
-                SessionExecutor::spawn_with_cwd_and_capacity(
+                SessionExecutor::spawn_with_cwd_and_capacity_and_image(
                     id.clone(),
                     pane_id,
                     session_isolation,
                     cwd,
                     Some(shell_path.clone()),
                     env_snapshot,
+                    selected_image.clone(),
                     self.pool_config.session_channel_size,
                     command_blocks,
                 )
@@ -1160,13 +1170,14 @@ impl Coordinator {
                 // spawn one exactly like the Shell path, then separately
                 // launch the real external process and forward its output
                 // into it via PtyOutput.
-                let spawned = SessionExecutor::spawn_with_cwd_and_capacity(
+                let spawned = SessionExecutor::spawn_with_cwd_and_capacity_and_image(
                     id.clone(),
                     pane_id.clone(),
                     session_isolation,
                     cwd.clone(),
                     None,
                     None,
+                    selected_image.clone(),
                     self.pool_config.session_channel_size,
                     command_blocks,
                 )
@@ -1223,6 +1234,7 @@ impl Coordinator {
                 "isolation re-established on restore; not externally verified".to_string()
             });
             handle.isolation_context = Some(spawned.isolation_context);
+            handle.selected_image = spawned.selected_image;
             handle.lifecycle = SessionLifecycle::Active {
                 cmd_tx: spawned.control_tx,
                 ingress: spawned.ingress,
@@ -1251,7 +1263,14 @@ impl Coordinator {
     /// If the control actor reports work or does not reply promptly, the
     /// session is left Active. Detach is never cancellation.
     fn go_dormant(&mut self, id: SessionId) {
-        let (cmd_tx_clone, ingress, session_name, session_isolation, contained_teardown) = {
+        let (
+            cmd_tx_clone,
+            ingress,
+            session_name,
+            session_isolation,
+            selected_image,
+            contained_teardown,
+        ) = {
             let handle = match self.sessions.get(&id.0) {
                 Some(h) => h,
                 None => return,
@@ -1264,6 +1283,7 @@ impl Coordinator {
                     ingress.clone(),
                     handle.name.clone(),
                     handle.current_isolation().effective,
+                    handle.selected_image.clone(),
                     contained_teardown_for_handle(handle),
                 ),
                 SessionLifecycle::Dormant { .. } => return,
@@ -1278,6 +1298,7 @@ impl Coordinator {
                 reply: reply_tx,
                 name: session_name,
                 isolation: session_isolation,
+                selected_image,
             })
             .is_err()
         {

@@ -275,6 +275,7 @@ mod tests {
             theme: None,
             group: None,
             isolation: malt_protocol::common::IsolationTier::Bare,
+            selected_image: None,
             _unknown: vec![],
         };
         store.mark_dirty(sid.clone(), persisted.clone());

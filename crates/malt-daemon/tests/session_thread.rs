@@ -428,6 +428,7 @@ fn control_observation_and_snapshot_remain_prompt_during_a_long_command() {
             reply: snapshot_reply,
             name: Some("busy".to_string()),
             isolation: IsolationTier::Bare,
+            selected_image: None,
         })
         .unwrap();
     let _ = styled.recv_timeout(Duration::from_secs(1)).unwrap();

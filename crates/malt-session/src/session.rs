@@ -319,6 +319,7 @@ impl SessionRuntime {
                 _unknown: Vec::new(),
             },
             state: self.state,
+            selected_image: None,
             _unknown: Vec::new(),
         }
     }

@@ -292,19 +292,27 @@ pub(crate) fn now_epoch_ms() -> u64 {
 /// every external command inside it. The context is established only after
 /// both entitlement registration and compute-system creation report
 /// `Performed`.
+struct AppliedSessionIsolation {
+    context: malt_platform::isolation::IsolationContext,
+    selected_image: Option<String>,
+}
+
 fn apply_session_isolation(
     env: &mut Env,
     session_id: SessionId,
     isolation: IsolationTier,
     image_id: Option<String>,
-) -> Result<malt_platform::isolation::IsolationContext, DaemonError> {
+) -> Result<AppliedSessionIsolation, DaemonError> {
     let context = malt_platform::isolation::IsolationContext::from(isolation);
 
     #[cfg(windows)]
     {
         if isolation == IsolationTier::Bare {
             env.set_isolation_context(context.clone());
-            return Ok(context);
+            return Ok(AppliedSessionIsolation {
+                context,
+                selected_image: None,
+            });
         }
         if isolation == IsolationTier::Contained {
             let storage_root = malt_config::paths::data_dir();
@@ -336,16 +344,24 @@ fn apply_session_isolation(
                     }),
                 ));
             }
-            let container_id = String::from_utf8(response.payload.ok_or_else(|| {
+            let payload = response.payload.ok_or_else(|| {
                 DaemonError::IsolationUnavailable(
-                    "helper performed contained HCS creation without a container id".to_string(),
+                    "helper performed contained HCS creation without a result payload".to_string(),
                 )
-            })?)
-            .map_err(|error| {
+            })?;
+            let mut reader = malt_protocol::vexil_runtime::BitReader::new(&payload);
+            let created = <malt_protocol::elevate::HcsContainerCreated as malt_protocol::vexil_runtime::Unpack>::unpack(&mut reader)
+                .map_err(|error| {
                 DaemonError::IsolationUnavailable(format!(
-                    "helper returned a non-UTF-8 contained HCS id: {error}"
+                    "helper returned an invalid contained HCS creation result: {error}"
                 ))
             })?;
+            if created.id.is_empty() {
+                return Err(DaemonError::IsolationUnavailable(
+                    "helper performed contained HCS creation without a container id".to_string(),
+                ));
+            }
+            let container_id = created.id;
             context
                 .establish_container(container_id.clone())
                 .map_err(|error| DaemonError::IsolationUnavailable(error.to_string()))?;
@@ -354,7 +370,10 @@ fn apply_session_isolation(
                 container_id,
             }));
             env.set_isolation_context(context.clone());
-            return Ok(context);
+            return Ok(AppliedSessionIsolation {
+                context,
+                selected_image: created.selected_image,
+            });
         }
         let (memory_limit_mb, cpu_rate) =
             job_object_limits_for_tier(isolation).ok_or_else(|| {
@@ -380,14 +399,20 @@ fn apply_session_isolation(
             .establish_job_object(std::sync::Arc::new(job))
             .map_err(|error| DaemonError::IsolationUnavailable(error.to_string()))?;
         env.set_isolation_context(context.clone());
-        Ok(context)
+        Ok(AppliedSessionIsolation {
+            context,
+            selected_image: None,
+        })
     }
     #[cfg(not(windows))]
     {
         let _ = session_id;
         if isolation == IsolationTier::Bare {
             env.set_isolation_context(context.clone());
-            Ok(context)
+            Ok(AppliedSessionIsolation {
+                context,
+                selected_image: None,
+            })
         } else {
             Err(DaemonError::IsolationUnavailable(
                 "no session isolation backend is wired on this platform".to_string(),
@@ -422,6 +447,8 @@ pub struct SessionSpawn {
     /// Shared with the MASH environment. Coordinator status reads this exact
     /// carrier instead of reconstructing a parallel mechanism report.
     pub isolation_context: malt_platform::isolation::IsolationContext,
+    /// Immutable helper-owned image identity selected during contained setup.
+    pub selected_image: Option<String>,
     pub control_tx: mpsc::SyncSender<SessionCommand>,
     pub ingress: ExecutionIngress,
     pub control_thread: JoinHandle<()>,
@@ -692,6 +719,7 @@ pub enum SessionCommand {
         reply: mpsc::Sender<PersistedSession>,
         name: Option<String>,
         isolation: IsolationTier,
+        selected_image: Option<String>,
     },
     /// Decide whether the last client may transition this session to Dormant.
     /// Because this command is ordered behind all earlier control events, it
@@ -700,6 +728,7 @@ pub enum SessionCommand {
         reply: mpsc::Sender<Option<PersistedSession>>,
         name: Option<String>,
         isolation: IsolationTier,
+        selected_image: Option<String>,
     },
     /// Graceful shutdown.
     Shutdown,
@@ -867,7 +896,7 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        let isolation_context =
+        let applied_isolation =
             apply_session_isolation(&mut env, session_id.clone(), isolation, None)?;
         Self::spawn_with_env(
             session_id,
@@ -878,7 +907,8 @@ impl SessionExecutor {
             command_blocks,
             output_log::MAX_RETAINED_BYTES,
             output_log::SUBSCRIBER_BUFFER,
-            isolation_context,
+            applied_isolation.context,
+            applied_isolation.selected_image,
         )
     }
 
@@ -892,7 +922,7 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        let isolation_context =
+        let applied_isolation =
             apply_session_isolation(&mut env, session_id.clone(), isolation, image_id)?;
         Self::spawn_with_env(
             session_id,
@@ -903,7 +933,8 @@ impl SessionExecutor {
             command_blocks,
             output_log::MAX_RETAINED_BYTES,
             output_log::SUBSCRIBER_BUFFER,
-            isolation_context,
+            applied_isolation.context,
+            applied_isolation.selected_image,
         )
     }
 
@@ -926,7 +957,7 @@ impl SessionExecutor {
     ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        let isolation_context =
+        let applied_isolation =
             apply_session_isolation(&mut env, session_id.clone(), isolation, None)?;
         Self::spawn_with_env(
             session_id,
@@ -937,7 +968,8 @@ impl SessionExecutor {
             command_blocks,
             output_log_capacity_bytes,
             output_subscriber_buffer,
-            isolation_context,
+            applied_isolation.context,
+            applied_isolation.selected_image,
         )
     }
 
@@ -988,10 +1020,38 @@ impl SessionExecutor {
         capacity: usize,
         command_blocks: Vec<CommandBlock>,
     ) -> Result<SessionSpawn, DaemonError> {
+        Self::spawn_with_cwd_and_capacity_and_image(
+            session_id,
+            first_pane,
+            isolation,
+            initial_cwd,
+            shell_path,
+            env_snapshot,
+            None,
+            capacity,
+            command_blocks,
+        )
+    }
+
+    /// Restore a session with the immutable image identity selected by the
+    /// helper before it was persisted. This never re-resolves a mutable image
+    /// reference on restore.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_cwd_and_capacity_and_image(
+        session_id: SessionId,
+        first_pane: PaneId,
+        isolation: IsolationTier,
+        initial_cwd: std::path::PathBuf,
+        shell_path: Option<String>,
+        env_snapshot: Option<EnvSnapshot>,
+        image_id: Option<String>,
+        capacity: usize,
+        command_blocks: Vec<CommandBlock>,
+    ) -> Result<SessionSpawn, DaemonError> {
         let mut env = Env::from_os();
         env.set_interactive(true);
-        let isolation_context =
-            apply_session_isolation(&mut env, session_id.clone(), isolation, None)?;
+        let applied_isolation =
+            apply_session_isolation(&mut env, session_id.clone(), isolation, image_id)?;
         if let Some(snapshot) = &env_snapshot {
             env.apply_snapshot(snapshot);
         }
@@ -1020,7 +1080,8 @@ impl SessionExecutor {
             command_blocks,
             output_log::MAX_RETAINED_BYTES,
             output_log::SUBSCRIBER_BUFFER,
-            isolation_context,
+            applied_isolation.context,
+            applied_isolation.selected_image,
         )
     }
 
@@ -1038,6 +1099,7 @@ impl SessionExecutor {
         output_log_capacity_bytes: usize,
         output_subscriber_buffer: usize,
         isolation_context: malt_platform::isolation::IsolationContext,
+        selected_image: Option<String>,
     ) -> Result<SessionSpawn, DaemonError> {
         let env = env;
         let snapshot = env.to_snapshot();
@@ -1131,6 +1193,7 @@ impl SessionExecutor {
         };
         Ok(SessionSpawn {
             isolation_context,
+            selected_image,
             control_tx,
             ingress,
             control_thread,
@@ -1407,12 +1470,14 @@ impl SessionExecutor {
                     reply,
                     name,
                     isolation,
+                    selected_image,
                 }) => {
                     let persisted = build_persisted_session(
                         self.session.id(),
                         self.session.focused_pane(),
                         name.as_deref(),
                         isolation,
+                        selected_image.as_deref(),
                         &self.env_snapshot,
                         self.pane_runtime.command_blocks(),
                     );
@@ -1422,6 +1487,7 @@ impl SessionExecutor {
                     reply,
                     name,
                     isolation,
+                    selected_image,
                 }) => {
                     // This mailbox barrier is deliberately evaluated on the
                     // control actor. All earlier editor/input commands have
@@ -1434,6 +1500,7 @@ impl SessionExecutor {
                             self.session.focused_pane(),
                             name.as_deref(),
                             isolation,
+                            selected_image.as_deref(),
                             &self.env_snapshot,
                             self.pane_runtime.command_blocks(),
                         ))
@@ -2134,6 +2201,7 @@ fn build_persisted_session(
     focused_pane: &PaneId,
     name: Option<&str>,
     isolation: IsolationTier,
+    selected_image: Option<&str>,
     env: &EnvSnapshot,
     command_blocks: &VecDeque<CommandBlock>,
 ) -> PersistedSession {
@@ -2179,6 +2247,7 @@ fn build_persisted_session(
         theme: None,
         group: None,
         isolation,
+        selected_image: selected_image.map(str::to_owned),
         _unknown: vec![],
     }
 }

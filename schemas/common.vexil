@@ -279,6 +279,8 @@ message SessionInfo {
     pane_count @2 @varint : u16
     isolation  @3 : IsolationStatus
     state      @4 : SessionState
+    @doc("Resolved immutable helper-owned image identity for a contained session.")
+    selected_image @5 : optional<string>
 }
 
 @doc("Per-session theme color overrides.")
