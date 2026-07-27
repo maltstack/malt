@@ -142,12 +142,12 @@ refused for that reason through the helper.
 
 - [X] T038 [US3] Implement `ManageHcsContainer` in `crates/malt-elevate/src/dispatch.rs` against `malt_platform::isolation::hcs`. **The helper renders the container configuration document itself from typed fields plus the session's entitlement — the caller never supplies it** (FR-013, contract §1). This is the difference between a helper and an arbitrary-privileged-action service.
 - [X] T039 [US3] Ensure teardown runs on every failure path, so a create that fails part-way leaves no compute system behind (contract, operation rule 3). The `run_operation` helper added to `hcs.rs` earlier today already closes operations on every path — follow that shape.
-- [ ] T040 [US3] Route the daemon's contained-session path through `elevate_client` when the tier requires it, updating the session's `IsolationContext` **only on a `Performed` outcome**. `Refused` and `Indeterminate` leave it untouched.
+- [X] T040 [US3] Route the daemon's contained-session path through `elevate_client` when the tier requires it, updating the session's `IsolationContext` **only on a `Performed` outcome**. `Refused` and `Indeterminate` leave it untouched.
   - [X] T040a [US3] Extend the typed elevate contract with a helper-owned HCS process-launch request and a typed duplicated-handle result. The authenticated pipe peer, never a request field, is the target daemon process.
   - [X] T040b [US3] Implement helper-side entitled HCS process creation, handle duplication into the authenticated daemon, and source-handle cleanup on every outcome.
   - [X] T040c [US3] Make `malt_platform::process::Child` represent an HCS child with HCS wait/close semantics and synchronous duplicated standard handles.
   - [X] T040d [US3] Add one injected MASH external-process spawner and route every production external-command path through it; preserve pipes, redirects, and session stdin.
-  - [ ] T040e [US3] Install the helper-backed spawner only after a helper-created container is `Performed`; tear it down on later construction failure and prove refused/indeterminate outcomes leave the carrier unchanged.
+  - [X] T040e [US3] Install the helper-backed spawner only after a helper-created container is `Performed`; tear it down on later construction failure and prove refused/indeterminate outcomes leave the carrier unchanged.
 
 ### Tests for User Story 3
 
