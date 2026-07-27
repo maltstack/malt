@@ -730,6 +730,17 @@ fn app_restore_returns_error() {
 }
 
 #[test]
+// Ignored on Unix, and deliberately NOT #[cfg(windows)]: compat panes are not
+// a Windows feature, the Unix PTY is inverted. open_pty drops the slave
+// (pty/unix.rs:80) and spawn_unix hands the child dups of the *master*
+// (pty/spawn.rs:70-82), so nothing ever holds the slave and the first read on
+// the master returns EIO with zero bytes. Gating by platform would read as
+// "this only applies to Windows" and delete the only evidence the gap exists.
+// See docs/briefs/007-unix-pty-wired-backwards.md.
+#[cfg_attr(
+    unix,
+    ignore = "Unix PTY is wired backwards; see docs/briefs/007-unix-pty-wired-backwards.md"
+)]
 fn restore_compat_pane_relaunches_process_and_forwards_real_output() {
     use malt_protocol::common::{LayoutNode, PaneId, SessionState};
     use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};

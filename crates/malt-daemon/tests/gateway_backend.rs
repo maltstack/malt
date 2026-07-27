@@ -259,6 +259,13 @@ fn creation_get_and_list_share_the_same_isolation_status() {
     assert_ne!(created.isolation.basis, "verified");
 }
 
+// Windows-only because it asserts a Windows mechanism *by name*: Job Objects
+// are what back Capped there. Unlike an incidental isolation request, the
+// mechanism is this test's whole subject, so #[cfg(windows)] states a fact
+// rather than hiding a gap -- and its non-Windows counterpart below asserts
+// the behaviour that platform actually owes (spec 007 FR-001: refuse rather
+// than claim).
+#[cfg(windows)]
 #[test]
 fn granted_capped_session_names_its_job_object_mechanism() {
     let backend = make_backend();
@@ -272,6 +279,27 @@ fn granted_capped_session_names_its_job_object_mechanism() {
     assert_eq!(created.isolation.effective, "capped");
     assert_eq!(created.isolation.mechanism.as_deref(), Some("job-object"));
     assert_eq!(created.isolation.basis, "verified");
+}
+
+/// The counterpart to the Windows test above. No non-Windows session
+/// isolation backend is wired yet (007 T032/T033), so a `required` request
+/// for Capped must be refused -- not granted, and not silently downgraded.
+/// Asserting this keeps the fail-closed guarantee under test on the platforms
+/// that currently have nothing to enforce it with, which is precisely where a
+/// regression would be least visible.
+#[cfg(not(windows))]
+#[test]
+fn required_capped_session_is_refused_where_no_backend_is_wired() {
+    let backend = make_backend();
+    let result = backend.create_session_with_policy(
+        None,
+        Some("capped".to_string()),
+        Some("required".to_string()),
+    );
+    assert!(
+        matches!(result, Err(GatewayError::IsolationUnavailable { .. })),
+        "a required Capped request must be refused where nothing can enforce it, got: {result:?}"
+    );
 }
 
 #[test]
