@@ -79,7 +79,7 @@ pub fn acquire_public_windows_image(
         return Err(error);
     }
     let record = ImageRecord {
-        manifest_digest,
+        manifest_digest: manifest_digest.clone(),
         source_reference: reference.to_string(),
         platform,
         manifest,
