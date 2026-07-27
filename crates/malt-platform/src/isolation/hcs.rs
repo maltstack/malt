@@ -94,7 +94,7 @@ pub struct HcsProcessLaunch {
 pub struct HcsDuplicatedProcessLaunch {
     pub process_id: u32,
     pub process_handle: u64,
-    pub stdin_handle: u64,
+    pub stdin_handle: Option<u64>,
     pub stdout_handle: u64,
     pub stderr_handle: u64,
 }
@@ -118,9 +118,6 @@ impl HcsProcessLaunch {
         &self,
         target_process_id: u32,
     ) -> Result<HcsDuplicatedProcessLaunch, IsolationError> {
-        let stdin_handle = self.stdin_handle.ok_or_else(|| {
-            IsolationError::HcsError("HCS launch did not return a stdin pipe".to_string())
-        })?;
         let stdout_handle = self.stdout_handle.ok_or_else(|| {
             IsolationError::HcsError("HCS launch did not return a stdout pipe".to_string())
         })?;
@@ -137,20 +134,47 @@ impl HcsProcessLaunch {
         } else {
             open_process_handle(process.process_id)?
         };
-        let duplicated = duplicate_handles_into_process(
-            target_process_id,
-            [process_handle, stdin_handle, stdout_handle, stderr_handle],
-        );
+        let duplicated = if let Some(stdin_handle) = self.stdin_handle {
+            duplicate_handles_into_process(
+                target_process_id,
+                [process_handle, stdin_handle, stdout_handle, stderr_handle],
+            )
+            .map(|handles| {
+                (
+                    handles[0] as u64,
+                    Some(handles[1] as u64),
+                    handles[2] as u64,
+                    handles[3] as u64,
+                )
+            })
+        } else {
+            duplicate_handles_into_process(
+                target_process_id,
+                [process_handle, stdout_handle, stderr_handle],
+            )
+            .map(|handles| {
+                (
+                    handles[0] as u64,
+                    None,
+                    handles[1] as u64,
+                    handles[2] as u64,
+                )
+            })
+        };
         if !hcs_fake_mode_enabled() {
             close_process_handle_source(process_handle);
         }
-        duplicated.map(|handles| HcsDuplicatedProcessLaunch {
-            process_id: process.process_id,
-            process_handle: handles[0] as u64,
-            stdin_handle: handles[1] as u64,
-            stdout_handle: handles[2] as u64,
-            stderr_handle: handles[3] as u64,
-        })
+        duplicated.map(
+            |(process_handle, stdin_handle, stdout_handle, stderr_handle)| {
+                HcsDuplicatedProcessLaunch {
+                    process_id: process.process_id,
+                    process_handle,
+                    stdin_handle,
+                    stdout_handle,
+                    stderr_handle,
+                }
+            },
+        )
     }
 
     /// Transfer ownership of the HCS process object to the helper's reaper
@@ -252,10 +276,10 @@ fn close_stream_handle(_handle: isize) -> Result<(), IsolationError> {
 }
 
 #[cfg(windows)]
-fn duplicate_handles_into_process(
+fn duplicate_handles_into_process<const N: usize>(
     target_process_id: u32,
-    sources: [isize; 4],
-) -> Result<[isize; 4], IsolationError> {
+    sources: [isize; N],
+) -> Result<[isize; N], IsolationError> {
     use windows_sys::Win32::Foundation::{
         CloseHandle, DuplicateHandle, DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, HANDLE,
     };
@@ -328,17 +352,17 @@ fn duplicate_handles_into_process(
     }
     // SAFETY: target was opened successfully above and is owned here.
     unsafe { CloseHandle(target) };
-    let handles: [HANDLE; 4] = duplicated.try_into().map_err(|_| {
+    let handles: [HANDLE; N] = duplicated.try_into().map_err(|_| {
         IsolationError::HcsError("internal HCS handle duplication count mismatch".to_string())
     })?;
     Ok(handles.map(|handle| handle as isize))
 }
 
 #[cfg(not(windows))]
-fn duplicate_handles_into_process(
+fn duplicate_handles_into_process<const N: usize>(
     _target_process_id: u32,
-    _sources: [isize; 4],
-) -> Result<[isize; 4], IsolationError> {
+    _sources: [isize; N],
+) -> Result<[isize; N], IsolationError> {
     Err(IsolationError::UnsupportedPlatform(
         "HCS handle duplication requires Windows".to_string(),
     ))

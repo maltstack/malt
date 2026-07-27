@@ -82,6 +82,8 @@ message ProvisionedImage {
     ready           @4 : bool
     reason          @5 : optional<string>
     active_sessions @6 : u32
+    @doc("Acquired, HCS-prepared, or live-proven helper evidence.")
+    readiness_evidence @7 : string
 }
 
 @doc("Helper-owned image listing payload.")

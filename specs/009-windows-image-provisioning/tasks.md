@@ -206,7 +206,7 @@ must share the final typed helper protocol, not invent a second transport.
 
 - [ ] T047 Implement authoritative image-to-session reference accounting and expose it in image views; refuse removal with the dependent session identity rather than the current hard-coded `active_sessions: 0`, per FR-008/FR-009 and US3/AC1-2 (partial).
 - [ ] T048 Re-evaluate a prepared image against the current HCS/host version policy immediately before contained-session construction, preserving a concrete unavailable reason instead of accepting `record.prepared` as permanent readiness, per FR-003/FR-011 (partial).
-- [X] T049 Make contained HCS process stdin lifecycle complete one-shot commands without a manual `malt eof`, while preserving explicit raw-input/EOF semantics for interactive commands, per US2/AC2 and SC-002.
+- [ ] T049 Make contained HCS process stdin lifecycle complete one-shot commands without a manual `malt eof`, while preserving explicit raw-input/EOF semantics for interactive commands, per US2/AC2 and SC-002 (implementation strengthened; fresh real-HCS proof pending).
 - [x] T050 Persist and report the selected immutable image digest on a contained session creation/result surface, per US2/AC1 and SC-002.
 - [ ] T051 Add Windows-only real HCS layer, contained-command, and post-destroy cleanup tests plus dated Docker-independent live evidence, per FR-010/FR-012/FR-013 and SC-003/SC-005 (missing).
-- [ ] T052 Model and report acquired, HCS-prepared, and live-proven containment evidence as distinct image readiness states, per FR-003 and plan: lifecycle evidence decision (partial).
+- [X] T052 Model and report acquired, HCS-prepared, and live-proven containment evidence as distinct image readiness states, per FR-003 and plan: lifecycle evidence decision.

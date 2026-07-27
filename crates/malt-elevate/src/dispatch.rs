@@ -353,7 +353,50 @@ fn image_view(record: &malt_image::ImageRecord, active_sessions: u32) -> Provisi
         reason: (!record.prepared)
             .then(|| "image acquired and verified but not yet HCS-prepared".to_string()),
         active_sessions,
+        readiness_evidence: image_readiness_evidence(record).to_string(),
         _unknown: Vec::new(),
+    }
+}
+
+fn image_readiness_evidence(record: &malt_image::ImageRecord) -> &'static str {
+    if record.live_proven {
+        "live-proven"
+    } else if record.prepared {
+        "hcs-prepared"
+    } else {
+        "acquired"
+    }
+}
+
+/// Record the fact that a helper-owned image has launched a real HCS process.
+/// This is evidence, never a prerequisite for the process result already
+/// established above; a later metadata write failure must not relabel a
+/// successful containment operation as refused.
+fn record_live_hcs_process(image_id: Option<&str>) {
+    let Some(image_id) = image_id else {
+        return;
+    };
+    let result = (|| -> Result<(), String> {
+        let digest = parse_image_id(image_id)?;
+        let store = helper_image_store()?;
+        let mut record = store
+            .load_record(&digest)
+            .map_err(|error| error.to_string())?;
+        if !record.prepared {
+            return Err(
+                "managed container referenced an image that is not HCS-prepared".to_string(),
+            );
+        }
+        if !record.live_proven {
+            record.live_proven = true;
+            store
+                .replace_record(&record)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        tracing::warn!(%error, image_id, "could not persist live HCS image evidence");
     }
 }
 
@@ -867,6 +910,11 @@ fn start_hcs_process(
             format!("could not encode duplicated HCS process handles: {error}"),
         );
     }
+    let image_id = containers
+        .containers
+        .get(&request.id)
+        .and_then(|container| container.image_id.as_deref());
+    record_live_hcs_process(image_id);
     ElevateResponse {
         request_id,
         kind: OutcomeKind::Performed,
@@ -1292,6 +1340,7 @@ mod tests {
                         working_directory: None,
                         environment: Vec::new(),
                         argv0: None,
+                        create_stdin_pipe: true,
                         _unknown: Vec::new(),
                     },
                 },
@@ -1305,12 +1354,43 @@ mod tests {
             <HcsProcessLaunch as malt_protocol::vexil_runtime::Unpack>::unpack(&mut reader)
                 .expect("decode HCS process payload");
         assert_ne!(launch.process_handle, 0);
-        assert_ne!(launch.stdin_handle, 0);
+        assert!(launch.stdin_handle.is_some());
         assert_ne!(launch.stdout_handle, 0);
         assert_ne!(launch.stderr_handle, 0);
 
-        let other_session = dispatch_entitled_request(
+        let no_stdin_response = dispatch_entitled_request(
             43,
+            7,
+            root.path(),
+            std::process::id(),
+            &ElevateRequest::ManageHcsContainer {
+                operation: ContainerOperation::StartProcess {
+                    request: HcsProcessRequest {
+                        id: id.clone(),
+                        program: r"C:\\Windows\\System32\\cmd.exe".to_string(),
+                        arguments: vec!["/c".to_string(), "exit 0".to_string()],
+                        working_directory: None,
+                        environment: Vec::new(),
+                        argv0: None,
+                        create_stdin_pipe: false,
+                        _unknown: Vec::new(),
+                    },
+                },
+            },
+            &mut containers,
+        );
+        assert_eq!(no_stdin_response.kind, OutcomeKind::Performed);
+        let payload = no_stdin_response
+            .payload
+            .expect("HCS no-stdin process payload");
+        let mut reader = malt_protocol::vexil_runtime::BitReader::new(&payload);
+        let no_stdin_launch =
+            <HcsProcessLaunch as malt_protocol::vexil_runtime::Unpack>::unpack(&mut reader)
+                .expect("decode HCS no-stdin process payload");
+        assert!(no_stdin_launch.stdin_handle.is_none());
+
+        let other_session = dispatch_entitled_request(
+            44,
             8,
             root.path(),
             std::process::id(),
@@ -1323,6 +1403,7 @@ mod tests {
                         working_directory: None,
                         environment: Vec::new(),
                         argv0: None,
+                        create_stdin_pipe: true,
                         _unknown: Vec::new(),
                     },
                 },
@@ -1333,7 +1414,7 @@ mod tests {
         assert_eq!(other_session.reason, Some(ReasonCode::NotEntitled));
 
         let _ = dispatch_entitled_request(
-            44,
+            45,
             7,
             root.path(),
             std::process::id(),

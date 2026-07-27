@@ -238,6 +238,7 @@ fn to_image_response(image: malt_protocol::elevate::ProvisionedImage) -> ImageRe
         ready: image.ready,
         reason: image.reason,
         active_sessions: image.active_sessions,
+        readiness_evidence: image.readiness_evidence,
     }
 }
 fn image_response(

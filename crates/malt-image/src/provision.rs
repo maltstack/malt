@@ -84,6 +84,7 @@ pub fn acquire_public_windows_image(
         platform,
         manifest,
         prepared: false,
+        live_proven: false,
     };
     let record = match store.publish_record(&record) {
         Ok(()) => record,

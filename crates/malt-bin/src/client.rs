@@ -92,6 +92,7 @@ pub struct ImageData {
     pub ready: bool,
     pub reason: Option<String>,
     pub active_sessions: u32,
+    pub readiness_evidence: String,
 }
 
 /// Payload sent to the existing create-session endpoint.

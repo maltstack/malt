@@ -174,9 +174,9 @@ pub(super) fn child_from_hcs_process(
     stderr_handle: u64,
 ) -> Result<Child, SpawnError> {
     let process_handle = checked_handle(process_handle, "HCS process")?;
-    let stdin_handle = checked_handle(stdin_handle, "HCS stdin")?;
     let stdout_handle = checked_handle(stdout_handle, "HCS stdout")?;
     let stderr_handle = checked_handle(stderr_handle, "HCS stderr")?;
+    let stdin_handle = checked_handle(stdin_handle, "HCS stdin")?;
     // SAFETY: each handle was duplicated into this daemon by the authenticated
     // elevated helper. The new OwnedHandle/File owners close them exactly once.
     let stdin = unsafe { std::fs::File::from_raw_handle(stdin_handle as RawHandle) };

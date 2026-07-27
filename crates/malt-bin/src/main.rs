@@ -89,7 +89,7 @@ fn handle_image(client: &MaltClient, command: ImageCommand) -> Result<()> {
 
 fn print_image(image: &client::ImageData) -> Result<()> {
     println!(
-        "image:       {}\nmanifest:    {}\nplatform:    {}{}\nreadiness:   {}\nactive:      {}",
+        "image:       {}\nmanifest:    {}\nplatform:    {}{}\nreadiness:   {}\nevidence:    {}\nactive:      {}",
         image.id,
         image.manifest_digest,
         image.platform,
@@ -99,6 +99,7 @@ fn print_image(image: &client::ImageData) -> Result<()> {
             .map(|version| format!(" (os.version {version})"))
             .unwrap_or_default(),
         if image.ready { "ready" } else { "unavailable" },
+        image.readiness_evidence,
         image.active_sessions
     );
     if let Some(reason) = &image.reason {

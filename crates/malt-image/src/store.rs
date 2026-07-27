@@ -14,6 +14,10 @@ pub struct ImageRecord {
     pub platform: Platform,
     pub manifest: ImageManifest,
     pub prepared: bool,
+    /// Set only after the helper has successfully launched an HCS process
+    /// from this image. Older records deserialize as not yet live-proven.
+    #[serde(default)]
+    pub live_proven: bool,
 }
 
 #[derive(Debug, Error)]
@@ -224,6 +228,7 @@ mod tests {
                 }],
             },
             prepared: false,
+            live_proven: false,
         }
     }
 
@@ -254,5 +259,20 @@ mod tests {
             store.load_record(&record.manifest_digest),
             Err(StoreError::Json(_))
         ));
+    }
+
+    #[test]
+    fn older_records_default_to_not_live_proven() {
+        let record = record();
+        let mut value = serde_json::to_value(record).expect("serialize record");
+        value
+            .as_object_mut()
+            .expect("record serializes as an object")
+            .remove("live_proven");
+        let decoded: ImageRecord = serde_json::from_value(value).expect("decode older record");
+        assert!(
+            !decoded.live_proven,
+            "a record created before live evidence existed must not be upgraded by deserialization"
+        );
     }
 }

@@ -61,6 +61,7 @@ pub struct ImageResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub active_sessions: u32,
+    pub readiness_evidence: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
