@@ -249,14 +249,32 @@ impl IsolationCapabilities {
             })
             .collect();
 
-        if failed.is_empty() {
-            None
-        } else {
-            Some(format!(
+        if !failed.is_empty() {
+            return Some(format!(
                 "{tier:?} requirements not met: {}",
                 failed.join("; ")
-            ))
+            ));
         }
+
+        // Reaching here means the tier is unavailable (checked at the top of
+        // this function) and yet every facet that could contribute to it is
+        // usable. That is not a contradiction -- it is a tier with no
+        // mechanism on this platform at all, which is macOS `Contained`:
+        // sandbox and rlimit are both present and both satisfy `Capped`, and
+        // nothing here establishes a container boundary.
+        //
+        // Returning `None` for it would report a tier as unavailable while
+        // offering no reason, which is the two-surfaces-disagree defect
+        // FR-007 forbids -- and is exactly what
+        // `tier_availability_and_unsupported_detail_never_disagree` caught on
+        // macOS after `supports_contained` stopped accepting the `Capped`
+        // facets under a stronger name.
+        Some(format!(
+            "{tier:?} has no supporting mechanism on {}: every facet that could \
+             contribute to it is present, but none of them establishes what this \
+             tier requires beyond the tier below it",
+            std::env::consts::OS
+        ))
     }
 }
 
