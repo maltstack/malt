@@ -50,3 +50,26 @@ duplicated-I/O, and MASH child-lifecycle path is now implemented, but this
 host has no validated HCS image/layer configuration: HCS rejects compute-system
 construction before a process can launch. The declined-UAC scenario likewise
 remains unperformed because the operator approved elevation for this run.
+
+## 2026-07-27 containment follow-up
+
+Spec 009 supplied the missing helper-owned Windows image/layer substrate. Its
+live evidence now proves required contained session creation, `cmd /c ver`
+through the helper-owned HCS process path, teardown, and removal of the
+prepared image state. It also proves two-image active-use isolation and
+post-workspace HCS-construction rollback. These close Spec 008's helper-backed
+containment routing work (T040/T040e), but do not substitute for a declined
+UAC prompt.
+
+On 2026-07-27, after stopping the daemon/helper only to release executable
+locks, the exact final gate set passed:
+
+- `cargo build --workspace`
+- `cargo test --workspace`
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo clippy -p malt-platform --features hcs --all-targets -- -D warnings`
+
+The expected constrained-subprocess allocation message in the isolation
+reality suite was again emitted while the enclosing test passed. The helper
+and daemon were restored and the daemon was freshly enrolled afterwards.

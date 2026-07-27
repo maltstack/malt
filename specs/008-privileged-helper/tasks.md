@@ -166,7 +166,7 @@ refused for that reason through the helper.
 - [X] T046 [P] Resolve the divergence warning in `docs/design/architecture.md` §"Shell and Isolation". After T034–T036 the document describes what the code does; replace the warning block with a note that the consolidation happened, referencing ADR-0005.
 - [X] T047 [P] Update `AGENTS.md`'s `malt-elevate` line — it currently reads "17 tests; only CreateSymlink is real, other ops stub", which stops being true at T012.
 - [X] T048 [P] Update `docs/briefs/README.md` and `docs/BACKLOG.md` for anything this feature closed or opened.
-- [ ] T049 Final gates: `cargo build --workspace`, `cargo test --workspace`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, plus `cargo clippy -p malt-platform --features hcs --all-targets -- -D warnings`. **Smoosh does not apply** — `mash/src/env.rs` only loses a field, changing no shell semantics. Commit. **Merge to main.**
+- [X] T049 Final gates: `cargo build --workspace`, `cargo test --workspace`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, plus `cargo clippy -p malt-platform --features hcs --all-targets -- -D warnings`. **Smoosh does not apply** — `mash/src/env.rs` only loses a field, changing no shell semantics. Commit. **Merge to main.**
 
 ---
 
