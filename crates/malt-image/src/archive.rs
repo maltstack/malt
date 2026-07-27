@@ -22,8 +22,8 @@ pub enum ArchiveError {
 ///
 /// The destination must not already exist. Symbolic links, devices, and paths
 /// escaping the destination are refused rather than interpreted. A hard link
-/// is accepted only when it names an already-extracted regular file in this
-/// same layer; Windows base images use those links for equivalent system data.
+/// is accepted only when it names a regular file in this same verified layer;
+/// links are applied only after the complete archive has been validated.
 pub fn extract_gzip_layer(input: impl Read, destination: &Path) -> Result<(), ArchiveError> {
     if destination.exists() {
         return Err(ArchiveError::UnsafePath(
@@ -42,6 +42,7 @@ fn extract_archive(reader: impl Read, destination: &Path) -> Result<(), ArchiveE
     let mut archive = Archive::new(reader);
     let mut seen = std::collections::BTreeSet::<PathBuf>::new();
     let mut regular_files = std::collections::BTreeSet::<PathBuf>::new();
+    let mut hard_links = Vec::<(PathBuf, PathBuf)>::new();
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?.into_owned();
@@ -60,17 +61,7 @@ fn extract_archive(reader: impl Read, destination: &Path) -> Result<(), ArchiveE
                 .link_name()?
                 .ok_or_else(|| ArchiveError::UnsafePath("hard link has no target".to_string()))?;
             let target = safe_relative_path(&target)?;
-            if !regular_files.contains(&target) {
-                return Err(ArchiveError::UnsupportedEntry(format!(
-                    "hard link target was not an earlier regular file: {}",
-                    target.display()
-                )));
-            }
-            let parent = output
-                .parent()
-                .ok_or_else(|| ArchiveError::UnsafePath(relative.display().to_string()))?;
-            fs::create_dir_all(parent)?;
-            fs::hard_link(destination.join(target), output)?;
+            hard_links.push((relative, target));
             continue;
         }
         if !entry_type.is_file() {
@@ -85,6 +76,20 @@ fn extract_archive(reader: impl Read, destination: &Path) -> Result<(), ArchiveE
         let mut file = File::options().create_new(true).write(true).open(output)?;
         std::io::copy(&mut entry, &mut file)?;
         regular_files.insert(relative);
+    }
+    for (link, target) in hard_links {
+        if !regular_files.contains(&target) {
+            return Err(ArchiveError::UnsupportedEntry(format!(
+                "hard link target is not a regular file in this layer: {}",
+                target.display()
+            )));
+        }
+        let output = destination.join(&link);
+        let parent = output
+            .parent()
+            .ok_or_else(|| ArchiveError::UnsafePath(link.display().to_string()))?;
+        fs::create_dir_all(parent)?;
+        fs::hard_link(destination.join(target), output)?;
     }
     Ok(())
 }

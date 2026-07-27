@@ -63,9 +63,9 @@ a manifest must be selected and assessed rather than assumed runnable.
 Download descriptor bytes to a helper-owned staging area, compare stream size
 and SHA-256 to the selected descriptor, safely decode the archive without
 path traversal, duplicate entries, symbolic links, or special files. A hard
-link is accepted only when it names an already-extracted regular file in the
-same verified layer, because standard Microsoft Windows base layers use those
-links for equivalent system data. Then atomically
+link is accepted only when it names a regular file in the same verified layer,
+after the full archive has been validated, because standard Microsoft Windows
+base layers use those links for equivalent system data. Then atomically
 publish the immutable record and materialized layers. Failed staging and HCS
 transactions remove only their own state.
 
