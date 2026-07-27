@@ -5,8 +5,9 @@ mod windows;
 
 #[cfg(windows)]
 pub use windows::{
-    install, is_current_process_elevated, register, run_elevated, run_service, status, uninstall,
-    ServiceStatus, StopSignal,
+    deploy_service_executable, install, is_current_process_elevated, program_files_path, register,
+    remove_service_executable, run_elevated, run_service, status, uninstall, ServiceStatus,
+    StopSignal,
 };
 
 #[cfg(not(windows))]

@@ -6,7 +6,9 @@ complements the focused unit and integration tests; it does not replace them.
 ## Prerequisites
 
 - A Windows host with the Containers feature and HCS available.
-- A freshly built MALT workspace and no stale service binary lock.
+- A freshly built MALT workspace. Installation copies the helper to the
+  administrator-owned `%ProgramFiles%\MALT\malt-elevate.exe`; the service
+  never executes Cargo's `target\debug\malt-elevate.exe` build output.
 - The elevated helper installed and reachable:
 
   ```powershell
@@ -91,4 +93,3 @@ Use the successful required contained command and cleanup record to complete
 Spec 008's live HCS tasks. Run the full required test, format, and lint suite
 from the rebuilt workspace, then append the exact host/image/helper evidence
 to the dated finding before marking the old tasks complete.
-

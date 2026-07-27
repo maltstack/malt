@@ -1,18 +1,23 @@
 use std::io;
-use std::path::Path;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::ipc::NamedPipeClient;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_FAILED_SERVICE_CONTROLLER_CONNECT,
+    CloseHandle, GetLastError, ERROR_DIR_NOT_EMPTY, ERROR_FAILED_SERVICE_CONTROLLER_CONNECT,
     ERROR_SERVICE_MARKED_FOR_DELETE, ERROR_SERVICE_NOT_ACTIVE, ERROR_SERVICE_SPECIFIC_ERROR,
     WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::{
     GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
 };
+use windows_sys::Win32::Storage::FileSystem::{
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+};
+use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::Services::{
     CloseServiceHandle, ControlService, CreateServiceW, DeleteService, OpenSCManagerW,
     OpenServiceW, QueryServiceStatus, RegisterServiceCtrlHandlerExW, SetServiceStatus,
@@ -25,13 +30,164 @@ use windows_sys::Win32::System::Services::{
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, WaitForSingleObject, INFINITE,
 };
-use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+use windows_sys::Win32::UI::Shell::{
+    FOLDERID_ProgramFiles, SHGetKnownFolderPath, ShellExecuteExW, KF_FLAG_DEFAULT,
+    SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 type ServiceWork = Box<dyn FnOnce(&StopSignal) -> io::Result<()> + Send + 'static>;
 const DELETE_ACCESS: u32 = 0x0001_0000;
 
 static SERVICE_CONTEXT: OnceLock<Arc<ServiceContext>> = OnceLock::new();
+
+/// Resolve the machine's Program Files directory without trusting inherited
+/// environment variables in an elevated child process.
+pub fn program_files_path() -> io::Result<PathBuf> {
+    let mut raw = std::ptr::null_mut();
+    // SAFETY: `raw` points to writable PWSTR storage, the known-folder GUID is
+    // static, and a null token requests the current machine/user context. The
+    // returned allocation is released with CoTaskMemFree below.
+    let result = unsafe {
+        SHGetKnownFolderPath(
+            &FOLDERID_ProgramFiles,
+            KF_FLAG_DEFAULT as u32,
+            std::ptr::null_mut(),
+            &mut raw,
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::other(format!(
+            "SHGetKnownFolderPath(FOLDERID_ProgramFiles) failed: HRESULT=0x{:08X}",
+            result as u32
+        )));
+    }
+    if raw.is_null() {
+        return Err(io::Error::other(
+            "SHGetKnownFolderPath returned a null Program Files path",
+        ));
+    }
+    let mut length = 0usize;
+    // SAFETY: a successful SHGetKnownFolderPath call returns a NUL-terminated
+    // UTF-16 allocation. This loop reads only through that terminator.
+    while unsafe { *raw.add(length) } != 0 {
+        length += 1;
+    }
+    // SAFETY: `raw` contains `length` initialized UTF-16 code units before its
+    // terminator, and OsString copies them before the allocation is released.
+    let path = std::ffi::OsString::from_wide(unsafe { std::slice::from_raw_parts(raw, length) });
+    // SAFETY: `raw` was allocated by SHGetKnownFolderPath and has not been
+    // freed or transferred.
+    unsafe { CoTaskMemFree(raw.cast()) };
+    Ok(PathBuf::from(path))
+}
+
+/// Copy a service executable into an administrator-owned destination and
+/// publish it atomically within that directory.
+///
+/// The caller chooses the destination policy. Production callers should use
+/// [`program_files_path`] rather than an inherited environment variable.
+pub fn deploy_service_executable(source: &Path, destination: &Path) -> io::Result<()> {
+    if !source.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("service executable source is absent: {}", source.display()),
+        ));
+    }
+    let parent = destination.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "service executable destination has no parent directory",
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let file_name = destination.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "service executable destination has no file name",
+        )
+    })?;
+    let staging = parent.join(format!(
+        ".{}.{}.installing",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+    match std::fs::remove_file(&staging) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let deployment = (|| {
+        let mut source_file = std::fs::File::open(source)?;
+        let expected = source_file.metadata()?.len();
+        let mut staging_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging)?;
+        let copied = io::copy(&mut source_file, &mut staging_file)?;
+        if copied != expected {
+            return Err(io::Error::other(format!(
+                "service executable copy was incomplete: copied {copied} of {expected} bytes"
+            )));
+        }
+        staging_file.sync_all()?;
+        drop(staging_file);
+        atomic_replace(&staging, destination)
+    })();
+    if deployment.is_err() {
+        let _ = std::fs::remove_file(&staging);
+    }
+    deployment
+}
+
+/// Remove a deployed service executable and its immediate directory when that
+/// directory is empty. Missing files and directories are already clean.
+pub fn remove_service_executable(destination: &Path) -> io::Result<()> {
+    match std::fs::remove_file(destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    if let Some(parent) = destination.parent() {
+        match std::fs::remove_dir(parent) {
+            Ok(()) => {}
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(ERROR_DIR_NOT_EMPTY as i32) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    let source = path_wide(source)?;
+    let destination = path_wide(destination)?;
+    // SAFETY: both path buffers are NUL terminated and live through the call.
+    // The source and destination share a directory, and the flags request
+    // replacement plus durable completion before returning.
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn path_wide(path: &Path) -> io::Result<Vec<u16>> {
+    if path.as_os_str().encode_wide().any(|unit| unit == 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "service executable path contains an embedded NUL",
+        ));
+    }
+    Ok(path.as_os_str().encode_wide().chain(Some(0)).collect())
+}
 
 /// Cooperative stop signal delivered to a Windows service workload.
 #[derive(Debug, Clone)]
@@ -608,4 +764,56 @@ fn quote_command_argument(argument: &str) -> io::Result<String> {
     quoted.push_str(&"\\".repeat(backslashes.saturating_mul(2)));
     quoted.push('"');
     Ok(quoted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{deploy_service_executable, program_files_path, remove_service_executable};
+
+    #[test]
+    fn program_files_is_resolved_from_the_known_folder_api() {
+        let path = program_files_path().expect("resolve Program Files");
+        assert!(path.is_absolute());
+        assert!(path.is_dir());
+    }
+
+    #[test]
+    fn deployed_service_executable_is_replaced_without_touching_source() {
+        let temporary = tempfile::tempdir().expect("create temporary directory");
+        let source = temporary.path().join("source.exe");
+        let destination = temporary.path().join("installed").join("helper.exe");
+        std::fs::write(&source, b"first").expect("write first source");
+
+        deploy_service_executable(&source, &destination).expect("deploy first executable");
+        assert_eq!(
+            std::fs::read(&destination).expect("read first deployment"),
+            b"first"
+        );
+
+        std::fs::write(&source, b"second").expect("write second source");
+        deploy_service_executable(&source, &destination).expect("replace executable");
+        assert_eq!(
+            std::fs::read(&destination).expect("read replacement"),
+            b"second"
+        );
+        assert_eq!(
+            std::fs::read(&source).expect("read unchanged source"),
+            b"second"
+        );
+    }
+
+    #[test]
+    fn removing_service_executable_cleans_its_empty_directory() {
+        let temporary = tempfile::tempdir().expect("create temporary directory");
+        let destination = temporary.path().join("installed").join("helper.exe");
+        std::fs::create_dir_all(destination.parent().expect("destination parent"))
+            .expect("create install directory");
+        std::fs::write(&destination, b"helper").expect("write deployed executable");
+
+        remove_service_executable(&destination).expect("remove deployed executable");
+
+        assert!(!destination.exists());
+        assert!(!destination.parent().expect("destination parent").exists());
+        remove_service_executable(&destination).expect("repeat idempotent removal");
+    }
 }

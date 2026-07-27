@@ -10,6 +10,10 @@ use std::time::Duration;
 pub const HELPER_SERVICE_NAME: &str = "MALT-Elevate";
 pub const HELPER_PIPE_NAME: &str = "malt-elevate";
 pub const HELPER_PROTOCOL_VERSION: u32 = 3;
+#[cfg(windows)]
+const HELPER_INSTALL_DIRECTORY: &str = "MALT";
+#[cfg(windows)]
+const HELPER_EXECUTABLE_NAME: &str = "malt-elevate.exe";
 
 /// Observable helper state. Reachability is never inferred from SCM alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,10 +131,20 @@ pub fn status() -> io::Result<HelperState> {
 /// neither suppresses nor attempts a UAC prompt.
 #[cfg(windows)]
 pub fn install(helper_executable: &Path) -> io::Result<()> {
+    if malt_platform::service::status(HELPER_SERVICE_NAME)?
+        != malt_platform::service::ServiceStatus::NotInstalled
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "the helper service is already installed; uninstall it before replacing its executable",
+        ));
+    }
     let principal = malt_platform::ipc::current_process_principal()?;
-    malt_platform::service::install(
+    let installed_executable = installed_helper_executable()?;
+    malt_platform::service::deploy_service_executable(helper_executable, &installed_executable)?;
+    if let Err(error) = malt_platform::service::install(
         HELPER_SERVICE_NAME,
-        helper_executable,
+        &installed_executable,
         &[
             "--service",
             "--pipe",
@@ -138,22 +152,37 @@ pub fn install(helper_executable: &Path) -> io::Result<()> {
             "--authorized-principal",
             &principal,
         ],
-    )?;
+    ) {
+        let rollback = malt_platform::service::remove_service_executable(&installed_executable);
+        return Err(match rollback {
+            Ok(()) => error,
+            Err(rollback_error) => io::Error::new(
+                error.kind(),
+                format!(
+                    "service installation failed: {error}; deployed executable rollback also failed: {rollback_error}"
+                ),
+            ),
+        });
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let state = loop {
-        let state = status()?;
-        if matches!(
-            state,
-            HelperState::Reachable { .. } | HelperState::VersionMismatch { .. }
-        ) || std::time::Instant::now() >= deadline
-        {
-            break state;
+        match status() {
+            Ok(state)
+                if matches!(
+                    state,
+                    HelperState::Reachable { .. } | HelperState::VersionMismatch { .. }
+                ) || std::time::Instant::now() >= deadline =>
+            {
+                break Ok(state)
+            }
+            Ok(_) => {}
+            Err(error) => break Err(error),
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
     match state {
-        HelperState::Reachable { .. } => Ok(()),
-        state => {
+        Ok(HelperState::Reachable { .. }) => Ok(()),
+        Ok(state) => {
             let rollback = uninstall();
             let detail = match rollback {
                 Ok(()) => format!(
@@ -165,6 +194,18 @@ pub fn install(helper_executable: &Path) -> io::Result<()> {
             };
             Err(io::Error::new(io::ErrorKind::NotConnected, detail))
         }
+        Err(error) => {
+            let rollback = uninstall();
+            let detail = match rollback {
+                Ok(()) => format!(
+                    "helper status probe failed after installation ({error}); the service and deployed executable were removed"
+                ),
+                Err(rollback_error) => format!(
+                    "helper status probe failed after installation ({error}); rollback removal also failed: {rollback_error}"
+                ),
+            };
+            Err(io::Error::new(error.kind(), detail))
+        }
     }
 }
 
@@ -172,7 +213,19 @@ pub fn install(helper_executable: &Path) -> io::Result<()> {
 /// process, and no other MALT command invokes this operation.
 #[cfg(windows)]
 pub fn uninstall() -> io::Result<()> {
-    malt_platform::service::uninstall(HELPER_SERVICE_NAME)
+    if malt_platform::service::status(HELPER_SERVICE_NAME)?
+        != malt_platform::service::ServiceStatus::NotInstalled
+    {
+        malt_platform::service::uninstall(HELPER_SERVICE_NAME)?;
+    }
+    malt_platform::service::remove_service_executable(&installed_helper_executable()?)
+}
+
+#[cfg(windows)]
+fn installed_helper_executable() -> io::Result<std::path::PathBuf> {
+    Ok(malt_platform::service::program_files_path()?
+        .join(HELPER_INSTALL_DIRECTORY)
+        .join(HELPER_EXECUTABLE_NAME))
 }
 
 /// Explicitly enrol one running daemon process after UAC approval.
