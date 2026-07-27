@@ -8,8 +8,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
-
 use super::tier::IsolationError;
 
 const OWNER_MARKER: &str = ".malt-owned-image-store";
@@ -96,10 +94,19 @@ pub struct PreparedLayer {
     pub path: PathBuf,
 }
 
+/// Reopen a prepared HCS layer from its helper-owned path and derive the exact
+/// vmcompute GUID that HCS uses for that path.
+pub fn prepared_layer(path: PathBuf) -> Result<PreparedLayer, IsolationError> {
+    validate_owned_layer_path(&path)?;
+    let id = native::layer_id(&path)?;
+    Ok(PreparedLayer { id, path })
+}
+
 /// A session-private writable layer that must be detached and destroyed once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WritableLayer {
     pub path: PathBuf,
+    mount_path: String,
     attached: bool,
 }
 
@@ -111,21 +118,10 @@ impl WritableLayer {
     pub fn attached(&self) -> bool {
         self.attached
     }
-}
 
-/// Render the only HCS layer-data JSON MALT supplies. Layer IDs and paths come
-/// from the helper-owned prepared registry, not a daemon request.
-pub fn layer_data_json(parents: &[PreparedLayer]) -> String {
-    json!({
-        "SchemaVersion": { "Major": 2, "Minor": 1 },
-        "FilterType": "WCIFS",
-        "Layers": parents.iter().map(|parent| json!({
-            "Id": parent.id,
-            "Path": parent.path,
-            "PathType": "AbsolutePath",
-        })).collect::<Vec<_>>(),
-    })
-    .to_string()
+    pub fn mount_path(&self) -> &str {
+        &self.mount_path
+    }
 }
 
 /// Prepare one verified filesystem layer. The first layer is processed as an
@@ -133,10 +129,9 @@ pub fn layer_data_json(parents: &[PreparedLayer]) -> String {
 pub fn materialize_layer(
     destination: &Path,
     source: &Path,
-    id: &str,
     parents: &[PreparedLayer],
 ) -> Result<PreparedLayer, IsolationError> {
-    validate_owned_layer_path(destination, id)?;
+    validate_owned_layer_path(destination)?;
     if !source.is_dir() {
         return Err(IsolationError::HcsError(format!(
             "verified layer source is not a directory: {}",
@@ -158,10 +153,13 @@ pub fn materialize_layer(
         let _ = remove_owned_directory(destination);
         return Err(error);
     }
-    Ok(PreparedLayer {
-        id: id.to_string(),
-        path: destination.to_path_buf(),
-    })
+    match prepared_layer(destination.to_path_buf()) {
+        Ok(layer) => Ok(layer),
+        Err(error) => {
+            let _ = remove_owned_directory(destination);
+            Err(error)
+        }
+    }
 }
 
 /// Create and attach one session-private writable layer over ordered parents.
@@ -169,7 +167,7 @@ pub fn initialize_writable_layer(
     destination: &Path,
     parents: &[PreparedLayer],
 ) -> Result<WritableLayer, IsolationError> {
-    validate_owned_layer_path(destination, "workspace")?;
+    validate_owned_layer_path(destination)?;
     if parents.is_empty() {
         return Err(IsolationError::HcsError(
             "writable HCS layer requires at least one prepared parent".to_string(),
@@ -185,18 +183,20 @@ pub fn initialize_writable_layer(
         .parent()
         .ok_or_else(|| IsolationError::HcsError("writable layer path has no parent".to_string()))?;
     fs::create_dir_all(parent).map_err(IsolationError::IoError)?;
-    // The verified source images use HCS's legacy hive-folder format. Its
-    // writable-layer API receives the mount root and the separate hive folder.
-    fs::create_dir_all(destination.join("Hives")).map_err(IsolationError::IoError)?;
-    let data = layer_data_json(parents);
-    let result = native::initialize_writable(destination, &data)
-        .and_then(|()| native::attach_filter(destination, &data));
-    if let Err(error) = result {
-        let _ = remove_owned_directory(destination);
-        return Err(error);
-    }
+    let result = native::create_sandbox(destination, parents)
+        .and_then(|()| native::activate(destination))
+        .and_then(|()| native::prepare(destination, parents))
+        .and_then(|()| native::mount_path(destination));
+    let mount_path = match result {
+        Ok(mount_path) => mount_path,
+        Err(error) => {
+            let _ = remove_owned_directory(destination);
+            return Err(error);
+        }
+    };
     Ok(WritableLayer {
         path: destination.to_path_buf(),
+        mount_path,
         attached: true,
     })
 }
@@ -205,7 +205,8 @@ pub fn initialize_writable_layer(
 /// stopping/closing its compute system before invoking this function.
 pub fn destroy_writable_layer(workspace: WritableLayer) -> Result<(), IsolationError> {
     if workspace.attached {
-        native::detach_filter(&workspace.path)?;
+        native::unprepare(&workspace.path)?;
+        native::deactivate(&workspace.path)?;
     }
     native::destroy_layer(&workspace.path)?;
     Ok(())
@@ -217,16 +218,7 @@ pub fn destroy_prepared_layer(layer: PreparedLayer) -> Result<(), IsolationError
     native::destroy_layer(&layer.path)
 }
 
-fn validate_owned_layer_path(path: &Path, id: &str) -> Result<(), IsolationError> {
-    if id.is_empty()
-        || !id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    {
-        return Err(IsolationError::HcsError(
-            "HCS layer identifier must use ASCII alphanumeric or hyphen characters".to_string(),
-        ));
-    }
+fn validate_owned_layer_path(path: &Path) -> Result<(), IsolationError> {
     if !path.is_absolute() || path.file_name().is_none() {
         return Err(IsolationError::HcsError(
             "HCS layer destination must be an absolute owned directory".to_string(),
@@ -287,7 +279,7 @@ fn import_layer(
     source: &Path,
     parents: &[PreparedLayer],
 ) -> Result<(), IsolationError> {
-    native::import_layer(destination, source, &layer_data_json(parents))
+    native::import_layer(destination, source, parents)
 }
 
 #[cfg(not(windows))]
@@ -307,14 +299,24 @@ mod native {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
+    use windows_sys::core::GUID;
     use windows_sys::Win32::Foundation::{FreeLibrary, GetLastError};
-    use windows_sys::Win32::System::HostComputeSystem::{
-        HcsAttachLayerStorageFilter, HcsDestroyLayer, HcsDetachLayerStorageFilter, HcsImportLayer,
-        HcsInitializeLegacyWritableLayer,
-    };
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
-    use super::IsolationError;
+    use super::{IsolationError, PreparedLayer};
+
+    #[repr(C)]
+    struct DriverInfo {
+        flavour: i32,
+        home_dir: *const u16,
+    }
+
+    #[repr(C)]
+    struct LayerDescriptor {
+        layer_id: GUID,
+        flags: u32,
+        path: *const u16,
+    }
 
     fn wide(value: &OsStr) -> Vec<u16> {
         value.encode_wide().chain(Some(0)).collect()
@@ -330,129 +332,311 @@ mod native {
         }
     }
 
-    pub(super) fn import_layer(
-        destination: &Path,
-        source: &Path,
-        data: &str,
-    ) -> Result<(), IsolationError> {
-        let destination = wide(destination.as_os_str());
-        let source = wide(source.as_os_str());
-        let data = wide(OsStr::new(data));
-        // SAFETY: each UTF-16 buffer is null terminated and lives for the
-        // duration of HcsImportLayer. The caller supplied helper-owned paths.
-        checked_hresult("HcsImportLayer", unsafe {
-            HcsImportLayer(destination.as_ptr(), source.as_ptr(), data.as_ptr())
-        })
+    static EMPTY_DRIVER_HOME: u16 = 0;
+
+    fn driver_info() -> DriverInfo {
+        DriverInfo {
+            flavour: 1,
+            home_dir: &EMPTY_DRIVER_HOME,
+        }
     }
 
-    pub(super) fn initialize_writable(
-        destination: &Path,
-        data: &str,
-    ) -> Result<(), IsolationError> {
-        let hive_folder = destination.join("Hives");
-        let destination = wide(destination.as_os_str());
-        let hives = wide(hive_folder.as_os_str());
-        let data = wide(OsStr::new(data));
-        // SAFETY: buffers are null terminated and valid through the call;
-        // the owned writable root has a dedicated `Hives` folder, and null
-        // options requests the documented default legacy initialization.
-        checked_hresult("HcsInitializeLegacyWritableLayer", unsafe {
-            HcsInitializeLegacyWritableLayer(
-                destination.as_ptr(),
-                hives.as_ptr(),
-                data.as_ptr(),
-                std::ptr::null(),
-            )
-        })
-    }
-
-    pub(super) fn attach_filter(destination: &Path, data: &str) -> Result<(), IsolationError> {
-        let destination = wide(destination.as_os_str());
-        let data = wide(OsStr::new(data));
-        // SAFETY: buffers are null terminated and valid through the call.
-        checked_hresult("HcsAttachLayerStorageFilter", unsafe {
-            HcsAttachLayerStorageFilter(destination.as_ptr(), data.as_ptr())
-        })
-    }
-
-    pub(super) fn detach_filter(destination: &Path) -> Result<(), IsolationError> {
-        let destination = wide(destination.as_os_str());
-        // SAFETY: the writable-layer path was created/attached by this module
-        // and the buffer is valid for the duration of this call.
-        checked_hresult("HcsDetachLayerStorageFilter", unsafe {
-            HcsDetachLayerStorageFilter(destination.as_ptr())
-        })
-    }
-
-    pub(super) fn destroy_layer(destination: &Path) -> Result<(), IsolationError> {
-        let destination = wide(destination.as_os_str());
-        // SAFETY: the caller passes a helper-owned writable-layer path and the
-        // UTF-16 buffer remains valid through HcsDestroyLayer.
-        checked_hresult("HcsDestroyLayer", unsafe {
-            HcsDestroyLayer(destination.as_ptr())
-        })
-    }
-
-    pub(super) fn process_base_image(path: &Path) -> Result<(), IsolationError> {
-        type ProcessBaseImage = unsafe extern "system" fn(*const u16) -> i32;
+    fn with_symbol<T>(
+        name: &str,
+        invoke: impl FnOnce(*const c_void) -> Result<T, IsolationError>,
+    ) -> Result<T, IsolationError> {
         let module_name = wide(OsStr::new("vmcompute.dll"));
         // SAFETY: module_name is valid UTF-16 and null terminated.
         let module = unsafe { LoadLibraryW(module_name.as_ptr()) };
         if module.is_null() {
             return Err(IsolationError::HcsError(format!(
                 "LoadLibraryW(vmcompute.dll) failed: {}",
+                // SAFETY: GetLastError reads this thread's last-error value.
                 unsafe { GetLastError() }
             )));
         }
         let result = (|| {
-            let symbol = CString::new("ProcessBaseImage").map_err(|error| {
-                IsolationError::HcsError(format!("invalid ProcessBaseImage symbol: {error}"))
+            let symbol = CString::new(name).map_err(|error| {
+                IsolationError::HcsError(format!("invalid vmcompute symbol {name}: {error}"))
             })?;
-            // SAFETY: module is a live library handle and symbol is a valid C string.
+            // SAFETY: module is live and symbol is a valid C string.
             let pointer =
                 unsafe { GetProcAddress(module, symbol.as_ptr().cast()) }.ok_or_else(|| {
                     IsolationError::HcsError(format!(
-                        "vmcompute.dll does not export ProcessBaseImage: {}",
+                        "vmcompute.dll does not export {name}: {}",
+                        // SAFETY: GetLastError reads this thread's last-error value.
                         unsafe { GetLastError() }
                     ))
                 })?;
-            // SAFETY: ProcessBaseImage is documented by the Windows container
-            // runtime with this exact system ABI and `PCWSTR` parameter.
-            let process: ProcessBaseImage = unsafe {
-                std::mem::transmute::<*const c_void, ProcessBaseImage>(pointer as *const c_void)
-            };
-            let path = wide(path.as_os_str());
-            // SAFETY: path is a null-terminated UTF-16 owned directory path.
-            checked_hresult("ProcessBaseImage", unsafe { process(path.as_ptr()) })
+            invoke(pointer as *const c_void)
         })();
-        // SAFETY: module is a successful LoadLibraryW result and is released once after resolving/calling the symbol.
+        // SAFETY: module came from a successful LoadLibraryW call and no symbol
+        // pointer escapes this function.
         unsafe { FreeLibrary(module) };
         result
+    }
+
+    fn layer_descriptors(
+        parents: &[PreparedLayer],
+    ) -> Result<(Vec<Vec<u16>>, Vec<LayerDescriptor>), IsolationError> {
+        let paths = parents
+            .iter()
+            .map(|parent| wide(parent.path.as_os_str()))
+            .collect::<Vec<_>>();
+        let mut descriptors = Vec::with_capacity(parents.len());
+        for (parent, path) in parents.iter().zip(&paths) {
+            descriptors.push(LayerDescriptor {
+                layer_id: layer_guid(&parent.path)?,
+                flags: 0,
+                path: path.as_ptr(),
+            });
+        }
+        Ok((paths, descriptors))
+    }
+
+    fn layer_guid(path: &Path) -> Result<GUID, IsolationError> {
+        type NameToGuid = unsafe extern "system" fn(*const u16, *mut GUID) -> i32;
+        let path = wide(path.as_os_str());
+        with_symbol("NameToGuid", |pointer| {
+            // SAFETY: vmcompute exports NameToGuid with this documented system
+            // ABI; the transmuted function remains scoped to the loaded module.
+            let name_to_guid: NameToGuid = unsafe { std::mem::transmute(pointer) };
+            let mut guid = GUID::default();
+            // SAFETY: path is null terminated and guid points to writable
+            // storage for the duration of the call.
+            checked_hresult("NameToGuid", unsafe {
+                name_to_guid(path.as_ptr(), &mut guid)
+            })?;
+            Ok(guid)
+        })
+    }
+
+    pub(super) fn layer_id(path: &Path) -> Result<String, IsolationError> {
+        let guid = layer_guid(path)?;
+        Ok(format!(
+            "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            guid.data1,
+            guid.data2,
+            guid.data3,
+            guid.data4[0],
+            guid.data4[1],
+            guid.data4[2],
+            guid.data4[3],
+            guid.data4[4],
+            guid.data4[5],
+            guid.data4[6],
+            guid.data4[7]
+        ))
+    }
+
+    fn call_layer_operation(name: &'static str, path: &Path) -> Result<(), IsolationError> {
+        type LayerOperation = unsafe extern "system" fn(*const DriverInfo, *const u16) -> i32;
+        let path = wide(path.as_os_str());
+        let info = driver_info();
+        with_symbol(name, |pointer| {
+            // SAFETY: each selected vmcompute layer operation has this system
+            // ABI and the loaded symbol is used only within this closure.
+            let operation: LayerOperation = unsafe { std::mem::transmute(pointer) };
+            // SAFETY: info and path are valid through the synchronous call.
+            checked_hresult(name, unsafe { operation(&info, path.as_ptr()) })
+        })
+    }
+
+    pub(super) fn import_layer(
+        destination: &Path,
+        source: &Path,
+        parents: &[PreparedLayer],
+    ) -> Result<(), IsolationError> {
+        type ImportLayer = unsafe extern "system" fn(
+            *const DriverInfo,
+            *const u16,
+            *const u16,
+            *const LayerDescriptor,
+            usize,
+        ) -> i32;
+        let destination = wide(destination.as_os_str());
+        let source = wide(source.as_os_str());
+        let (_paths, descriptors) = layer_descriptors(parents)?;
+        let info = driver_info();
+        with_symbol("ImportLayer", |pointer| {
+            // SAFETY: ImportLayer is exported by vmcompute with this system ABI.
+            let import: ImportLayer = unsafe { std::mem::transmute(pointer) };
+            // SAFETY: all UTF-16 and descriptor buffers stay valid through this
+            // synchronous call; parents are helper-owned prepared layers.
+            checked_hresult("ImportLayer", unsafe {
+                import(
+                    &info,
+                    destination.as_ptr(),
+                    source.as_ptr(),
+                    descriptors.as_ptr(),
+                    descriptors.len(),
+                )
+            })
+        })
+    }
+
+    pub(super) fn create_sandbox(
+        destination: &Path,
+        parents: &[PreparedLayer],
+    ) -> Result<(), IsolationError> {
+        type CreateSandboxLayer = unsafe extern "system" fn(
+            *const DriverInfo,
+            *const u16,
+            usize,
+            *const LayerDescriptor,
+            usize,
+        ) -> i32;
+        let destination = wide(destination.as_os_str());
+        let (_paths, descriptors) = layer_descriptors(parents)?;
+        let info = driver_info();
+        with_symbol("CreateSandboxLayer", |pointer| {
+            // SAFETY: CreateSandboxLayer is exported by vmcompute with this ABI.
+            let create: CreateSandboxLayer = unsafe { std::mem::transmute(pointer) };
+            // SAFETY: destination and descriptors remain valid through the call;
+            // null parent selects the documented path-based parent descriptors.
+            checked_hresult("CreateSandboxLayer", unsafe {
+                create(
+                    &info,
+                    destination.as_ptr(),
+                    0,
+                    descriptors.as_ptr(),
+                    descriptors.len(),
+                )
+            })
+        })
+    }
+
+    pub(super) fn activate(path: &Path) -> Result<(), IsolationError> {
+        call_layer_operation("ActivateLayer", path)
+    }
+
+    pub(super) fn prepare(path: &Path, parents: &[PreparedLayer]) -> Result<(), IsolationError> {
+        type PrepareLayer = unsafe extern "system" fn(
+            *const DriverInfo,
+            *const u16,
+            *const LayerDescriptor,
+            usize,
+        ) -> i32;
+        let path = wide(path.as_os_str());
+        let (_paths, descriptors) = layer_descriptors(parents)?;
+        let info = driver_info();
+        with_symbol("PrepareLayer", |pointer| {
+            // SAFETY: PrepareLayer is exported by vmcompute with this system ABI.
+            let prepare: PrepareLayer = unsafe { std::mem::transmute(pointer) };
+            // SAFETY: buffers remain valid through the synchronous call.
+            checked_hresult("PrepareLayer", unsafe {
+                prepare(
+                    &info,
+                    path.as_ptr(),
+                    descriptors.as_ptr(),
+                    descriptors.len(),
+                )
+            })
+        })
+    }
+
+    pub(super) fn mount_path(path: &Path) -> Result<String, IsolationError> {
+        type GetLayerMountPath =
+            unsafe extern "system" fn(*const DriverInfo, *const u16, *mut usize, *mut u16) -> i32;
+        let path = wide(path.as_os_str());
+        let info = driver_info();
+        with_symbol("GetLayerMountPath", |pointer| {
+            // SAFETY: GetLayerMountPath is exported by vmcompute with this ABI.
+            let get_mount_path: GetLayerMountPath = unsafe { std::mem::transmute(pointer) };
+            let mut length = 0usize;
+            // SAFETY: null output buffer asks vmcompute for the required length.
+            checked_hresult("GetLayerMountPath", unsafe {
+                get_mount_path(&info, path.as_ptr(), &mut length, std::ptr::null_mut())
+            })?;
+            if length == 0 {
+                return Err(IsolationError::HcsError(
+                    "GetLayerMountPath returned an empty mount path".to_string(),
+                ));
+            }
+            let mut buffer = vec![0u16; length];
+            // SAFETY: buffer has the size requested by vmcompute and is valid
+            // for the duration of the call.
+            checked_hresult("GetLayerMountPath", unsafe {
+                get_mount_path(&info, path.as_ptr(), &mut length, buffer.as_mut_ptr())
+            })?;
+            let end = buffer
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(buffer.len());
+            String::from_utf16(&buffer[..end]).map_err(|error| {
+                IsolationError::HcsError(format!(
+                    "GetLayerMountPath returned invalid UTF-16: {error}"
+                ))
+            })
+        })
+    }
+
+    pub(super) fn unprepare(path: &Path) -> Result<(), IsolationError> {
+        call_layer_operation("UnprepareLayer", path)
+    }
+
+    pub(super) fn deactivate(path: &Path) -> Result<(), IsolationError> {
+        call_layer_operation("DeactivateLayer", path)
+    }
+
+    pub(super) fn destroy_layer(path: &Path) -> Result<(), IsolationError> {
+        call_layer_operation("DestroyLayer", path)
+    }
+
+    pub(super) fn process_base_image(path: &Path) -> Result<(), IsolationError> {
+        type ProcessBaseImage = unsafe extern "system" fn(*const u16) -> i32;
+        let path = wide(path.as_os_str());
+        with_symbol("ProcessBaseImage", |pointer| {
+            // SAFETY: ProcessBaseImage is documented by the Windows container
+            // runtime with this exact system ABI and `PCWSTR` parameter.
+            let process: ProcessBaseImage = unsafe { std::mem::transmute(pointer) };
+            // SAFETY: path is a null-terminated UTF-16 owned directory path.
+            checked_hresult("ProcessBaseImage", unsafe { process(path.as_ptr()) })
+        })
     }
 }
 
 #[cfg(not(windows))]
 mod native {
-    use super::IsolationError;
+    use super::{IsolationError, PreparedLayer};
     use std::path::Path;
-    fn unavailable() -> Result<(), IsolationError> {
+    fn unavailable<T>() -> Result<T, IsolationError> {
         Err(IsolationError::UnsupportedPlatform(
             "HCS layers require Windows".to_string(),
         ))
     }
-    pub(super) fn initialize_writable(
+    pub(super) fn layer_id(_path: &Path) -> Result<String, IsolationError> {
+        unavailable()
+    }
+    pub(super) fn import_layer(
         _destination: &Path,
-        _data: &str,
+        _source: &Path,
+        _parents: &[PreparedLayer],
     ) -> Result<(), IsolationError> {
         unavailable()
     }
-    pub(super) fn attach_filter(_destination: &Path, _data: &str) -> Result<(), IsolationError> {
+    pub(super) fn create_sandbox(
+        _destination: &Path,
+        _parents: &[PreparedLayer],
+    ) -> Result<(), IsolationError> {
         unavailable()
     }
-    pub(super) fn detach_filter(_destination: &Path) -> Result<(), IsolationError> {
+    pub(super) fn activate(_path: &Path) -> Result<(), IsolationError> {
         unavailable()
     }
-    pub(super) fn destroy_layer(_destination: &Path) -> Result<(), IsolationError> {
+    pub(super) fn prepare(_path: &Path, _parents: &[PreparedLayer]) -> Result<(), IsolationError> {
+        unavailable()
+    }
+    pub(super) fn mount_path(_path: &Path) -> Result<String, IsolationError> {
+        unavailable()
+    }
+    pub(super) fn unprepare(_path: &Path) -> Result<(), IsolationError> {
+        unavailable()
+    }
+    pub(super) fn deactivate(_path: &Path) -> Result<(), IsolationError> {
+        unavailable()
+    }
+    pub(super) fn destroy_layer(_path: &Path) -> Result<(), IsolationError> {
         unavailable()
     }
 }
@@ -462,21 +646,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn layer_data_is_derived_from_prepared_layers() {
-        let json = layer_data_json(&[PreparedLayer {
-            id: "layer-a".to_string(),
-            path: PathBuf::from(r"C:\\MALT\\layers\\a"),
-        }]);
-        assert!(json.contains("layer-a"));
-        assert!(json.contains("\"Id\""));
-        assert!(json.contains("\"WCIFS\""));
-        assert!(json.contains("AbsolutePath"));
-    }
-
-    #[test]
-    fn layer_ids_and_relative_destinations_are_refused() {
-        assert!(validate_owned_layer_path(Path::new("relative"), "ok").is_err());
-        assert!(validate_owned_layer_path(Path::new(r"C:\\MALT\\layers\\ok"), "../bad").is_err());
+    fn relative_destinations_are_refused() {
+        assert!(validate_owned_layer_path(Path::new("relative")).is_err());
+        assert!(validate_owned_layer_path(Path::new(r"C:\\MALT\\layers\\ok")).is_ok());
     }
 
     #[test]

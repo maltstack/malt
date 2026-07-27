@@ -194,10 +194,10 @@ fn remove_prepared_image(
         .to_string();
     let root = store.root().join("prepared").join(&digest);
     for index in (0..record.manifest.layers.len()).rev() {
-        let layer = malt_platform::isolation::layers::PreparedLayer {
-            id: prepared_layer_id(&digest, index),
-            path: root.join("layers").join(index.to_string()),
-        };
+        let layer = malt_platform::isolation::layers::prepared_layer(
+            root.join("layers").join(index.to_string()),
+        )
+        .map_err(|error| error.to_string())?;
         malt_platform::isolation::layers::destroy_prepared_layer(layer)
             .map_err(|error| error.to_string())?;
     }
@@ -235,7 +235,6 @@ fn prepare_image(
             let layer = malt_platform::isolation::layers::materialize_layer(
                 &layers_root.join(index.to_string()),
                 &source,
-                &prepared_layer_id(&digest, index),
                 &parents,
             )
             .map_err(|error| error.to_string())?;
@@ -267,22 +266,6 @@ fn parse_image_id(value: &str) -> Result<malt_image::Digest, String> {
     value
         .parse::<malt_image::Digest>()
         .map_err(|error| error.to_string())
-}
-
-/// HCS layer-data requires a UUID-shaped ID. The image digest is immutable,
-/// and the layer ordinal distinguishes the ordered parents without creating a
-/// caller-controlled identifier or adding another persistence authority.
-fn prepared_layer_id(digest: &str, index: usize) -> String {
-    let prefix = &digest[..24];
-    format!(
-        "{}-{}-{}-{}-{}{:08x}",
-        &prefix[..8],
-        &prefix[8..12],
-        &prefix[12..16],
-        &prefix[16..20],
-        &prefix[20..24],
-        index
-    )
 }
 
 fn image_view(record: &malt_image::ImageRecord) -> ProvisionedImage {
@@ -576,7 +559,12 @@ fn create_hcs_container(
         }
     };
     let (parents, workspace, root, selected_image) = if fake_test {
-        (Vec::new(), None, storage_root.to_path_buf(), None)
+        (
+            Vec::new(),
+            None,
+            storage_root.to_string_lossy().to_string(),
+            None,
+        )
     } else {
         let record = match image_id {
             Some(image_id) => match ready.iter().find(|record| record.manifest_digest.to_string() == image_id) { Some(record) => record, None => return refused(request_id, ReasonCode::InvalidParameters, "selected image is not a ready helper-owned image") },
@@ -592,16 +580,27 @@ fn create_hcs_container(
             .trim_start_matches("sha256:")
             .to_string();
         let parents = (0..record.manifest.layers.len())
-            .map(|index| malt_platform::isolation::layers::PreparedLayer {
-                id: prepared_layer_id(&digest, index),
-                path: store
-                    .root()
-                    .join("prepared")
-                    .join(&digest)
-                    .join("layers")
-                    .join(index.to_string()),
+            .map(|index| {
+                malt_platform::isolation::layers::prepared_layer(
+                    store
+                        .root()
+                        .join("prepared")
+                        .join(&digest)
+                        .join("layers")
+                        .join(index.to_string()),
+                )
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>();
+        let parents = match parents {
+            Ok(parents) => parents,
+            Err(error) => {
+                return refused(
+                    request_id,
+                    ReasonCode::OsError,
+                    format!("could not reopen helper-owned prepared layers: {error}"),
+                )
+            }
+        };
         let workspace = match malt_platform::isolation::layers::initialize_writable_layer(
             &store
                 .root()
@@ -619,7 +618,7 @@ fn create_hcs_container(
                 )
             }
         };
-        let root = workspace.path().to_path_buf();
+        let root = workspace.mount_path().to_string();
         (
             parents,
             Some(workspace),
@@ -635,13 +634,7 @@ fn create_hcs_container(
             "compute-system id is already registered for this helper lifetime",
         );
     }
-    let config = hcs_config(
-        &id,
-        hostname,
-        root.to_string_lossy().as_ref(),
-        memory_limit_mb,
-        &parents,
-    );
+    let config = hcs_config(&id, hostname, &root, memory_limit_mb, &parents);
     let config = malt_platform::isolation::hcs::HcsConfig {
         id: id.clone(),
         config_json: config,
@@ -1052,20 +1045,6 @@ mod tests {
     #[test]
     fn hcs_json_escapes_entitled_windows_paths() {
         assert_eq!(json_escape(r#"C:\malt\"session"#), r#"C:\\malt\\\"session"#);
-    }
-
-    #[test]
-    fn prepared_layer_ids_are_full_guid_shaped_values() {
-        let id = prepared_layer_id(
-            "852bbe55ef9eddac52f2e11b90d24d0d5b0d2518344ec813cf14891f76a8d47f",
-            7,
-        );
-        assert_eq!(id, "852bbe55-ef9e-ddac-52f2-e11b00000007");
-        assert_eq!(id.len(), 36);
-        assert_eq!(id.as_bytes()[8], b'-');
-        assert_eq!(id.as_bytes()[13], b'-');
-        assert_eq!(id.as_bytes()[18], b'-');
-        assert_eq!(id.as_bytes()[23], b'-');
     }
 
     #[test]
