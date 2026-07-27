@@ -108,7 +108,10 @@ pub fn dispatch_image_operation_with_containers(
             match malt_image::acquire_public_windows_image(&store, reference).and_then(|record| {
                 prepare_image(&store, record).map_err(malt_image::ProvisionError::Store)
             }) {
-                Ok(record) => pack_image_response(request_id, image_view(&record)),
+                Ok(record) => pack_image_response(
+                    request_id,
+                    image_view(&record, active_session_count(containers, &record)),
+                ),
                 Err(error) => refused(
                     request_id,
                     ReasonCode::OsError,
@@ -117,9 +120,13 @@ pub fn dispatch_image_operation_with_containers(
             }
         }
         ImageOperation::List { .. } => match store.list_records() {
-            Ok(records) => {
-                pack_image_list_response(request_id, records.iter().map(image_view).collect())
-            }
+            Ok(records) => pack_image_list_response(
+                request_id,
+                records
+                    .iter()
+                    .map(|record| image_view(record, active_session_count(containers, record)))
+                    .collect(),
+            ),
             Err(error) => refused(
                 request_id,
                 ReasonCode::OsError,
@@ -131,7 +138,10 @@ pub fn dispatch_image_operation_with_containers(
                 .load_record(&digest)
                 .map_err(|error| error.to_string())
         }) {
-            Ok(record) => pack_image_response(request_id, image_view(&record)),
+            Ok(record) => pack_image_response(
+                request_id,
+                image_view(&record, active_session_count(containers, &record)),
+            ),
             Err(detail) => refused(
                 request_id,
                 ReasonCode::InvalidParameters,
@@ -268,7 +278,22 @@ fn parse_image_id(value: &str) -> Result<malt_image::Digest, String> {
         .map_err(|error| error.to_string())
 }
 
-fn image_view(record: &malt_image::ImageRecord) -> ProvisionedImage {
+fn active_session_count(
+    containers: &HcsContainerRegistry,
+    record: &malt_image::ImageRecord,
+) -> u32 {
+    let digest = record.manifest_digest.to_string();
+    u32::try_from(
+        containers
+            .containers
+            .values()
+            .filter(|container| container.image_id.as_deref() == Some(digest.as_str()))
+            .count(),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+fn image_view(record: &malt_image::ImageRecord, active_sessions: u32) -> ProvisionedImage {
     ProvisionedImage {
         id: record.manifest_digest.to_string(),
         manifest_digest: record.manifest_digest.to_string(),
@@ -277,7 +302,7 @@ fn image_view(record: &malt_image::ImageRecord) -> ProvisionedImage {
         ready: record.prepared,
         reason: (!record.prepared)
             .then(|| "image acquired and verified but not yet HCS-prepared".to_string()),
-        active_sessions: 0,
+        active_sessions,
         _unknown: Vec::new(),
     }
 }
