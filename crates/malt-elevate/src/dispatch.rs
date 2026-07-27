@@ -195,7 +195,7 @@ fn remove_prepared_image(
     let root = store.root().join("prepared").join(&digest);
     for index in (0..record.manifest.layers.len()).rev() {
         let layer = malt_platform::isolation::layers::PreparedLayer {
-            id: format!("malt-{digest}-{index}"),
+            id: prepared_layer_id(&digest, index),
             path: root.join("layers").join(index.to_string()),
         };
         malt_platform::isolation::layers::destroy_prepared_layer(layer)
@@ -235,7 +235,7 @@ fn prepare_image(
             let layer = malt_platform::isolation::layers::materialize_layer(
                 &layers_root.join(index.to_string()),
                 &source,
-                &format!("malt-{digest}-{index}"),
+                &prepared_layer_id(&digest, index),
                 &parents,
             )
             .map_err(|error| error.to_string())?;
@@ -267,6 +267,21 @@ fn parse_image_id(value: &str) -> Result<malt_image::Digest, String> {
     value
         .parse::<malt_image::Digest>()
         .map_err(|error| error.to_string())
+}
+
+/// HCS layer-data requires a UUID-shaped ID. The image digest is immutable,
+/// and the layer ordinal distinguishes the ordered parents without creating a
+/// caller-controlled identifier or adding another persistence authority.
+fn prepared_layer_id(digest: &str, index: usize) -> String {
+    let prefix = &digest[..24];
+    format!(
+        "{}-{}-{}-{}-{:08x}",
+        &prefix[..8],
+        &prefix[8..12],
+        &prefix[12..16],
+        &prefix[16..20],
+        index
+    )
 }
 
 fn image_view(record: &malt_image::ImageRecord) -> ProvisionedImage {
@@ -577,7 +592,7 @@ fn create_hcs_container(
             .to_string();
         let parents = (0..record.manifest.layers.len())
             .map(|index| malt_platform::isolation::layers::PreparedLayer {
-                id: format!("malt-{digest}-{index}"),
+                id: prepared_layer_id(&digest, index),
                 path: store
                     .root()
                     .join("prepared")
