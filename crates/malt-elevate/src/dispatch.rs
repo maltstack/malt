@@ -454,6 +454,13 @@ fn revalidate_contained_image(
 }
 
 fn helper_image_store() -> Result<malt_image::ImageStore, String> {
+    #[cfg(test)]
+    if let Some(root) = std::env::var_os("MALT_TEST_IMAGE_STORE_ROOT") {
+        let root = PathBuf::from(root);
+        malt_platform::isolation::layers::ensure_owned_root(&root)
+            .map_err(|error| error.to_string())?;
+        return malt_image::ImageStore::open(root).map_err(|error| error.to_string());
+    }
     let program_data = std::env::var_os("ProgramData")
         .ok_or_else(|| "ProgramData is not set for the elevated helper".to_string())?;
     let root = PathBuf::from(program_data).join("MALT").join("images");
@@ -1368,6 +1375,96 @@ mod tests {
             Some(image.to_string())
         );
         assert!(write_workspace_lease(&workspace, image).is_err());
+    }
+
+    #[cfg(windows)]
+    fn test_image_record(hex: &str) -> malt_image::ImageRecord {
+        let digest: malt_image::Digest =
+            format!("sha256:{hex}").parse().expect("parse test digest");
+        malt_image::ImageRecord {
+            manifest_digest: digest.clone(),
+            source_reference: "mcr.microsoft.com/windows/nanoserver:ltsc2022".to_string(),
+            platform: malt_image::Platform {
+                os: "windows".to_string(),
+                architecture: "amd64".to_string(),
+                os_version: Some("10.0.20348.5386".to_string()),
+            },
+            manifest: malt_image::ImageManifest {
+                schema_version: 2,
+                media_type: None,
+                config: malt_image::Descriptor {
+                    media_type: "config".to_string(),
+                    digest: digest.clone(),
+                    size: 1,
+                    platform: None,
+                },
+                layers: Vec::new(),
+            },
+            prepared: false,
+            live_proven: false,
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn active_image_refusal_does_not_block_other_record_removal() {
+        let _guard = hcs_environment_lock();
+        let directory = tempfile::tempdir().expect("create helper-owned test store");
+        // SAFETY: serialized by hcs_environment_lock and removed before return.
+        unsafe {
+            std::env::set_var("MALT_TEST_IMAGE_STORE_ROOT", directory.path());
+            std::env::set_var("MALT_HCS_FAKE", "1");
+        }
+        let first =
+            test_image_record("1111111111111111111111111111111111111111111111111111111111111111");
+        let second =
+            test_image_record("2222222222222222222222222222222222222222222222222222222222222222");
+        let store = helper_image_store().expect("open helper-owned test store");
+        store.publish_record(&first).expect("publish first image");
+        store.publish_record(&second).expect("publish second image");
+        let system = malt_platform::isolation::hcs::create_compute_system(
+            &malt_platform::isolation::hcs::HcsConfig {
+                id: "active-image-test".to_string(),
+                config_json: "{}".to_string(),
+            },
+        )
+        .expect("create fake active compute system");
+        let mut containers = HcsContainerRegistry::default();
+        containers.containers.insert(
+            "active-image-test".to_string(),
+            ManagedContainer {
+                session_id: 77,
+                image_id: Some(first.manifest_digest.to_string()),
+                system,
+                workspace: None,
+            },
+        );
+
+        let refused = dispatch_image_operation_with_containers(
+            1,
+            &ImageOperation::Remove {
+                id: first.manifest_digest.to_string(),
+            },
+            &containers,
+        );
+        assert_eq!(refused.kind, OutcomeKind::Refused);
+        assert!(refused.detail.unwrap_or_default().contains("77"));
+        let removed = dispatch_image_operation_with_containers(
+            2,
+            &ImageOperation::Remove {
+                id: second.manifest_digest.to_string(),
+            },
+            &containers,
+        );
+        assert_eq!(removed.kind, OutcomeKind::Performed, "{removed:?}");
+        assert!(store.load_record(&first.manifest_digest).is_ok());
+        assert!(store.load_record(&second.manifest_digest).is_err());
+
+        // SAFETY: paired with the serialized test-only mutations above.
+        unsafe {
+            std::env::remove_var("MALT_HCS_FAKE");
+            std::env::remove_var("MALT_TEST_IMAGE_STORE_ROOT");
+        }
     }
 
     #[cfg(windows)]
