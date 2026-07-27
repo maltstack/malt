@@ -349,52 +349,6 @@ fn contained_capability_from_helper() -> IsolationCapabilityResponse {
     }
 }
 
-#[cfg(test)]
-mod contained_capability_tests {
-    use super::contained_capability_from_images;
-    use malt_protocol::elevate::ProvisionedImage;
-
-    fn image(id: &str, ready: bool, readiness_evidence: &str) -> ProvisionedImage {
-        ProvisionedImage {
-            id: id.to_string(),
-            manifest_digest: id.to_string(),
-            platform: "windows/amd64".to_string(),
-            os_version: Some("10.0.20348.0".to_string()),
-            ready,
-            reason: None,
-            active_sessions: 0,
-            readiness_evidence: readiness_evidence.to_string(),
-            _unknown: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn contained_capability_requires_a_helper_prepared_image() {
-        let capability =
-            contained_capability_from_images(&[image("sha256:acquired", false, "acquired")]);
-
-        assert!(!capability.available);
-        assert_eq!(capability.basis, "none");
-        assert!(capability.mechanism.is_none());
-    }
-
-    #[test]
-    fn contained_capability_prefers_live_proven_helper_evidence() {
-        let capability = contained_capability_from_images(&[
-            image("sha256:prepared", true, "hcs-prepared"),
-            image("sha256:live", true, "live-proven"),
-        ]);
-
-        assert!(capability.available);
-        assert_eq!(capability.basis, "verified");
-        assert_eq!(capability.mechanism.as_deref(), Some("hcs-container"));
-        assert!(capability
-            .detail
-            .as_deref()
-            .is_some_and(|detail| detail.contains("live-proven image sha256:live")));
-    }
-}
-
 impl GatewayBackend for DaemonBackend {
     fn provision_image(&self, reference: String) -> Result<ImageResponse, GatewayError> {
         image_response(
@@ -806,5 +760,51 @@ impl GatewayBackend for DaemonBackend {
 
     fn close_pane(&self, _session_id: u32, _pane_id: u32) -> Result<(), GatewayError> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod contained_capability_tests {
+    use super::contained_capability_from_images;
+    use malt_protocol::elevate::ProvisionedImage;
+
+    fn image(id: &str, ready: bool, readiness_evidence: &str) -> ProvisionedImage {
+        ProvisionedImage {
+            id: id.to_string(),
+            manifest_digest: id.to_string(),
+            platform: "windows/amd64".to_string(),
+            os_version: Some("10.0.20348.0".to_string()),
+            ready,
+            reason: None,
+            active_sessions: 0,
+            readiness_evidence: readiness_evidence.to_string(),
+            _unknown: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn contained_capability_requires_a_helper_prepared_image() {
+        let capability =
+            contained_capability_from_images(&[image("sha256:acquired", false, "acquired")]);
+
+        assert!(!capability.available);
+        assert_eq!(capability.basis, "none");
+        assert!(capability.mechanism.is_none());
+    }
+
+    #[test]
+    fn contained_capability_prefers_live_proven_helper_evidence() {
+        let capability = contained_capability_from_images(&[
+            image("sha256:prepared", true, "hcs-prepared"),
+            image("sha256:live", true, "live-proven"),
+        ]);
+
+        assert!(capability.available);
+        assert_eq!(capability.basis, "verified");
+        assert_eq!(capability.mechanism.as_deref(), Some("hcs-container"));
+        assert!(capability
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("live-proven image sha256:live")));
     }
 }
