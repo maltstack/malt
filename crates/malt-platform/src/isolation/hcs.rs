@@ -49,11 +49,21 @@ pub struct HcsProcessParameters {
 pub struct HcsComputeSystem {
     handle: isize,
     pub id: String,
+    backend: HcsBackend,
 }
 
 impl HcsComputeSystem {
     pub fn raw_handle(&self) -> isize {
         self.handle
+    }
+
+    /// Terminate through the backend that created or opened this handle.
+    pub fn terminate(&self) -> Result<(), IsolationError> {
+        match self.backend {
+            HcsBackend::Fake => fake::terminate_compute_system(self.handle),
+            #[cfg(feature = "hcs")]
+            HcsBackend::Native => native::terminate_compute_system(self.handle),
+        }
     }
 }
 
@@ -62,11 +72,31 @@ impl HcsComputeSystem {
 pub struct HcsProcess {
     handle: isize,
     pub process_id: u32,
+    backend: HcsBackend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HcsBackend {
+    Fake,
+    #[cfg(feature = "hcs")]
+    Native,
 }
 
 impl HcsProcess {
     pub fn raw_handle(&self) -> isize {
         self.handle
+    }
+
+    /// Wait using the same backend that created this process handle.
+    ///
+    /// A handle's provenance cannot safely be inferred from a mutable
+    /// process-wide environment switch after creation.
+    pub fn wait_for_exit(&self) -> Result<i32, IsolationError> {
+        match self.backend {
+            HcsBackend::Fake => fake::wait_process_exit(self.handle),
+            #[cfg(feature = "hcs")]
+            HcsBackend::Native => native::wait_process_exit(self.handle),
+        }
     }
 }
 
@@ -75,7 +105,11 @@ impl Drop for HcsProcess {
         // HCS process handles are not ordinary Win32 process handles. The
         // dedicated HCS close path is required even when the caller retained
         // the process only long enough to duplicate it into the daemon.
-        let _ = close_process_handle(self.handle);
+        let _ = match self.backend {
+            HcsBackend::Fake => fake::close_process_handle(self.handle),
+            #[cfg(feature = "hcs")]
+            HcsBackend::Native => native::close_process_handle(self.handle),
+        };
     }
 }
 
@@ -595,6 +629,7 @@ mod fake {
         let system = HcsComputeSystem {
             handle,
             id: config.id.clone(),
+            backend: HcsBackend::Fake,
         };
         if std::env::var_os("MALT_HCS_FAKE_START_FAIL").is_some() {
             terminate_compute_system(handle)?;
@@ -617,6 +652,7 @@ mod fake {
         Ok(HcsComputeSystem {
             handle,
             id: id.to_string(),
+            backend: HcsBackend::Fake,
         })
     }
 
@@ -661,7 +697,11 @@ mod fake {
             .insert(handle, 0);
 
         Ok(HcsProcessLaunch {
-            process: Some(HcsProcess { handle, process_id }),
+            process: Some(HcsProcess {
+                handle,
+                process_id,
+                backend: HcsBackend::Fake,
+            }),
             stdin_handle: params.create_stdin_pipe.then(next_handle),
             stdout_handle: params.create_stdout_pipe.then(next_handle),
             stderr_handle: params.create_stderr_pipe.then(next_handle),
@@ -780,6 +820,7 @@ mod native {
         Ok(HcsComputeSystem {
             handle: handle as isize,
             id: config.id.clone(),
+            backend: HcsBackend::Native,
         })
     }
 
@@ -799,6 +840,7 @@ mod native {
         Ok(HcsComputeSystem {
             handle: handle as isize,
             id: id.to_string(),
+            backend: HcsBackend::Native,
         })
     }
 
@@ -936,6 +978,7 @@ mod native {
             process: Some(HcsProcess {
                 handle: process_handle as isize,
                 process_id: process_info.ProcessId,
+                backend: HcsBackend::Native,
             }),
             stdin_handle: (!process_info.StdInput.is_null())
                 .then_some(process_info.StdInput as isize),
@@ -1385,6 +1428,44 @@ mod tests {
         unsafe {
             std::env::remove_var("MALT_HCS_FAKE");
         }
+    }
+
+    #[test]
+    fn process_handle_retains_its_backend_after_environment_changes() {
+        let _guard = env_lock();
+        // SAFETY: test serializes environment mutation via `env_lock`.
+        unsafe {
+            std::env::set_var("MALT_HCS_FAKE", "1");
+        }
+        let system = create_compute_system(&HcsConfig {
+            id: "cs-process-backend-provenance".to_string(),
+            config_json: "{}".to_string(),
+        })
+        .expect("create fake compute system");
+        let mut launch = create_process(
+            system.raw_handle(),
+            &HcsProcessParameters {
+                command_line: "cmd.exe /c exit 0".to_string(),
+                ..HcsProcessParameters::default()
+            },
+        )
+        .expect("create fake HCS process");
+        let process = launch
+            .take_process_for_reaper()
+            .expect("take fake process handle");
+
+        // SAFETY: test serializes environment mutation via `env_lock`.
+        unsafe {
+            std::env::remove_var("MALT_HCS_FAKE");
+        }
+        assert_eq!(
+            process.wait_for_exit().expect("wait through fake backend"),
+            0
+        );
+        drop(process);
+        system
+            .terminate()
+            .expect("terminate through retained fake backend");
     }
 
     #[test]

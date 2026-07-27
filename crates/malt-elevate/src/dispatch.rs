@@ -650,12 +650,62 @@ pub struct HcsContainerRegistry {
     containers: HashMap<String, ManagedContainer>,
 }
 
+impl Drop for HcsContainerRegistry {
+    fn drop(&mut self) {
+        for (_, container) in self.containers.drain() {
+            let _ = tear_down_managed_container(container);
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ManagedContainer {
     session_id: u32,
     image_id: Option<String>,
     system: malt_platform::isolation::hcs::HcsComputeSystem,
     workspace: Option<malt_platform::isolation::layers::WritableLayer>,
+    process_reapers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl ManagedContainer {
+    fn track_process_reaper(&mut self, reaper: std::thread::JoinHandle<()>) {
+        let mut index = 0;
+        while index < self.process_reapers.len() {
+            if self.process_reapers[index].is_finished() {
+                let finished = self.process_reapers.swap_remove(index);
+                let _ = finished.join();
+            } else {
+                index += 1;
+            }
+        }
+        self.process_reapers.push(reaper);
+    }
+}
+
+fn tear_down_managed_container(
+    mut container: ManagedContainer,
+) -> Result<(), malt_platform::isolation::IsolationError> {
+    let mut failures = Vec::new();
+    if let Err(error) = container.system.terminate() {
+        failures.push(format!("compute-system termination failed: {error}"));
+    }
+    for reaper in container.process_reapers.drain(..) {
+        if reaper.join().is_err() {
+            failures.push("HCS process reaper panicked".to_string());
+        }
+    }
+    if let Some(workspace) = container.workspace {
+        if let Err(error) = destroy_workspace_and_lease(workspace) {
+            failures.push(format!("workspace teardown failed: {error}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(malt_platform::isolation::IsolationError::HcsError(
+            failures.join("; "),
+        ))
+    }
 }
 
 /// Construct a refusal for an operation the current host cannot perform.
@@ -977,6 +1027,7 @@ fn create_hcs_container(
                     image_id: selected_image.clone(),
                     system,
                     workspace,
+                    process_reapers: Vec::new(),
                 },
             );
             ElevateResponse {
@@ -1084,23 +1135,32 @@ fn start_hcs_process(
             )
         }
     };
-    if let Err(error) = std::thread::Builder::new()
+    let reaper = match std::thread::Builder::new()
         .name(format!("malt-hcs-reaper-{}", process.process_id))
         .spawn(move || {
-            if let Err(error) =
-                malt_platform::isolation::hcs::wait_process_exit(process.raw_handle())
-            {
+            if let Err(error) = process.wait_for_exit() {
                 tracing::warn!(%error, "HCS process reaper could not observe process exit");
             }
-        })
-    {
-        return tear_down_after_process_launch_failure(
+        }) {
+        Ok(reaper) => reaper,
+        Err(error) => {
+            return tear_down_after_process_launch_failure(
+                request_id,
+                &request.id,
+                containers,
+                format!("could not start HCS process reaper: {error}"),
+            )
+        }
+    };
+    let Some(container) = containers.containers.get_mut(&request.id) else {
+        let _ = reaper.join();
+        return refused(
             request_id,
-            &request.id,
-            containers,
-            format!("could not start HCS process reaper: {error}"),
+            ReasonCode::OsError,
+            "helper lost the compute-system record before tracking its process reaper",
         );
-    }
+    };
+    container.track_process_reaper(reaper);
     let mut writer = malt_protocol::vexil_runtime::BitWriter::new();
     let result = HcsProcessLaunch {
         process_id: handoff.process_id,
@@ -1176,16 +1236,10 @@ fn tear_down_after_process_launch_failure(
     containers: &mut HcsContainerRegistry,
     detail: String,
 ) -> ElevateResponse {
-    let cleanup = containers.containers.remove(id).map(|container| {
-        malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle())
-            .and_then(|()| {
-                container
-                    .workspace
-                    .map(destroy_workspace_and_lease)
-                    .transpose()
-            })
-            .map(|_| ())
-    });
+    let cleanup = containers
+        .containers
+        .remove(id)
+        .map(tear_down_managed_container);
     let detail = match cleanup {
         Some(Ok(())) => format!("{detail}; the affected compute system was terminated"),
         Some(Err(error)) => format!("{detail}; compute-system teardown also failed: {error}"),
@@ -1221,15 +1275,7 @@ fn terminate_hcs_container(
             "helper lost the managed compute-system record before teardown",
         );
     };
-    match malt_platform::isolation::hcs::terminate_compute_system(container.system.raw_handle())
-        .and_then(|()| {
-            container
-                .workspace
-                .map(destroy_workspace_and_lease)
-                .transpose()
-        })
-        .map(|_| ())
-    {
+    match tear_down_managed_container(container) {
         Ok(()) => ElevateResponse {
             request_id,
             kind: OutcomeKind::Performed,
@@ -1485,6 +1531,7 @@ mod tests {
                 image_id: Some(first.manifest_digest.to_string()),
                 system,
                 workspace: None,
+                process_reapers: Vec::new(),
             },
         );
 

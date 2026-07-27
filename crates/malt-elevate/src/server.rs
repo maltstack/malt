@@ -45,16 +45,18 @@ pub fn serve(config: &ServerConfig, stop: &StopSignal) -> Result<(), ElevateErro
     let active_clients = Arc::new(AtomicUsize::new(0));
     let enrollments = Arc::new(std::sync::Mutex::new(EnrollmentRegistry::default()));
     let containers = Arc::new(std::sync::Mutex::new(HcsContainerRegistry::default()));
+    let mut client_threads = Vec::new();
     loop {
         if stop.is_requested() {
-            return Ok(());
+            break;
         }
+        join_finished_clients(&mut client_threads);
         let server =
             NamedPipeServer::create_for_principal(&config.pipe_name, &config.authorized_principal)
                 .map_err(ElevateError::Connection)?;
         let connection = server.accept().map_err(ElevateError::Connection)?;
         if stop.is_requested() {
-            return Ok(());
+            break;
         }
         let identity = connection
             .peer_identity()
@@ -74,7 +76,7 @@ pub fn serve(config: &ServerConfig, stop: &StopSignal) -> Result<(), ElevateErro
         let active_clients_for_thread = Arc::clone(&active_clients);
         let enrollments = Arc::clone(&enrollments);
         let containers = Arc::clone(&containers);
-        if let Err(error) = std::thread::Builder::new()
+        let client_thread = match std::thread::Builder::new()
             .name("malt-elevate-client".to_string())
             .spawn(move || {
                 let _slot = ClientSlot {
@@ -87,9 +89,35 @@ pub fn serve(config: &ServerConfig, stop: &StopSignal) -> Result<(), ElevateErro
                 }
             })
         {
-            active_clients.fetch_sub(1, Ordering::AcqRel);
-            return Err(ElevateError::Connection(error));
+            Ok(thread) => thread,
+            Err(error) => {
+                active_clients.fetch_sub(1, Ordering::AcqRel);
+                join_all_clients(client_threads);
+                return Err(ElevateError::Connection(error));
+            }
+        };
+        client_threads.push(client_thread);
+    }
+    join_all_clients(client_threads);
+    drop(containers);
+    Ok(())
+}
+
+fn join_finished_clients(threads: &mut Vec<std::thread::JoinHandle<()>>) {
+    let mut index = 0;
+    while index < threads.len() {
+        if threads[index].is_finished() {
+            let thread = threads.swap_remove(index);
+            let _ = thread.join();
+        } else {
+            index += 1;
         }
+    }
+}
+
+fn join_all_clients(threads: Vec<std::thread::JoinHandle<()>>) {
+    for thread in threads {
+        let _ = thread.join();
     }
 }
 
