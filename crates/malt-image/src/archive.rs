@@ -77,13 +77,12 @@ fn extract_archive(reader: impl Read, destination: &Path) -> Result<(), ArchiveE
         std::io::copy(&mut entry, &mut file)?;
         regular_files.insert(relative);
     }
+    let hard_link_targets = hard_links
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeMap<_, _>>();
     for (link, target) in hard_links {
-        if !regular_files.contains(&target) {
-            return Err(ArchiveError::UnsupportedEntry(format!(
-                "hard link target is not a regular file in this layer: {}",
-                target.display()
-            )));
-        }
+        let target = resolve_hard_link_target(&target, &regular_files, &hard_link_targets)?;
         let output = destination.join(&link);
         let parent = output
             .parent()
@@ -92,6 +91,32 @@ fn extract_archive(reader: impl Read, destination: &Path) -> Result<(), ArchiveE
         fs::hard_link(destination.join(target), output)?;
     }
     Ok(())
+}
+
+fn resolve_hard_link_target(
+    target: &Path,
+    regular_files: &std::collections::BTreeSet<PathBuf>,
+    hard_link_targets: &std::collections::BTreeMap<PathBuf, PathBuf>,
+) -> Result<PathBuf, ArchiveError> {
+    let mut current = target.to_path_buf();
+    let mut visited = std::collections::BTreeSet::new();
+    loop {
+        if regular_files.contains(&current) {
+            return Ok(current);
+        }
+        if !visited.insert(current.clone()) {
+            return Err(ArchiveError::UnsupportedEntry(format!(
+                "hard link cycle in OCI layer: {}",
+                current.display()
+            )));
+        }
+        current = hard_link_targets.get(&current).cloned().ok_or_else(|| {
+            ArchiveError::UnsupportedEntry(format!(
+                "hard link target is not a regular file in this layer: {}",
+                current.display()
+            ))
+        })?;
+    }
 }
 
 fn safe_relative_path(path: &Path) -> Result<PathBuf, ArchiveError> {
