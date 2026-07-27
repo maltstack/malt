@@ -418,6 +418,31 @@ pub fn manage_image(
     )
 }
 
+/// Refuse image operations where no privileged helper exists.
+///
+/// Unlike every other function in this module, `manage_image` needs a
+/// non-Windows arm: its callers are `GatewayBackend` trait methods
+/// (`provision_image`, `list_images`, `inspect_image`, `remove_image`), which
+/// the trait requires on every platform, so the call sites cannot be
+/// `#[cfg]`-gated the way `session_thread` and `coordinator` gate theirs.
+///
+/// This refuses rather than pretending, per spec 008 FR-004: an operation
+/// depending on the helper must fail naming that as the cause, and must never
+/// be silently skipped or downgraded. Returning an empty image list here would
+/// report "no images" — indistinguishable from a working host that happens to
+/// have none, which is the class of false claim specs 007 and 008 exist to
+/// remove.
+#[cfg(not(windows))]
+pub fn manage_image(
+    _operation: malt_protocol::elevate::ImageOperation,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "helper-owned image operations require the privileged helper, which is \
+         only available on Windows; this host has no privileged helper",
+    ))
+}
+
 /// Ask the helper to terminate only the compute system it recorded for this
 /// caller's session. This is intentionally separate from generic requests so
 /// callers cannot name an arbitrary system id without the entitlement check.
