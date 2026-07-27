@@ -62,7 +62,10 @@ a manifest must be selected and assessed rather than assumed runnable.
 
 Download descriptor bytes to a helper-owned staging area, compare stream size
 and SHA-256 to the selected descriptor, safely decode the archive without
-path traversal, duplicate entries, links, or special files, then atomically
+path traversal, duplicate entries, symbolic links, or special files. A hard
+link is accepted only when it names an already-extracted regular file in the
+same verified layer, because standard Microsoft Windows base layers use those
+links for equivalent system data. Then atomically
 publish the immutable record and materialized layers. Failed staging and HCS
 transactions remove only their own state.
 
@@ -150,4 +153,3 @@ less honest and more complex.
 - Vexil-v2 is reference-only. Its production route proves that image
   acquisition and HCS preparation must both be reachable; its missing
   end-to-end proof and unsafe cache/privilege assumptions are not adopted.
-
