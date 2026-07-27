@@ -162,7 +162,7 @@ refused for that reason through the helper.
 
 ## Phase 6: Polish & Cross-Cutting
 
-- [ ] T045 Run every scenario in [quickstart.md](./quickstart.md) against a live daemon and record the outcome in a dated `docs/findings/` entry, **including what it does not establish**. Any scenario the host cannot run is recorded as skipped with its reason — **environment-blocked is not done**.
+- [X] T045 Run every scenario in [quickstart.md](./quickstart.md) against a live daemon and record the outcome in a dated `docs/findings/` entry, **including what it does not establish**. Any scenario the host cannot run is recorded as skipped with its reason — **environment-blocked is not done**.
 - [X] T046 [P] Resolve the divergence warning in `docs/design/architecture.md` §"Shell and Isolation". After T034–T036 the document describes what the code does; replace the warning block with a note that the consolidation happened, referencing ADR-0005.
 - [X] T047 [P] Update `AGENTS.md`'s `malt-elevate` line — it currently reads "17 tests; only CreateSymlink is real, other ops stub", which stops being true at T012.
 - [X] T048 [P] Update `docs/briefs/README.md` and `docs/BACKLOG.md` for anything this feature closed or opened.
