@@ -903,17 +903,19 @@ Full evidence in `docs/findings/2026-07-26-spec-006-quickstart-verification.md`.
   deliberately where that is the right call, and move OS-specific work behind
   `malt-platform`. Worth doing as its own pass — these are the invariants
   AGENTS.md claims are clean.
-- **A-14. `FrameWriter` lacks the reader's size bound.** `FrameReader`
-  rejects payloads over `PROTOCOL_MAX_FRAME_SIZE`, but `FrameWriter` casts
-  `payload.len()` to `u32` without the same check, so it can emit a frame the
-  peer will reject, or truncate an oversized advertised length. Fix: validate
-  before narrowing, return `FrameTooLarge`, and test both boundaries.
-- **A-15. Vi `dd` state leaks across sessions.** The pending-`d` operator
-  lives in a process-global `AtomicBool` in `malt-term/src/keymap.rs` rather
-  than on `Editor`, so a `d` typed in one session can make a `d` in another
-  session delete that second editor's line. Fix: move the pending-operator
-  state onto `Editor` and add an interleaved two-editor test. Same class as
-  the shared-process-state bugs AGENTS.md already documents.
+- **A-14. `FrameWriter` lacks the reader's size bound — FIXED 2026-07-27.**
+  `FrameWriter` now rejects payloads over `PROTOCOL_MAX_FRAME_SIZE` with
+  `FrameTooLarge` before narrowing the length to `u32`, so it cannot emit a
+  frame the peer will reject or truncate an oversized advertised length.
+  Boundary tests cover both the maximum accepted payload and the first
+  rejected payload in `crates/malt-protocol/tests/framing.rs`.
+- **A-15. Vi `dd` state leaks across sessions — FIXED 2026-07-27.** The
+  pending-`d` operator now belongs to each `Editor` rather than a
+  process-global `AtomicBool`, and reset clears it with the rest of the
+  editor state. The interleaved two-editor regression test in
+  `crates/malt-term/tests/editor.rs` proves that a `d` in one session cannot
+  complete a `dd` in another. Same class as the shared-process-state bugs
+  AGENTS.md already documents.
 - **A-11 (update). Compat restore also picks the wrong pane.** Already
   tracked here for running outside the session's isolation group; the audit
   adds that restore selects the first `BTreeMap` entry rather than the
@@ -929,10 +931,11 @@ Full evidence in `docs/findings/2026-07-26-spec-006-quickstart-verification.md`.
 
 ### Smaller items found while closing the audit's quality gates (2026-07-25)
 
-- **`rm` treats an unrecognized `-flag` as a path.** Real `rm` rejects it as
-  an invalid option. Found because clippy flagged an `if`/`else` whose
-  branches were identical; the branches were collapsed but the behaviour was
-  deliberately left alone, since changing it needs its own tests. See
+- **`rm` option parsing and `--` support — FIXED 2026-07-27.** `rm` now
+  rejects unknown short options and option bundles instead of treating them
+  as paths, while `--` terminates option parsing so subsequent dash-prefixed
+  arguments are handled as paths. Regression tests cover both invalid options
+  and preservation of the targeted path. See
   `crates/malt-tools/src/custom/rm.rs`.
 - **`vexilc` codegen emits lint-dirty Rust.** Beyond the `@doc` off-by-one
   already recorded above: redundant borrows (`write_string(&inner_val)`),
@@ -1152,35 +1155,36 @@ Full evidence in `docs/findings/2026-07-26-spec-006-quickstart-verification.md`.
   Gateway, and `CommandBlock` never actually constructed anywhere outside
   tests.
 
-### `read` treats an explicitly-empty `IFS=` as "use the default" (mash, POSIX)
+### `read` IFS handling and temporary builtin assignment scope — FIXED 2026-07-27 (mash, POSIX)
 
-Found 2026-07-25 while live-verifying raw input delivery (spec 005). It is a
-pre-existing shell bug, not part of that feature — recorded here so it is not
-mistaken for one next time it shows up in an input test.
+Found 2026-07-25 while live-verifying raw input delivery (spec 005). It was a
+pre-existing shell bug, not part of that feature. The same fix also closes a
+related scoping defect where temporary assignments on builtin commands could
+leak into the shell environment or alter variable attributes after the
+builtin returned.
 
-`crates/mash/src/executor.rs:3648` reads:
+`crates/mash/src/executor.rs` previously read:
 
 ```rust
 let ifs = env.get_str("IFS");
 let ifs = if ifs.is_empty() { " \t\n" } else { ifs };
 ```
 
-This conflates two distinct states POSIX keeps separate: **IFS unset** (use
+This conflated two distinct states POSIX keeps separate: **IFS unset** (use
 the default `<space><tab><newline>`) and **IFS set to the empty string** (no
-field splitting and no trimming at all). Because the empty case falls into
-the default branch, `IFS= read -r Z` still trims, so sending `"  padded  "`
-yields `padded`.
+field splitting and no trimming at all). Because the empty case fell into
+the default branch, `IFS= read -r Z` still trimmed, so sending
+`"  padded  "` yielded `padded`.
 
-Evidence: live against a real daemon, `IFS= read -r Z; echo "[$Z]"` with
-`"  padded  \n"` printed `[padded]`, expected `[  padded  ]`.
+The implementation now distinguishes `env.get("IFS") == None` from
+`Some("")`, preserving whitespace for an explicitly empty IFS and retaining
+default splitting when IFS is unset. Temporary builtin assignments are
+snapshotted, applied only for the builtin invocation, and restored afterward,
+including the variable's readonly/export state. Tests cover empty IFS,
+unset IFS, multiple variables, and restoration after a readonly builtin in
+`crates/mash/tests/executor.rs`.
 
-Note this is **not** a delivery-path defect — the bytes arrive intact, which
+Note this was **not** a delivery-path defect — the bytes arrived intact, which
 the `SessionInputChannel` unit tests prove independently at the channel level.
-The corruption happens afterwards, inside `read`.
-
-Fix requires distinguishing unset from empty (`env.get` returning
-`Option<&str>` rather than `get_str`'s flattened `&str`), then skipping both
-the `trim_matches` at :3651 and the split at :3653 when IFS is set-but-empty.
-Both call sites at :3691 and :3700 in `split_on_ifs` need the same treatment.
-Guard with a Smoosh run — field splitting is heavily covered there.
+The corruption happened afterwards, inside `read`.
 
