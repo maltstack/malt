@@ -719,7 +719,7 @@ fn start_hcs_process(
         create_stdout_pipe: true,
         create_stderr_pipe: true,
     };
-    let launch = match malt_platform::isolation::hcs::create_process(
+    let mut launch = match malt_platform::isolation::hcs::create_process(
         container.system.raw_handle(),
         &parameters,
     ) {
@@ -745,6 +745,34 @@ fn start_hcs_process(
             )
         }
     };
+    let process = match launch.take_process_for_reaper() {
+        Ok(process) => process,
+        Err(error) => {
+            return tear_down_after_process_launch_failure(
+                request_id,
+                &request.id,
+                containers,
+                format!("could not retain HCS process until stream completion: {error}"),
+            )
+        }
+    };
+    if let Err(error) = std::thread::Builder::new()
+        .name(format!("malt-hcs-reaper-{}", process.process_id))
+        .spawn(move || {
+            if let Err(error) =
+                malt_platform::isolation::hcs::wait_process_exit(process.raw_handle())
+            {
+                tracing::warn!(%error, "HCS process reaper could not observe process exit");
+            }
+        })
+    {
+        return tear_down_after_process_launch_failure(
+            request_id,
+            &request.id,
+            containers,
+            format!("could not start HCS process reaper: {error}"),
+        );
+    }
     let mut writer = malt_protocol::vexil_runtime::BitWriter::new();
     let result = HcsProcessLaunch {
         process_id: handoff.process_id,

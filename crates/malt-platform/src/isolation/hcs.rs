@@ -79,7 +79,7 @@ impl Drop for HcsProcess {
 /// Result of launching a process, including its I/O pipe handles if requested.
 #[derive(Debug)]
 pub struct HcsProcessLaunch {
-    pub process: HcsProcess,
+    process: Option<HcsProcess>,
     pub stdin_handle: Option<isize>,
     pub stdout_handle: Option<isize>,
     pub stderr_handle: Option<isize>,
@@ -124,10 +124,15 @@ impl HcsProcessLaunch {
         let stderr_handle = self.stderr_handle.ok_or_else(|| {
             IsolationError::HcsError("HCS launch did not return a stderr pipe".to_string())
         })?;
+        let process = self.process.as_ref().ok_or_else(|| {
+            IsolationError::HcsError(
+                "HCS launch process handle was already transferred".to_string(),
+            )
+        })?;
         let process_handle = if hcs_fake_mode_enabled() {
-            self.process.raw_handle()
+            process.raw_handle()
         } else {
-            open_process_handle(self.process.process_id)?
+            open_process_handle(process.process_id)?
         };
         let duplicated = duplicate_handles_into_process(
             target_process_id,
@@ -137,11 +142,23 @@ impl HcsProcessLaunch {
             close_process_handle_source(process_handle);
         }
         duplicated.map(|handles| HcsDuplicatedProcessLaunch {
-            process_id: self.process.process_id,
+            process_id: process.process_id,
             process_handle: handles[0] as u64,
             stdin_handle: handles[1] as u64,
             stdout_handle: handles[2] as u64,
             stderr_handle: handles[3] as u64,
+        })
+    }
+
+    /// Transfer ownership of the HCS process object to the helper's reaper
+    /// after its ordinary process handle and stdio endpoints were handed to the
+    /// authenticated daemon. HCS owns stream completion, so this object must
+    /// stay live until `HcsWaitForProcessExit` observes the process exit.
+    pub fn take_process_for_reaper(&mut self) -> Result<HcsProcess, IsolationError> {
+        self.process.take().ok_or_else(|| {
+            IsolationError::HcsError(
+                "HCS launch process handle was already transferred".to_string(),
+            )
         })
     }
 }
@@ -617,7 +634,7 @@ mod fake {
             .insert(handle, 0);
 
         Ok(HcsProcessLaunch {
-            process: HcsProcess { handle, process_id },
+            process: Some(HcsProcess { handle, process_id }),
             stdin_handle: params.create_stdin_pipe.then(next_handle),
             stdout_handle: params.create_stdout_pipe.then(next_handle),
             stderr_handle: params.create_stderr_pipe.then(next_handle),
@@ -888,10 +905,10 @@ mod native {
         unsafe { HcsCloseOperation(operation) };
 
         Ok(HcsProcessLaunch {
-            process: HcsProcess {
+            process: Some(HcsProcess {
                 handle: process_handle as isize,
                 process_id: process_info.ProcessId,
-            },
+            }),
             stdin_handle: (!process_info.StdInput.is_null())
                 .then_some(process_info.StdInput as isize),
             stdout_handle: (!process_info.StdOutput.is_null())
