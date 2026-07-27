@@ -823,7 +823,55 @@ fn create_hcs_container(
             )
         }
     };
-    let (parents, workspace, root, selected_image) = if fake_test {
+    let (parents, workspace, root, selected_image) = if fake_test && image_id.is_some() {
+        let record = match ready
+            .iter()
+            .find(|record| Some(record.manifest_digest.to_string().as_str()) == image_id)
+        {
+            Some(record) => record,
+            None => {
+                return refused(
+                    request_id,
+                    ReasonCode::InvalidParameters,
+                    "selected image is not a ready helper-owned image",
+                )
+            }
+        };
+        let workspace = match malt_platform::isolation::layers::initialize_writable_layer(
+            &store
+                .root()
+                .join("sessions")
+                .join(session_id.to_string())
+                .join(request_id.to_string()),
+            &[],
+        ) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                return refused(
+                    request_id,
+                    ReasonCode::OsError,
+                    format!("could not create fake helper-owned workspace: {error}"),
+                )
+            }
+        };
+        if let Err(error) =
+            write_workspace_lease(&workspace.path, &record.manifest_digest.to_string())
+        {
+            let _ = destroy_workspace_and_lease(workspace);
+            return refused(
+                request_id,
+                ReasonCode::OsError,
+                format!("could not record fake helper-owned workspace lease: {error}"),
+            );
+        }
+        let root = workspace.mount_path().to_string();
+        (
+            Vec::new(),
+            Some(workspace),
+            root,
+            Some(record.manifest_digest.to_string()),
+        )
+    } else if fake_test {
         (
             Vec::new(),
             None,
@@ -1462,6 +1510,58 @@ mod tests {
 
         // SAFETY: paired with the serialized test-only mutations above.
         unsafe {
+            std::env::remove_var("MALT_HCS_FAKE");
+            std::env::remove_var("MALT_TEST_IMAGE_STORE_ROOT");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_fake_hcs_creation_reclaims_post_workspace_state() {
+        let _guard = hcs_environment_lock();
+        let directory = tempfile::tempdir().expect("create helper-owned test store");
+        // SAFETY: serialized by hcs_environment_lock and removed before return.
+        unsafe {
+            std::env::set_var("MALT_TEST_IMAGE_STORE_ROOT", directory.path());
+            std::env::set_var("MALT_HCS_FAKE", "1");
+            std::env::set_var("MALT_HCS_FAKE_START_FAIL", "1");
+        }
+        let mut image =
+            test_image_record("3333333333333333333333333333333333333333333333333333333333333333");
+        image.prepared = true;
+        let store = helper_image_store().expect("open helper-owned test store");
+        store.publish_record(&image).expect("publish ready image");
+        let root = tempfile::tempdir().expect("create entitled storage root");
+        let mut containers = HcsContainerRegistry::default();
+        let response = dispatch_entitled_request(
+            91,
+            55,
+            root.path(),
+            std::process::id(),
+            &ElevateRequest::ManageHcsContainer {
+                operation: ContainerOperation::Create {
+                    memory_limit_mb: None,
+                    hostname: Some("malt-test".to_string()),
+                    image_id: Some(image.manifest_digest.to_string()),
+                },
+            },
+            &mut containers,
+        );
+        assert_eq!(response.kind, OutcomeKind::Refused, "{response:?}");
+        assert!(containers.containers.is_empty());
+        let session_root = store.root().join("sessions").join("55");
+        assert!(
+            !session_root.exists()
+                || std::fs::read_dir(&session_root)
+                    .expect("read post-failure helper session root")
+                    .next()
+                    .is_none(),
+            "failed HCS creation left a writable workspace under {}",
+            session_root.display()
+        );
+        // SAFETY: paired with the serialized test-only mutations above.
+        unsafe {
+            std::env::remove_var("MALT_HCS_FAKE_START_FAIL");
             std::env::remove_var("MALT_HCS_FAKE");
             std::env::remove_var("MALT_TEST_IMAGE_STORE_ROOT");
         }

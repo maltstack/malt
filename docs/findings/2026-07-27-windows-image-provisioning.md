@@ -106,3 +106,15 @@ removing that image exited nonzero and named session 129. Removal of the 1809
 image then succeeded, and inspection of the LTSC 2022 image still reported
 `active: 1`. After `malt kill 129`, removal of the LTSC 2022 image succeeded;
 the final image list was empty.
+
+## Deterministic construction rollback
+
+`dispatch::tests::failed_fake_hcs_creation_reclaims_post_workspace_state`
+creates a prepared helper-owned image record, allocates the session workspace
+and its immutable lease, then forces fake HCS compute-system creation to fail.
+The test proves the response is refused, the helper registry contains no
+compute system, and the derived session workspace root is empty or absent.
+The separate required-containment gateway test proves an isolation failure is
+not published as a daemon session. This deterministic test exercises the same
+production cleanup branch after workspace allocation; it does not claim that
+an arbitrary live HCS failure was induced.

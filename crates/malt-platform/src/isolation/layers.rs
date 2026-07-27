@@ -168,6 +168,20 @@ pub fn initialize_writable_layer(
     parents: &[PreparedLayer],
 ) -> Result<WritableLayer, IsolationError> {
     validate_owned_layer_path(destination)?;
+    #[cfg(test)]
+    if std::env::var_os("MALT_HCS_FAKE").is_some() {
+        if destination.exists() {
+            return Err(IsolationError::HcsError(
+                "refusing to reuse existing writable layer".to_string(),
+            ));
+        }
+        fs::create_dir_all(destination).map_err(IsolationError::IoError)?;
+        return Ok(WritableLayer {
+            path: destination.to_path_buf(),
+            mount_path: destination.display().to_string(),
+            attached: false,
+        });
+    }
     if parents.is_empty() {
         return Err(IsolationError::HcsError(
             "writable HCS layer requires at least one prepared parent".to_string(),
@@ -204,6 +218,10 @@ pub fn initialize_writable_layer(
 /// Detach and destroy an owned writable layer. The caller is responsible for
 /// stopping/closing its compute system before invoking this function.
 pub fn destroy_writable_layer(workspace: WritableLayer) -> Result<(), IsolationError> {
+    #[cfg(test)]
+    if std::env::var_os("MALT_HCS_FAKE").is_some() {
+        return remove_owned_directory(&workspace.path);
+    }
     if workspace.attached {
         native::unprepare(&workspace.path)?;
         native::deactivate(&workspace.path)?;
