@@ -32,7 +32,9 @@ use std::{
 };
 
 use crate::ast::{Command, ListOp, Redirect, RedirectKind, Span, Spanned};
-use crate::env::{CallFrame, Env, EnvError, LoopControl, OutputSink, TrapAction, Variable};
+use crate::env::{
+    CallFrame, Env, EnvError, LoopControl, OutputSink, TrapAction, Variable, VariableSnapshot,
+};
 use crate::expander;
 
 // ── ExecResult ─────────────────────────────────────────────────────────
@@ -1228,13 +1230,47 @@ fn execute_simple_with_io(
     } else {
         Vec::new()
     };
-    if let Some(mut result) = try_execute_builtin(resolved_dispatch_name, &argv, env, builtin_stdin)
+    let temporary_assignments = if BUILTIN_NAMES.contains(&resolved_dispatch_name)
+        && !is_special_builtin_name(resolved_dispatch_name)
     {
+        match apply_temporary_builtin_assignments(env, &child_env) {
+            Ok(saved) => Some(saved),
+            Err(error) => {
+                for (fd, state) in saved_nonstdio_states {
+                    restore_fd_state(env, fd, state);
+                }
+                return noninteractive_shell_failure(
+                    env,
+                    1,
+                    format!("mash: temporary assignment failed: {error}\n"),
+                );
+            }
+        }
+    } else {
+        None
+    };
+    let builtin_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        try_execute_builtin(resolved_dispatch_name, &argv, env, builtin_stdin)
+    }));
+    let restore_result =
+        restore_builtin_scope(env, saved_nonstdio_states, temporary_assignments.as_deref());
+    let builtin_result = match builtin_result {
+        Ok(result) => result,
+        Err(payload) => match restore_result {
+            Ok(()) => std::panic::resume_unwind(payload),
+            Err(error) => panic!("failed to restore builtin scope while unwinding: {error}"),
+        },
+    };
+    if let Err(error) = restore_result {
+        return noninteractive_shell_failure(
+            env,
+            1,
+            format!("mash: temporary assignment restore failed: {error}\n"),
+        );
+    }
+    if let Some(mut result) = builtin_result {
         let builtin_name = builtin_output_name(resolved_dispatch_name, &argv);
         apply_builtin_output_redirects(&mut result, resolved_io, &builtin_name);
-        for (fd, state) in saved_nonstdio_states {
-            restore_fd_state(env, fd, state);
-        }
         if let Some(mut pipe_out) = stdout_file {
             if let Err(e) = pipe_out.write_all(&result.stdout) {
                 let _ = e;
@@ -1244,10 +1280,6 @@ fn execute_simple_with_io(
         }
         return result;
     }
-    for (fd, state) in saved_nonstdio_states {
-        restore_fd_state(env, fd, state);
-    }
-
     // 5b. Check for shell functions (in pipeline context).
     if let Some(func_def) = env.get_function(&resolved_cmd_name).cloned() {
         if env.call_depth() >= 50 {
@@ -1569,22 +1601,46 @@ fn execute_simple(
         } else {
             resolved_io.stdin.take()
         };
-        if let Some(mut result) = try_execute_builtin(dispatch_name, &argv, env, builtin_stdin) {
+        let temporary_assignments = match apply_temporary_builtin_assignments(env, &child_env) {
+            Ok(saved) => saved,
+            Err(error) => {
+                for (fd, state) in saved_nonstdio_states {
+                    restore_fd_state(env, fd, state);
+                }
+                return noninteractive_shell_failure(
+                    env,
+                    1,
+                    format!("mash: temporary assignment failed: {error}\n"),
+                );
+            }
+        };
+        let builtin_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            try_execute_builtin(dispatch_name, &argv, env, builtin_stdin)
+        }));
+        let restore_result =
+            restore_builtin_scope(env, saved_nonstdio_states, Some(&temporary_assignments));
+        let builtin_result = match builtin_result {
+            Ok(result) => result,
+            Err(payload) => match restore_result {
+                Ok(()) => std::panic::resume_unwind(payload),
+                Err(error) => panic!("failed to restore builtin scope while unwinding: {error}"),
+            },
+        };
+        if let Err(error) = restore_result {
+            return noninteractive_shell_failure(
+                env,
+                1,
+                format!("mash: temporary assignment restore failed: {error}\n"),
+            );
+        }
+        if let Some(mut result) = builtin_result {
             if is_exec_no_args_command(&cmd_name, &argv) {
                 apply_exec_redirects(env, &mut resolved_io);
             }
             let builtin_name = builtin_output_name(dispatch_name, &argv);
             apply_builtin_output_redirects(&mut result, resolved_io, &builtin_name);
-            if !persist_nonstdio_redirects {
-                for (fd, state) in saved_nonstdio_states {
-                    restore_fd_state(env, fd, state);
-                }
-            }
             forward_to_sink(env, &result);
             return result;
-        }
-        for (fd, state) in saved_nonstdio_states {
-            restore_fd_state(env, fd, state);
         }
     }
 
@@ -1876,6 +1932,47 @@ fn expand_prefix_assignments(
     }
 
     Ok(child_env)
+}
+
+fn apply_temporary_builtin_assignments(
+    env: &mut Env,
+    assignments: &[(String, String)],
+) -> Result<Vec<(String, VariableSnapshot)>, EnvError> {
+    let mut saved = Vec::new();
+    for (name, value) in assignments {
+        if !saved.iter().any(|(saved_name, _)| saved_name == name) {
+            saved.push((name.clone(), env.snapshot_variable(name)?));
+        }
+        if let Err(error) = env.set(name, Variable::string(value.clone())) {
+            restore_temporary_builtin_assignments(env, &saved)?;
+            return Err(error);
+        }
+    }
+    Ok(saved)
+}
+
+fn restore_temporary_builtin_assignments(
+    env: &mut Env,
+    saved: &[(String, VariableSnapshot)],
+) -> Result<(), EnvError> {
+    for (name, snapshot) in saved {
+        env.restore_variable_snapshot(name, snapshot)?;
+    }
+    Ok(())
+}
+
+fn restore_builtin_scope(
+    env: &mut Env,
+    saved_nonstdio_states: Vec<(u32, SavedFdState)>,
+    temporary_assignments: Option<&[(String, VariableSnapshot)]>,
+) -> Result<(), EnvError> {
+    for (fd, state) in saved_nonstdio_states {
+        restore_fd_state(env, fd, state);
+    }
+    if let Some(saved) = temporary_assignments {
+        restore_temporary_builtin_assignments(env, saved)?;
+    }
+    Ok(())
 }
 
 // ── Builtin commands (minimal set for control flow) ───────────────────
@@ -3752,14 +3849,18 @@ fn builtin_read(argv: &[String], env: &mut Env, stdin_file: Option<std::fs::File
             .replace("\\\\", "\\");
     }
 
-    // Split on IFS (default: space/tab/newline).
-    let ifs = env.get_str("IFS");
-    let ifs = if ifs.is_empty() { " \t\n" } else { ifs };
-
-    let fields: Vec<&str> = if var_names.len() == 1 {
-        vec![line.trim_matches(|c: char| ifs.contains(c))]
-    } else {
-        split_on_ifs(&line, ifs, var_names.len())
+    // Split on IFS (default: space/tab/newline). An explicitly empty IFS
+    // disables both splitting and trimming; it is distinct from an unset IFS.
+    let fields: Vec<&str> = match env.get("IFS").map(Variable::as_str) {
+        Some("") => vec![line.as_str()],
+        Some(ifs) if var_names.len() == 1 => {
+            vec![line.trim_matches(|c: char| ifs.contains(c))]
+        }
+        Some(ifs) => split_on_ifs(&line, ifs, var_names.len()),
+        None if var_names.len() == 1 => {
+            vec![line.trim_matches(|c: char| " \t\n".contains(c))]
+        }
+        None => split_on_ifs(&line, " \t\n", var_names.len()),
     };
 
     // Assign to variables.

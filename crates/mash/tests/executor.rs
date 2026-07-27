@@ -2108,6 +2108,39 @@ fn builtin_read_uses_redirected_function_stdin() {
     assert_eq!(output, "[one]\n[two]\n");
 }
 
+#[test]
+fn builtin_read_empty_ifs_preserves_whitespace() {
+    let output = run_stdout("IFS= read VAR <<< '  one\ttwo  '; printf '<%s>' \"$VAR\"");
+    assert_eq!(output, "<  one\ttwo  >");
+}
+
+#[test]
+fn builtin_read_unset_ifs_uses_default_splitting() {
+    let output = run_stdout(
+        "unset IFS; read FIRST SECOND <<< '  one   two  '; printf '<%s><%s>' \"$FIRST\" \"$SECOND\"",
+    );
+    assert_eq!(output, "<one><two>");
+}
+
+#[test]
+fn builtin_read_empty_ifs_assigns_only_first_variable() {
+    let output = run_stdout(
+        "IFS= read FIRST SECOND THIRD <<< '  one two  '; printf '<%s><%s><%s>' \"$FIRST\" \"$SECOND\" \"$THIRD\"",
+    );
+    assert_eq!(output, "<  one two  ><><>");
+}
+
+#[test]
+fn temporary_ifs_assignment_restores_after_readonly_builtin() {
+    let (result, env) = run("IFS= command readonly IFS");
+
+    assert_eq!(result.exit_code, 0);
+    assert!(result.stderr.is_empty(), "stderr: {:?}", result.stderr);
+    let ifs = env.get("IFS").expect("IFS should remain set");
+    assert_eq!(ifs.as_str(), " \t\n");
+    assert!(!ifs.readonly, "temporary readonly attribute leaked");
+}
+
 // ── printf builtin ──────────────────────────────────────────────────
 
 #[test]

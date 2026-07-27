@@ -266,6 +266,12 @@ pub enum EnvError {
     ReadonlyVariable(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VariableSnapshot {
+    variable: Option<Variable>,
+    unset_masked: bool,
+}
+
 // ── Output sink ──
 
 /// Where a running command's real-time stdout/stderr goes, if anyone is
@@ -617,6 +623,47 @@ impl Env {
         self.scopes[top_idx].remove(name);
         self.unset_masks[top_idx].insert(name.to_string());
         Ok(true)
+    }
+
+    pub(crate) fn snapshot_variable(&self, name: &str) -> Result<VariableSnapshot, EnvError> {
+        let top_idx = self
+            .scopes
+            .len()
+            .checked_sub(1)
+            .ok_or(EnvError::EmptyScopes)?;
+        Ok(VariableSnapshot {
+            variable: self.scopes[top_idx].get(name).cloned(),
+            unset_masked: self.unset_masks[top_idx].contains(name),
+        })
+    }
+
+    /// Restore a variable's exact top-scope state without applying shell
+    /// mutability checks. Temporary builtin assignments must be able to undo
+    /// a builtin that made the temporary value readonly.
+    pub(crate) fn restore_variable_snapshot(
+        &mut self,
+        name: &str,
+        snapshot: &VariableSnapshot,
+    ) -> Result<(), EnvError> {
+        let top_idx = self
+            .scopes
+            .len()
+            .checked_sub(1)
+            .ok_or(EnvError::EmptyScopes)?;
+        match &snapshot.variable {
+            Some(variable) => {
+                self.scopes[top_idx].insert(name.to_string(), variable.clone());
+            }
+            None => {
+                self.scopes[top_idx].remove(name);
+            }
+        }
+        if snapshot.unset_masked {
+            self.unset_masks[top_idx].insert(name.to_string());
+        } else {
+            self.unset_masks[top_idx].remove(name);
+        }
+        Ok(())
     }
 
     /// Mark a variable as local to the current scope.
