@@ -5,6 +5,7 @@
 
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 pub const HELPER_SERVICE_NAME: &str = "MALT-Elevate";
 pub const HELPER_PIPE_NAME: &str = "malt-elevate";
@@ -27,9 +28,16 @@ pub enum HelperState {
 pub fn send_request(
     envelope: malt_protocol::elevate::ElevateRequestEnvelope,
 ) -> io::Result<malt_protocol::elevate::ElevateResponse> {
+    send_request_with_timeout(envelope, Duration::from_secs(30))
+}
+
+#[cfg(windows)]
+fn send_request_with_timeout(
+    envelope: malt_protocol::elevate::ElevateRequestEnvelope,
+    timeout: Duration,
+) -> io::Result<malt_protocol::elevate::ElevateResponse> {
     use malt_protocol::elevate::ReasonCode;
     use std::sync::mpsc;
-    use std::time::Duration;
 
     let request_id = envelope.request_id;
     match status()? {
@@ -55,11 +63,14 @@ pub fn send_request(
     std::thread::spawn(move || {
         let _ = sender.send(send_once(envelope));
     });
-    match receiver.recv_timeout(Duration::from_secs(30)) {
+    match receiver.recv_timeout(timeout) {
         Ok(result) => complete_request_attempt(request_id, result),
         Err(mpsc::RecvTimeoutError::Timeout) => Ok(indeterminate(
             request_id,
-            "helper request timed out after 30 seconds; its outcome is unknown".to_string(),
+            format!(
+                "helper request timed out after {} seconds; its outcome is unknown",
+                timeout.as_secs()
+            ),
         )),
         Err(mpsc::RecvTimeoutError::Disconnected) => Ok(indeterminate(
             request_id,
@@ -342,13 +353,16 @@ pub fn manage_image(
     use malt_protocol::elevate::{ElevateRequest, ElevateRequestEnvelope};
     use std::sync::atomic::{AtomicU32, Ordering};
     static NEXT_IMAGE_REQUEST: AtomicU32 = AtomicU32::new(50_000);
-    send_request(ElevateRequestEnvelope {
-        request_id: NEXT_IMAGE_REQUEST.fetch_add(1, Ordering::Relaxed),
-        request: ElevateRequest::ManageImage { operation },
-        session_id: malt_protocol::common::SessionId(0),
-        nonce: request_nonce(),
-        _unknown: Vec::new(),
-    })
+    send_request_with_timeout(
+        ElevateRequestEnvelope {
+            request_id: NEXT_IMAGE_REQUEST.fetch_add(1, Ordering::Relaxed),
+            request: ElevateRequest::ManageImage { operation },
+            session_id: malt_protocol::common::SessionId(0),
+            nonce: request_nonce(),
+            _unknown: Vec::new(),
+        },
+        Duration::from_secs(900),
+    )
 }
 
 /// Ask the helper to terminate only the compute system it recorded for this
