@@ -76,6 +76,49 @@ including its "what this survey did not establish" section. A survey that
 only records what was found, and not what remains unverified, invites the
 next person to over-trust it.
 
+## A Value Carries Its Own Truth (added 2026-07-27)
+
+**Nothing may re-derive at use time what was already decided at creation
+time.** Three defects in this repo have been the same mistake wearing
+different clothes:
+
+| What was re-derived | From what | Result |
+|---|---|---|
+| A session's isolation level | reconstructed separately by each surface | create, list and query could disagree — spec 007 |
+| How a session is contained | two `Env` fields, one inert, one working | reported containment and actual containment could drift — spec 008 |
+| Whether an HCS handle is fake or native | the `MALT_HCS_FAKE` env var, read *again* at wait/close time | a fake handle reached the native API and faulted the process — `docs/findings/2026-07-27-elevate-build-lock-and-teardown.md` |
+
+The third is the sharpest illustration, because the global it consulted was
+correct when the handle was created and wrong by the time the handle was
+used. Nothing was concurrent-unsafe in the usual sense; the answer simply
+expired. **A branch on mutable global state is a decision with no
+expiry date attached, and the value it governs does not know when it went
+stale.**
+
+The fix in all three cases had the same shape: the value carries its own
+provenance. One isolation status every surface reads; one carrier conveying
+containment; a handle that remembers the backend that made it.
+
+**When reviewing:** if a function decides *what kind of thing* its argument
+is by consulting configuration, an environment variable, a feature flag or a
+global registry, ask why that fact is not travelling with the argument. If
+the answer is "it was set correctly when we started", that is the defect.
+
+### The corollary for tests
+
+This class hides from interactive runs. The HCS fault above reproduced
+**100% under agent harnesses and never once in a human terminal** — not
+because the harness was broken, but because console I/O is slow enough to
+close the timing window that exposed it. (CI never got a verdict: a clippy
+failure blocked the `Test` step, so the suite had not run there in ~110
+commits.) The other two environments that run without a console are **CI and
+the helper service itself** — which is to say, production.
+
+So a suite that passes in a terminal has not been tested in the context it
+ships into. **When only automation reproduces a crash, suspect the code
+before the automation** — most of a day was lost on 2026-07-27 doing the
+reverse.
+
 ## What is MALT?
 
 MALT (structured terminal platform) inverts the traditional terminal model: the daemon is the authority, not the renderer. The daemon owns session state, layout, pane identity, and structured output. Clients are interchangeable consumers of a typed RenderCommand stream. All inter-component communication uses VNP (Vexil Native Protocol) — typed, schema-defined, bitpack-encoded messages.
