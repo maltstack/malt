@@ -185,6 +185,9 @@ pub fn initialize_writable_layer(
         .parent()
         .ok_or_else(|| IsolationError::HcsError("writable layer path has no parent".to_string()))?;
     fs::create_dir_all(parent).map_err(IsolationError::IoError)?;
+    // The verified source images use HCS's legacy hive-folder format. Its
+    // writable-layer API receives the mount root and the separate hive folder.
+    fs::create_dir_all(destination.join("Hives")).map_err(IsolationError::IoError)?;
     let data = layer_data_json(parents);
     let result = native::initialize_writable(destination, &data)
         .and_then(|()| native::attach_filter(destination, &data));
@@ -307,7 +310,7 @@ mod native {
     use windows_sys::Win32::Foundation::{FreeLibrary, GetLastError};
     use windows_sys::Win32::System::HostComputeSystem::{
         HcsAttachLayerStorageFilter, HcsDestroyLayer, HcsDetachLayerStorageFilter, HcsImportLayer,
-        HcsInitializeWritableLayer,
+        HcsInitializeLegacyWritableLayer,
     };
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
@@ -346,12 +349,20 @@ mod native {
         destination: &Path,
         data: &str,
     ) -> Result<(), IsolationError> {
+        let hive_folder = destination.join("Hives");
         let destination = wide(destination.as_os_str());
+        let hives = wide(hive_folder.as_os_str());
         let data = wide(OsStr::new(data));
         // SAFETY: buffers are null terminated and valid through the call;
-        // null options requests HCS defaults documented for this API.
-        checked_hresult("HcsInitializeWritableLayer", unsafe {
-            HcsInitializeWritableLayer(destination.as_ptr(), data.as_ptr(), std::ptr::null())
+        // the owned writable root has a dedicated `Hives` folder, and null
+        // options requests the documented default legacy initialization.
+        checked_hresult("HcsInitializeLegacyWritableLayer", unsafe {
+            HcsInitializeLegacyWritableLayer(
+                destination.as_ptr(),
+                hives.as_ptr(),
+                data.as_ptr(),
+                std::ptr::null(),
+            )
         })
     }
 
