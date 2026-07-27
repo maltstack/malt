@@ -528,6 +528,28 @@ On WSL with NTFS-backed repo paths, cargo caching is unreliable due to NTFS mtim
 Use `CARGO_TARGET_DIR=/tmp/malt-build` for builds on WSL, or `cargo clean -p mash` followed by rebuild on Windows.
 Stale binary symptoms: test failures that don't match expected behavior from source changes.
 
+### Linux builds and tests: use the WSL mirror (added 2026-07-27)
+
+```bash
+bash scripts/wsl-mirror.sh                          # sync HEAD, build, test workspace
+bash scripts/wsl-mirror.sh -- -p malt-daemon --test coordinator
+```
+
+Keeps a real git clone on the **Linux** filesystem (`~/malt`) and builds into
+`/tmp/malt-build`, because building from `/mnt/c` goes through 9p and hits the
+NTFS caching problem above. Sync is fetch + hard reset from the Windows
+checkout, so the mirror is disposable — **never edit or commit there.** It
+resolves worktree `.git` files (whose `gitdir:` is a Windows path) so it works
+from a worktree as well as the main checkout.
+
+**Why it matters, not just that it is faster.** Three cross-platform defects
+were found on 2026-07-27 only once Linux tests could actually run, and the
+inverted Unix PTY (`docs/briefs/007`) was root-caused in a handful of
+50-second cycles. Through CI that is ~3 minutes per bit of information, and
+CI's Linux job is advisory — so nothing forces anyone to look. **If a change
+touches `malt-platform`, the daemon's process/PTY paths, or anything
+`#[cfg]`-gated, run it here before pushing.**
+
 ### Binary Paths
 - **Repo build (default):** `target/debug/mash`
 - **WSL build:** `/tmp/malt-build/debug/mash`
