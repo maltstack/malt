@@ -4,7 +4,7 @@
 
 **Created**: 2026-07-27
 
-**Status**: Draft
+**Status**: Complete
 
 **Input**: Provide MALT-owned Windows image and layer provisioning so a contained session can use a verified image, then return to and complete the privileged-helper containment proof.
 
