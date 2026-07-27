@@ -210,3 +210,9 @@ must share the final typed helper protocol, not invent a second transport.
 - [x] T050 Persist and report the selected immutable image digest on a contained session creation/result surface, per US2/AC1 and SC-002.
 - [ ] T051 Add Windows-only real HCS layer, contained-command, and post-destroy cleanup tests plus dated Docker-independent live evidence, per FR-010/FR-012/FR-013 and SC-003/SC-005 (missing).
 - [X] T052 Model and report acquired, HCS-prepared, and live-proven containment evidence as distinct image readiness states, per FR-003 and plan: lifecycle evidence decision.
+
+---
+
+## Phase 8: Convergence
+
+- [ ] T053 [US3] Diagnose and remediate the HCS prepared-layer removal sharing violation so an unused image removes its MALT-owned prepared state and record without restarting unrelated host services; add a Windows-real removal test that proves no prepared state remains after the last contained session. Evidence: `malt image remove sha256:852bbe55ef9eddac52f2e11b90d24d0d5b0d2518344ec813cf14891f76a8d47f` returned `DestroyLayer HRESULT=0x80070020` after helper restart, daemon restart, `active: 0`, and no MALT system in `hcsdiag list`, per FR-008/FR-010, US3/AC3, and SC-006 (partial).
