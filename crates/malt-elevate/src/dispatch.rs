@@ -280,13 +280,18 @@ fn revalidate_contained_image(
             record.platform.os, record.platform.architecture
         ));
     }
-    if record
-        .platform
-        .os_version
-        .as_deref()
-        .is_none_or(str::is_empty)
-    {
-        return Err("image does not declare a Windows os.version for host assessment".to_string());
+    let declared_image_version = record.platform.os_version.as_deref().ok_or_else(|| {
+        "image does not declare a Windows os.version for host assessment".to_string()
+    })?;
+    let image_version = malt_platform::system::WindowsVersion::parse(declared_image_version)
+        .map_err(|error| format!("image os.version is invalid: {error}"))?;
+    let host_version = malt_platform::system::windows_host_version().map_err(|error| {
+        format!("could not determine the current Windows host version: {error}")
+    })?;
+    if !host_version.supports_container_image(image_version) {
+        return Err(format!(
+            "image os.version {image_version} is incompatible with current Windows host version {host_version}"
+        ));
     }
     malt_platform::isolation::hcs::ensure_hcs_runtime()
         .map_err(|error| format!("HCS runtime is unavailable on this host: {error}"))?;
@@ -1198,6 +1203,56 @@ mod tests {
     #[test]
     fn hcs_json_escapes_entitled_windows_paths() {
         assert_eq!(json_escape(r#"C:\malt\"session"#), r#"C:\\malt\\\"session"#);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn prepared_image_is_refused_when_current_host_version_is_incompatible() {
+        let host =
+            malt_platform::system::windows_host_version().expect("read Windows host version");
+        let image_version = malt_platform::system::WindowsVersion {
+            major: host.major.saturating_add(1),
+            minor: host.minor,
+            build: host.build,
+            revision: host.revision,
+        };
+        let digest: malt_image::Digest =
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                .parse()
+                .expect("parse digest");
+        let record = malt_image::ImageRecord {
+            manifest_digest: digest.clone(),
+            source_reference: "mcr.microsoft.com/windows/nanoserver:ltsc2022".to_string(),
+            platform: malt_image::Platform {
+                os: "windows".to_string(),
+                architecture: "amd64".to_string(),
+                os_version: Some(image_version.to_string()),
+            },
+            manifest: malt_image::ImageManifest {
+                schema_version: 2,
+                media_type: None,
+                config: malt_image::Descriptor {
+                    media_type: "application/vnd.oci.image.config.v1+json".to_string(),
+                    digest: digest.clone(),
+                    size: 1,
+                    platform: None,
+                },
+                layers: vec![malt_image::Descriptor {
+                    media_type: "application/vnd.oci.image.layer.v1.tar+gzip".to_string(),
+                    digest,
+                    size: 1,
+                    platform: None,
+                }],
+            },
+            prepared: true,
+            live_proven: false,
+        };
+        let directory = tempfile::tempdir().expect("create helper-owned test store");
+        let store = malt_image::ImageStore::open(directory.path()).expect("open image store");
+        let error = revalidate_contained_image(&store, &record)
+            .expect_err("incompatible image must be refused before HCS construction");
+        assert!(error.contains(&image_version.to_string()), "{error}");
+        assert!(error.contains(&host.to_string()), "{error}");
     }
 
     #[test]

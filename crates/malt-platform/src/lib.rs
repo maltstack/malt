@@ -14,6 +14,7 @@ pub mod resource;
 pub mod service;
 pub mod signals;
 pub mod sockets;
+pub mod system;
 pub mod vfs;
 
 // Re-export isolation types for convenience
