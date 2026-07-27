@@ -147,7 +147,14 @@ impl<W> FrameWriter<W> {
 
 impl<W: Write> FrameWriter<W> {
     pub fn write_frame(&mut self, frame: &Frame) -> Result<(), FrameError> {
-        let len = frame.payload.len() as u32;
+        let payload_len = frame.payload.len();
+        if payload_len > PROTOCOL_MAX_FRAME_SIZE as usize {
+            return Err(FrameError::FrameTooLarge {
+                size: payload_len.min(u32::MAX as usize) as u32,
+                max: PROTOCOL_MAX_FRAME_SIZE,
+            });
+        }
+        let len = payload_len as u32;
         self.inner.write_all(&len.to_le_bytes())?;
         self.inner.write_all(&[frame.flags.0])?;
         self.inner.write_all(&frame.payload)?;

@@ -70,6 +70,44 @@ fn reject_frame_too_large() {
 }
 
 #[test]
+fn writer_accepts_payload_at_protocol_maximum() {
+    const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+    let frame = Frame {
+        flags: FrameFlags::new(),
+        payload: vec![0xA5; MAX_FRAME_SIZE],
+    };
+    let mut buf = Vec::new();
+
+    FrameWriter::new(&mut buf).write_frame(&frame).unwrap();
+    let decoded = FrameReader::with_max_frame_size(Cursor::new(&buf), MAX_FRAME_SIZE as u32)
+        .read_frame()
+        .unwrap();
+
+    assert_eq!(decoded.payload, frame.payload);
+}
+
+#[test]
+fn writer_rejects_payload_over_protocol_maximum() {
+    const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+    let frame = Frame {
+        flags: FrameFlags::new(),
+        payload: vec![0x5A; MAX_FRAME_SIZE + 1],
+    };
+    let mut buf = Vec::new();
+
+    let result = FrameWriter::new(&mut buf).write_frame(&frame);
+
+    match result {
+        Err(FrameError::FrameTooLarge { size, max }) => {
+            assert_eq!(size, MAX_FRAME_SIZE as u32 + 1);
+            assert_eq!(max, MAX_FRAME_SIZE as u32);
+        }
+        other => panic!("expected FrameTooLarge, got {other:?}"),
+    }
+    assert!(buf.is_empty());
+}
+
+#[test]
 fn reject_truncated_frame() {
     let mut buf = Vec::new();
     buf.extend_from_slice(&100u32.to_le_bytes());
