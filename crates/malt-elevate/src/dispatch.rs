@@ -4,6 +4,8 @@
 //! effect. Everything else is an explicit refusal or an indeterminate result.
 
 use std::collections::HashMap;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::protocol::{
@@ -166,6 +168,7 @@ pub fn dispatch_image_operation_with_containers(
                     dependent_sessions.join(", ")
                 ));
             }
+            reclaim_orphaned_workspaces(&store, &record)?;
             if record.prepared {
                 remove_prepared_image(&store, &record)?;
             }
@@ -192,6 +195,138 @@ pub fn dispatch_image_operation_with_containers(
             "unrecognized image operation",
         ),
     }
+}
+
+/// Persist the immutable helper selection beside, rather than inside, an HCS
+/// writable layer. This survives a helper restart without exposing a path to
+/// the daemon or container guest.
+fn workspace_lease_path(workspace: &Path) -> Result<PathBuf, String> {
+    let name = workspace
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "helper-owned workspace path has no UTF-8 leaf name".to_string())?;
+    Ok(workspace.with_file_name(format!("{name}.malt-image")))
+}
+
+fn write_workspace_lease(workspace: &Path, image_id: &str) -> Result<PathBuf, String> {
+    let lease = workspace_lease_path(workspace)?;
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&lease)
+        .map_err(|error| format!("could not create helper-owned workspace lease: {error}"))?;
+    file.write_all(image_id.as_bytes())
+        .and_then(|()| file.write_all(b"\n"))
+        .map_err(|error| format!("could not write helper-owned workspace lease: {error}"))?;
+    Ok(lease)
+}
+
+fn read_workspace_lease(workspace: &Path) -> Result<Option<String>, String> {
+    let lease = workspace_lease_path(workspace)?;
+    if !lease.exists() {
+        return Ok(None);
+    }
+    let metadata = fs::symlink_metadata(&lease)
+        .map_err(|error| format!("could not inspect helper-owned workspace lease: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("helper-owned workspace lease is not a regular file".to_string());
+    }
+    let value = fs::read_to_string(&lease)
+        .map_err(|error| format!("could not read helper-owned workspace lease: {error}"))?;
+    let value = value.trim();
+    parse_image_id(value)?;
+    Ok(Some(value.to_string()))
+}
+
+fn collect_owned_workspaces(store: &malt_image::ImageStore) -> Result<Vec<PathBuf>, String> {
+    let root = store
+        .root()
+        .canonicalize()
+        .map_err(|error| format!("could not resolve helper-owned image root: {error}"))?;
+    let sessions = root.join("sessions");
+    if !sessions.exists() {
+        return Ok(Vec::new());
+    }
+    let mut workspaces = Vec::new();
+    for session in fs::read_dir(&sessions)
+        .map_err(|error| format!("could not enumerate helper-owned workspaces: {error}"))?
+    {
+        let session = session.map_err(|error| error.to_string())?;
+        let session_type = session.file_type().map_err(|error| error.to_string())?;
+        if session_type.is_symlink() || !session_type.is_dir() {
+            return Err("helper-owned sessions directory contains an unsafe entry".to_string());
+        }
+        for workspace in fs::read_dir(session.path()).map_err(|error| {
+            format!("could not enumerate helper-owned session workspace: {error}")
+        })? {
+            let workspace = workspace.map_err(|error| error.to_string())?;
+            let workspace_type = workspace.file_type().map_err(|error| error.to_string())?;
+            if workspace_type.is_symlink() || !workspace_type.is_dir() {
+                continue;
+            }
+            let workspace_path = workspace.path();
+            let canonical = workspace_path
+                .canonicalize()
+                .map_err(|error| format!("could not resolve helper-owned workspace: {error}"))?;
+            if !canonical.starts_with(&root) {
+                return Err("helper-owned workspace resolves outside the image store".to_string());
+            }
+            workspaces.push(workspace_path);
+        }
+    }
+    Ok(workspaces)
+}
+
+/// Reconcile helper-owned workspaces after an unclean helper shutdown. New
+/// workspaces carry a lease, so only those whose immutable image identity
+/// matches the record are reclaimed. Pre-lease workspaces are a one-time
+/// compatibility case: they are touched only while this is the sole image
+/// record, which prevents cross-image deletion by inference.
+fn reclaim_orphaned_workspaces(
+    store: &malt_image::ImageStore,
+    record: &malt_image::ImageRecord,
+) -> Result<(), String> {
+    let records = store.list_records().map_err(|error| error.to_string())?;
+    let image_id = record.manifest_digest.to_string();
+    let mut leased = Vec::new();
+    let mut legacy = Vec::new();
+    for workspace in collect_owned_workspaces(store)? {
+        match read_workspace_lease(&workspace)? {
+            Some(lease) if lease == image_id => leased.push(workspace),
+            Some(_) => {}
+            None => legacy.push(workspace),
+        }
+    }
+    if !legacy.is_empty() && records.len() != 1 {
+        return Err(
+            "cannot remove image while unleased legacy workspaces exist alongside multiple helper-owned images"
+                .to_string(),
+        );
+    }
+    leased.extend(legacy);
+    for workspace in leased {
+        malt_platform::isolation::layers::destroy_recovered_writable_layer(&workspace)
+            .map_err(|error| format!("could not reclaim helper-owned workspace: {error}"))?;
+        let lease = workspace_lease_path(&workspace)?;
+        if lease.exists() {
+            fs::remove_file(&lease).map_err(|error| {
+                format!("could not remove helper-owned workspace lease: {error}")
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn destroy_workspace_and_lease(
+    workspace: malt_platform::isolation::layers::WritableLayer,
+) -> Result<(), malt_platform::isolation::IsolationError> {
+    let lease = workspace_lease_path(&workspace.path)
+        .map_err(malt_platform::isolation::IsolationError::HcsError)?;
+    malt_platform::isolation::layers::destroy_writable_layer(workspace)?;
+    if lease.exists() {
+        fs::remove_file(lease).map_err(malt_platform::isolation::IsolationError::IoError)?;
+    }
+    Ok(())
 }
 
 fn remove_prepared_image(
@@ -724,6 +859,21 @@ fn create_hcs_container(
                 )
             }
         };
+        if let Err(error) =
+            write_workspace_lease(&workspace.path, &record.manifest_digest.to_string())
+        {
+            let cleanup = destroy_workspace_and_lease(workspace);
+            return refused(
+                request_id,
+                ReasonCode::OsError,
+                format!(
+                    "could not record helper-owned contained workspace lease: {error}; workspace cleanup: {}",
+                    cleanup
+                        .map(|_| "complete".to_string())
+                        .unwrap_or_else(|cleanup| cleanup.to_string())
+                ),
+            );
+        }
         let root = workspace.mount_path().to_string();
         (
             parents,
@@ -786,9 +936,7 @@ fn create_hcs_container(
             }
         }
         Err(error) => {
-            let cleanup = workspace
-                .map(malt_platform::isolation::layers::destroy_writable_layer)
-                .transpose();
+            let cleanup = workspace.map(destroy_workspace_and_lease).transpose();
             refused(
                 request_id,
                 ReasonCode::OsError,
@@ -978,7 +1126,7 @@ fn tear_down_after_process_launch_failure(
             .and_then(|()| {
                 container
                     .workspace
-                    .map(malt_platform::isolation::layers::destroy_writable_layer)
+                    .map(destroy_workspace_and_lease)
                     .transpose()
             })
             .map(|_| ())
@@ -1022,7 +1170,7 @@ fn terminate_hcs_container(
         .and_then(|()| {
             container
                 .workspace
-                .map(malt_platform::isolation::layers::destroy_writable_layer)
+                .map(destroy_workspace_and_lease)
                 .transpose()
         })
         .map(|_| ())
@@ -1203,6 +1351,23 @@ mod tests {
     #[test]
     fn hcs_json_escapes_entitled_windows_paths() {
         assert_eq!(json_escape(r#"C:\malt\"session"#), r#"C:\\malt\\\"session"#);
+    }
+
+    #[test]
+    fn workspace_lease_binds_a_workspace_to_one_immutable_image() {
+        let temporary = tempfile::tempdir().expect("create helper-owned workspace root");
+        let workspace = temporary.path().join("sessions").join("7").join("9");
+        std::fs::create_dir_all(&workspace).expect("create helper-owned workspace");
+        let image = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+        let lease =
+            write_workspace_lease(&workspace, image).expect("write immutable workspace lease");
+        assert!(lease.is_file());
+        assert_eq!(
+            read_workspace_lease(&workspace).expect("read immutable workspace lease"),
+            Some(image.to_string())
+        );
+        assert!(write_workspace_lease(&workspace, image).is_err());
     }
 
     #[cfg(windows)]

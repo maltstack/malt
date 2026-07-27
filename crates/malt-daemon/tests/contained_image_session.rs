@@ -141,4 +141,14 @@ fn real_contained_image_executes_and_removes_its_workspace() {
             workspace_root.display()
         );
     }
+
+    let removed = run_malt(&["image", "remove", &image_id]);
+    assert!(removed.status.success(), "{}", output_text(&removed));
+    let listed = run_malt(&["image", "list"]);
+    assert!(listed.status.success(), "{}", output_text(&listed));
+    assert!(
+        !output_text(&listed).contains(&image_id),
+        "removed image is still present in helper inventory: {}",
+        output_text(&listed)
+    );
 }

@@ -212,6 +212,19 @@ pub fn destroy_writable_layer(workspace: WritableLayer) -> Result<(), IsolationE
     Ok(())
 }
 
+/// Recover a writable layer whose in-memory helper handle was lost (for
+/// example, after a helper restart). The path must still be derived by the
+/// helper from its owned store; this function accepts no protocol data.
+///
+/// A recovered workspace was created by [`initialize_writable_layer`], so it
+/// must be unprepared and deactivated before its layer is destroyed.
+pub fn destroy_recovered_writable_layer(path: &Path) -> Result<(), IsolationError> {
+    validate_owned_layer_path(path)?;
+    native::unprepare(path)?;
+    native::deactivate(path)?;
+    native::destroy_layer(path)
+}
+
 /// Destroy an owned read-only prepared layer after no compute system or child
 /// layer references it. The helper performs reference checks before this call.
 pub fn destroy_prepared_layer(layer: PreparedLayer) -> Result<(), IsolationError> {

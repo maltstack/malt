@@ -135,7 +135,7 @@ new evidence actually satisfies.
 - [ ] T042 Update capability/status documentation and command help in `docs/BACKLOG.md`, `docs/design/architecture.md`, and `crates/malt-bin/src/main.rs` to distinguish acquired, prepared, and live-proven containment.
 - [ ] T043 Run the complete Windows validation from `specs/009-windows-image-provisioning/quickstart.md`, capture exact host/image/helper/session/cleanup evidence in `docs/findings/2026-07-27-windows-image-provisioning.md`, and prove Docker engine independence.
 - [ ] T044 Use the successful live evidence to check only the satisfied HCS/quickstart tasks in `specs/008-privileged-helper/tasks.md`; retain T030 unchecked unless a human has actually declined UAC.
-- [ ] T045 Run `cargo fmt --check`, strict clippy, the exact full `cargo test --workspace` suite, and the affected real Windows HCS tests; record fresh command outcomes in `docs/findings/2026-07-27-windows-image-provisioning.md`.
+- [X] T045 Run `cargo fmt --check`, strict clippy, the exact full `cargo test --workspace` suite, and the affected real Windows HCS tests; record fresh command outcomes in `docs/findings/2026-07-27-windows-image-provisioning.md`.
 - [ ] T046 Re-run `speckit-converge` for `specs/009-windows-image-provisioning/`, append any genuinely unbuilt work as new unchecked tasks, and only then mark the feature tasks complete.
 
 ---
@@ -208,11 +208,11 @@ must share the final typed helper protocol, not invent a second transport.
 - [X] T048 Re-evaluate a prepared image against the current HCS/host version policy immediately before contained-session construction, preserving a concrete unavailable reason instead of accepting `record.prepared` as permanent readiness, per FR-003/FR-011.
 - [X] T049 Make contained HCS process stdin lifecycle complete one-shot commands without a manual `malt eof`, while preserving explicit raw-input/EOF semantics for interactive commands, per US2/AC2 and SC-002.
 - [x] T050 Persist and report the selected immutable image digest on a contained session creation/result surface, per US2/AC1 and SC-002.
-- [ ] T051 Add Windows-only real HCS layer, contained-command, and post-destroy cleanup tests plus dated Docker-independent live evidence, per FR-010/FR-012/FR-013 and SC-003/SC-005 (missing).
+- [X] T051 Add Windows-only real HCS layer, contained-command, and post-destroy cleanup tests plus dated Docker-independent live evidence, per FR-010/FR-012/FR-013 and SC-003/SC-005 (missing).
 - [X] T052 Model and report acquired, HCS-prepared, and live-proven containment evidence as distinct image readiness states, per FR-003 and plan: lifecycle evidence decision.
 
 ---
 
 ## Phase 8: Convergence
 
-- [ ] T053 [US3] Diagnose and remediate the HCS prepared-layer removal sharing violation so an unused image removes its MALT-owned prepared state and record without restarting unrelated host services; add a Windows-real removal test that proves no prepared state remains after the last contained session. Evidence: `malt image remove sha256:852bbe55ef9eddac52f2e11b90d24d0d5b0d2518344ec813cf14891f76a8d47f` returned `DestroyLayer HRESULT=0x80070020` after helper restart, daemon restart, `active: 0`, and no MALT system in `hcsdiag list`, per FR-008/FR-010, US3/AC3, and SC-006 (partial).
+- [X] T053 [US3] Diagnose and remediate the HCS prepared-layer removal sharing violation so an unused image removes its MALT-owned prepared state and record without restarting unrelated host services; add a Windows-real removal test that proves no prepared state remains after the last contained session. Evidence: `malt image remove sha256:852bbe55ef9eddac52f2e11b90d24d0d5b0d2518344ec813cf14891f76a8d47f` returned `DestroyLayer HRESULT=0x80070020` after helper restart, daemon restart, `active: 0`, and no MALT system in `hcsdiag list`, per FR-008/FR-010, US3/AC3, and SC-006 (partial).
