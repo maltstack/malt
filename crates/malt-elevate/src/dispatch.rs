@@ -275,11 +275,12 @@ fn parse_image_id(value: &str) -> Result<malt_image::Digest, String> {
 fn prepared_layer_id(digest: &str, index: usize) -> String {
     let prefix = &digest[..24];
     format!(
-        "{}-{}-{}-{}-{:08x}",
+        "{}-{}-{}-{}-{}{:08x}",
         &prefix[..8],
         &prefix[8..12],
         &prefix[12..16],
         &prefix[16..20],
+        &prefix[20..24],
         index
     )
 }
@@ -1051,6 +1052,17 @@ mod tests {
     #[test]
     fn hcs_json_escapes_entitled_windows_paths() {
         assert_eq!(json_escape(r#"C:\malt\"session"#), r#"C:\\malt\\\"session"#);
+    }
+
+    #[test]
+    fn prepared_layer_ids_are_full_guid_shaped_values() {
+        let id = prepared_layer_id("852bbe55ef9eddac52f2e11b90d24d0d5b0d2518344ec813cf14891f76a8d47f", 7);
+        assert_eq!(id, "852bbe55-ef9e-ddac-52f2-e11b00000007");
+        assert_eq!(id.len(), 36);
+        assert_eq!(id.as_bytes()[8], b'-');
+        assert_eq!(id.as_bytes()[13], b'-');
+        assert_eq!(id.as_bytes()[18], b'-');
+        assert_eq!(id.as_bytes()[23], b'-');
     }
 
     #[test]
