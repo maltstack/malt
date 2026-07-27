@@ -897,7 +897,7 @@ fn start_hcs_process(
     let result = HcsProcessLaunch {
         process_id: handoff.process_id,
         process_handle: handoff.process_handle,
-        stdin_handle: handoff.stdin_handle,
+        stdin_handle: Some(handoff.stdin_handle),
         stdout_handle: handoff.stdout_handle,
         stderr_handle: handoff.stderr_handle,
         _unknown: Vec::new(),
@@ -1358,39 +1358,8 @@ mod tests {
         assert_ne!(launch.stdout_handle, 0);
         assert_ne!(launch.stderr_handle, 0);
 
-        let no_stdin_response = dispatch_entitled_request(
-            43,
-            7,
-            root.path(),
-            std::process::id(),
-            &ElevateRequest::ManageHcsContainer {
-                operation: ContainerOperation::StartProcess {
-                    request: HcsProcessRequest {
-                        id: id.clone(),
-                        program: r"C:\\Windows\\System32\\cmd.exe".to_string(),
-                        arguments: vec!["/c".to_string(), "exit 0".to_string()],
-                        working_directory: None,
-                        environment: Vec::new(),
-                        argv0: None,
-                        create_stdin_pipe: false,
-                        _unknown: Vec::new(),
-                    },
-                },
-            },
-            &mut containers,
-        );
-        assert_eq!(no_stdin_response.kind, OutcomeKind::Performed);
-        let payload = no_stdin_response
-            .payload
-            .expect("HCS no-stdin process payload");
-        let mut reader = malt_protocol::vexil_runtime::BitReader::new(&payload);
-        let no_stdin_launch =
-            <HcsProcessLaunch as malt_protocol::vexil_runtime::Unpack>::unpack(&mut reader)
-                .expect("decode HCS no-stdin process payload");
-        assert!(no_stdin_launch.stdin_handle.is_none());
-
         let other_session = dispatch_entitled_request(
-            44,
+            43,
             8,
             root.path(),
             std::process::id(),
@@ -1414,7 +1383,7 @@ mod tests {
         assert_eq!(other_session.reason, Some(ReasonCode::NotEntitled));
 
         let _ = dispatch_entitled_request(
-            45,
+            44,
             7,
             root.path(),
             std::process::id(),

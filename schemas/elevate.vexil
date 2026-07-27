@@ -56,13 +56,15 @@ message HcsProcessRequest {
     working_directory @3 : optional<string>
     environment       @4 : array<HcsEnvironmentEntry>
     argv0             @5 : optional<string>
+    @doc("Whether the helper must request an HCS stdin pipe. False means the child has no writable host stdin endpoint.")
+    create_stdin_pipe @6 : bool
 }
 
 @doc("HCS process and standard-stream handles duplicated into the authenticated daemon process.")
 message HcsProcessLaunch {
     process_id     @0 : u32
     process_handle @1 : u64
-    stdin_handle   @2 : u64
+    stdin_handle   @2 : optional<u64>
     stdout_handle  @3 : u64
     stderr_handle  @4 : u64
 }
