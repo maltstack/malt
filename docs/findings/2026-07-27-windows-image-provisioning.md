@@ -77,3 +77,21 @@ The full test run retained its explicit privileged/opt-in ignores. Its
 Windows isolation reality suite printed the expected failed-allocation message
 from the memory-limit child process while the enclosing test passed; this is
 the assertion mechanism, not a suite failure.
+
+## Refusal evidence
+
+With the rebuilt helper installed and enrolled, both negative provisioning
+requests exited nonzero and `malt image list` remained empty afterwards:
+
+```text
+malt image provision docker.io/library/alpine:3.20
+# image provision failed: manifest index contains no selectable windows/amd64 descriptor
+
+malt image provision mcr.microsoft.com/windows/nanoserver@sha256:000...000
+# image provision failed: registry returned unexpected status 404 Not Found
+```
+
+The Docker Hub alias is normalized to `registry-1.docker.io` before invoking
+the OCI Distribution API. This avoids treating Docker Hub's web hostname as a
+successful manifest response and lets the first request reach the intended
+Windows-platform selection refusal.

@@ -43,6 +43,13 @@ impl ImageReference {
             } else {
                 ("registry-1.docker.io".to_string(), name.to_string())
             };
+        let registry = match registry.as_str() {
+            // Docker Hub publishes OCI Distribution at registry-1.docker.io;
+            // docker.io itself serves a web front door which can return HTML
+            // with a successful status and must never be parsed as a manifest.
+            "docker.io" | "index.docker.io" => "registry-1.docker.io".to_string(),
+            _ => registry,
+        };
         let repository = if registry == "registry-1.docker.io" && !repository.contains('/') {
             format!("library/{repository}")
         } else {
@@ -165,5 +172,18 @@ mod tests {
         assert_eq!(reference.registry, "mcr.microsoft.com");
         assert_eq!(reference.repository, "windows/nanoserver");
         assert_eq!(reference.reference, "sha256:abcd");
+    }
+
+    #[test]
+    fn docker_hub_aliases_resolve_to_the_distribution_api_host() {
+        for alias in ["docker.io", "index.docker.io"] {
+            let reference = ImageReference::parse(&format!("{alias}/library/alpine:3.20"))
+                .expect("parse Docker Hub alias");
+            assert_eq!(reference.registry, "registry-1.docker.io");
+            assert_eq!(reference.repository, "library/alpine");
+            assert!(reference
+                .manifest_url()
+                .starts_with("https://registry-1.docker.io/"));
+        }
     }
 }
