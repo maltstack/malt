@@ -85,10 +85,14 @@ pub fn acquire_public_windows_image(
         manifest,
         prepared: false,
     };
-    if let Err(error) = store.publish_record(&record) {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(error.into());
-    }
+    let record = match store.publish_record(&record) {
+        Ok(()) => record,
+        Err(StoreError::Exists(_)) => store.load_record(&manifest_digest)?,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error.into());
+        }
+    };
     let _ = fs::remove_dir_all(staging);
     Ok(record)
 }
