@@ -381,7 +381,9 @@ fn expand_ansi_c(
                     for _ in 0..2 {
                         match chars.peek() {
                             Some('0'..='7') => {
-                                val = val * 8 + (chars.next().unwrap() as u8 - b'0');
+                                if let Some(digit) = chars.next().and_then(|c| c.to_digit(8)) {
+                                    val = val * 8 + digit as u8;
+                                }
                             }
                             _ => break,
                         }
@@ -393,7 +395,9 @@ fn expand_ansi_c(
                     for _ in 0..2 {
                         match chars.peek() {
                             Some(c) if c.is_ascii_hexdigit() => {
-                                val = val * 16 + chars.next().unwrap().to_digit(16).unwrap() as u8;
+                                if let Some(digit) = chars.next().and_then(|c| c.to_digit(16)) {
+                                    val = val * 16 + digit as u8;
+                                }
                             }
                             _ => break,
                         }
@@ -405,7 +409,9 @@ fn expand_ansi_c(
                     for _ in 0..4 {
                         match chars.peek() {
                             Some(c) if c.is_ascii_hexdigit() => {
-                                code = code * 16 + chars.next().unwrap().to_digit(16).unwrap();
+                                if let Some(digit) = chars.next().and_then(|c| c.to_digit(16)) {
+                                    code = code * 16 + digit;
+                                }
                             }
                             _ => break,
                         }
@@ -419,7 +425,9 @@ fn expand_ansi_c(
                     for _ in 0..8 {
                         match chars.peek() {
                             Some(c) if c.is_ascii_hexdigit() => {
-                                code = code * 16 + chars.next().unwrap().to_digit(16).unwrap();
+                                if let Some(digit) = chars.next().and_then(|c| c.to_digit(16)) {
+                                    code = code * 16 + digit;
+                                }
                             }
                             _ => break,
                         }
@@ -1362,7 +1370,9 @@ fn expand_simple_var(
         let sep = if ifs.is_empty() {
             String::new()
         } else {
-            ifs.chars().next().unwrap().to_string()
+            ifs.chars()
+                .next()
+                .map_or_else(String::new, |ch| ch.to_string())
         };
 
         if in_double_quote {
@@ -1494,7 +1504,9 @@ fn collect_until_close_paren(chars: &mut std::iter::Peekable<std::str::Chars>) -
                 }
                 if next == '\r' {
                     if chars.peek() == Some(&'\n') {
-                        cmd.push(chars.next().expect("peeked newline should exist"));
+                        if let Some(newline) = chars.next() {
+                            cmd.push(newline);
+                        }
                     }
                     at_word_start = true;
                     break;

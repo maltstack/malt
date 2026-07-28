@@ -50,8 +50,14 @@ impl ProcessSupervisor {
         // On Unix, I/O goes through the PTY master (reader/writer).
         #[cfg(windows)]
         let (reader, writer) = {
-            let stdout = pty_proc.child.take_stdout().map(child_io_to_file);
-            let stdin = pty_proc.child.take_stdin().map(child_io_to_file);
+            let stdout = pty_proc
+                .child
+                .take_stdout()
+                .map(malt_platform::io::into_file);
+            let stdin = pty_proc
+                .child
+                .take_stdin()
+                .map(malt_platform::io::into_file);
             (
                 stdout.unwrap_or(pty_proc.reader),
                 stdin.unwrap_or(pty_proc.writer),
@@ -220,12 +226,4 @@ impl Default for ProcessSupervisor {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Convert a child's stdout/stdin pipe to a File handle.
-#[cfg(windows)]
-fn child_io_to_file<T: std::os::windows::io::IntoRawHandle>(io: T) -> std::fs::File {
-    use std::os::windows::io::FromRawHandle;
-    // SAFETY: we own the handle and transfer ownership to File
-    unsafe { std::fs::File::from_raw_handle(io.into_raw_handle()) }
 }

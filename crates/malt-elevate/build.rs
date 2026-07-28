@@ -1,14 +1,14 @@
 use std::env;
+use std::error::Error;
+use std::io;
 use std::path::PathBuf;
 use std::process::Command;
 
-fn main() {
-    let manifest_dir = PathBuf::from(
-        env::var("CARGO_MANIFEST_DIR").expect("Cargo always supplies CARGO_MANIFEST_DIR"),
-    );
+fn main() -> Result<(), Box<dyn Error>> {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let schema_dir = manifest_dir.join("../../schemas");
     let schema = schema_dir.join("elevate.vexil");
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("Cargo always supplies OUT_DIR"));
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     let vexilc = env::var("VEXILC_PATH").unwrap_or_else(|_| "vexilc".to_owned());
 
     let status = Command::new(vexilc)
@@ -20,11 +20,12 @@ fn main() {
         .arg(&out_dir)
         .arg("--target")
         .arg("rust")
-        .status()
-        .unwrap_or_else(|error| panic!("failed to run vexilc: {error}"));
+        .status()?;
 
     if !status.success() {
-        panic!("vexilc build failed for {}", schema.display());
+        return Err(
+            io::Error::other(format!("vexilc build failed for {}", schema.display())).into(),
+        );
     }
 
     println!("cargo::rerun-if-changed={}", schema.display());
@@ -32,4 +33,5 @@ fn main() {
         "cargo::rerun-if-changed={}",
         schema_dir.join("common.vexil").display()
     );
+    Ok(())
 }

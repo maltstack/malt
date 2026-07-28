@@ -113,14 +113,8 @@ fn remove_existing_path(path: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(windows)]
 fn create_symlink(target: &str, link_path: &Path) -> io::Result<()> {
     malt_platform::fs::create_symlink(Path::new(target), link_path)
-}
-
-#[cfg(unix)]
-fn create_symlink(target: &str, link_path: &Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(target, link_path)
 }
 
 #[cfg(test)]

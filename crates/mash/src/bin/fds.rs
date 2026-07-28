@@ -9,7 +9,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.get(1).map(|s| s.as_str()) == Some("--fd-state") {
-        let state_path = args.get(2).expect("--fd-state requires a path argument");
+        let Some(state_path) = args.get(2) else {
+            eprintln!("fds: --fd-state requires a path argument");
+            std::process::exit(2);
+        };
         let start = parse_bound(args.get(3), 0);
         let end = parse_bound(args.get(4), 9);
         run_with_file_state(state_path, start, end);

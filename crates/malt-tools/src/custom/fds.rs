@@ -24,12 +24,7 @@ fn fds_tool(
 /// Check if a file descriptor is open/valid
 #[cfg(unix)]
 fn is_fd_open(fd: i32) -> bool {
-    use std::os::unix::io::RawFd;
-    // Try to use fcntl to check if FD is valid
-    unsafe {
-        let ret = libc::fcntl(fd as RawFd, libc::F_GETFD);
-        ret != -1
-    }
+    malt_platform::io::is_fd_open(fd)
 }
 
 /// Check if a file descriptor is open/valid on Windows
@@ -37,27 +32,7 @@ fn is_fd_open(fd: i32) -> bool {
 /// Uses a simple heuristic: try to read/write 0 bytes to detect if handle is valid
 #[cfg(windows)]
 fn is_fd_open(fd: i32) -> bool {
-    use std::os::windows::io::RawHandle;
-
-    unsafe {
-        // Get the raw handle for the FD from the C runtime
-        let handle = libc::get_osfhandle(fd) as RawHandle;
-
-        // Check if handle is null or invalid (-1)
-        if handle.is_null() || handle == (-1isize) as RawHandle {
-            return false;
-        }
-
-        // For our purposes, assume 0-2 (stdin/stdout/stderr) are open
-        // and any FD >= 3 that has a non-null handle is also open
-        if fd <= 2 {
-            return true;
-        }
-
-        // For other FDs, check if handle pointer is valid
-        // A simple check: non-null and not -1
-        true
-    }
+    malt_platform::io::is_fd_open(fd)
 }
 
 #[cfg(not(any(unix, windows)))]

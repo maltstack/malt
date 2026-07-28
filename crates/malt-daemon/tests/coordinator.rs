@@ -6,7 +6,7 @@ use malt_protocol::common::{IsolationPolicy, IsolationTier, SessionId, SessionSt
 use std::sync::mpsc;
 
 fn make_store(dir: &tempfile::TempDir) -> DebouncedStore {
-    DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+    DebouncedStore::new(SessionStore::new(dir.path().to_path_buf())).expect("create debounce store")
 }
 
 #[test]
@@ -865,7 +865,8 @@ fn error_variants_are_distinct() {
 #[test]
 fn zero_execution_capacity_is_rejected_by_checked_construction() {
     let dir = tempfile::tempdir().unwrap();
-    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+        .expect("create debounce store");
     let config = PoolConfig {
         session_channel_size: 0,
         ..PoolConfig::default()
@@ -885,7 +886,8 @@ fn last_detach_while_execution_is_busy_keeps_the_session_active() {
     use std::time::Duration;
 
     let dir = tempfile::tempdir().unwrap();
-    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+        .expect("create debounce store");
     let mut coord = Coordinator::new(PoolConfig::default(), store);
     let id = coord
         .create_session(None, IsolationTier::Bare, None)
@@ -930,7 +932,8 @@ fn last_detach_after_queued_write_input_keeps_session_active_and_runs_command() 
     use std::time::{Duration, Instant};
 
     let dir = tempfile::tempdir().unwrap();
-    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+        .expect("create debounce store");
     let mut coord = Coordinator::new(PoolConfig::default(), store);
     let id = coord
         .create_session(None, IsolationTier::Bare, None)
@@ -977,7 +980,8 @@ fn destroy_closes_intake_promptly_but_finalizes_active_work_once() {
     use std::time::{Duration, Instant};
 
     let dir = tempfile::tempdir().unwrap();
-    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+        .expect("create debounce store");
     let mut coord = Coordinator::new(
         PoolConfig {
             session_channel_size: 1,

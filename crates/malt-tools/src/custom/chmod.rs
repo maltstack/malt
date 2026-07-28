@@ -53,7 +53,9 @@ pub fn chmod(
         return BuiltinResult::failure(1, "chmod: missing file operand\n".into());
     }
 
-    let mode_str = mode_str.unwrap();
+    let Some(mode_str) = mode_str else {
+        return BuiltinResult::failure(1, "chmod: missing operand\n".into());
+    };
     let mut stderr = Vec::new();
     let mut exit_code = 0;
 

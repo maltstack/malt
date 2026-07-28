@@ -1,19 +1,19 @@
 use std::env;
+use std::error::Error;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn main() {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+fn main() -> Result<(), Box<dyn Error>> {
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let schemas_dir = manifest_dir.join("../../schemas");
-    let schemas_dir = schemas_dir
-        .canonicalize()
-        .expect("schemas/ directory not found");
+    let schemas_dir = schemas_dir.canonicalize()?;
     let vexilc = env::var("VEXILC_PATH").unwrap_or_else(|_| "vexilc".to_string());
 
     let mut schema_files = Vec::new();
-    collect_vexil_files(&schemas_dir, &mut schema_files);
+    collect_vexil_files(&schemas_dir, &mut schema_files)?;
 
     for schema in &schema_files {
         let status = Command::new(&vexilc)
@@ -25,51 +25,50 @@ fn main() {
             .arg(&out_dir)
             .arg("--target")
             .arg("rust")
-            .status()
-            .unwrap_or_else(|e| panic!("failed to run vexilc: {e}"));
+            .status()?;
 
         if !status.success() {
-            panic!("vexilc build failed for {}", schema.display());
+            return Err(
+                io::Error::other(format!("vexilc build failed for {}", schema.display())).into(),
+            );
         }
     }
 
-    normalize_generated_sources(&out_dir);
-    write_mod_rs(&out_dir);
+    normalize_generated_sources(&out_dir)?;
+    write_mod_rs(&out_dir)?;
 
     println!("cargo::rerun-if-changed={}", schemas_dir.display());
     for schema in &schema_files {
         println!("cargo::rerun-if-changed={}", schema.display());
     }
+    Ok(())
 }
 
-fn normalize_generated_sources(out_dir: &Path) {
+fn normalize_generated_sources(out_dir: &Path) -> io::Result<()> {
     let malt_dir = out_dir.join("malt");
     if !malt_dir.is_dir() {
-        return;
+        return Ok(());
     }
-    normalize_generated_dir(&malt_dir);
+    normalize_generated_dir(&malt_dir)
 }
 
-fn normalize_generated_dir(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+fn normalize_generated_dir(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            normalize_generated_dir(&path);
+            normalize_generated_dir(&path)?;
             continue;
         }
         if path.extension().is_some_and(|e| e == "rs") {
-            normalize_generated_file(&path);
+            normalize_generated_file(&path)?;
         }
     }
+    Ok(())
 }
 
-fn normalize_generated_file(path: &Path) {
-    let Ok(src) = fs::read_to_string(path) else {
-        return;
-    };
+fn normalize_generated_file(path: &Path) -> io::Result<()> {
+    let src = fs::read_to_string(path)?;
     let mut out = String::with_capacity(src.len());
 
     let mut in_pack_impl = false;
@@ -142,8 +141,9 @@ fn normalize_generated_file(path: &Path) {
     }
 
     if out != src {
-        fs::write(path, out).expect("failed to write normalized generated source");
+        fs::write(path, out)?;
     }
+    Ok(())
 }
 
 fn rewrite_pack_match_loop_line(line: &str) -> String {
@@ -173,19 +173,20 @@ fn is_simple_ident(s: &str) -> bool {
     chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
-fn collect_vexil_files(dir: &Path, files: &mut Vec<PathBuf>) {
-    for entry in fs::read_dir(dir).unwrap() {
-        let entry = entry.unwrap();
+fn collect_vexil_files(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_vexil_files(&path, files);
+            collect_vexil_files(&path, files)?;
         } else if path.extension().is_some_and(|e| e == "vexil") {
             files.push(path);
         }
     }
+    Ok(())
 }
 
-fn write_mod_rs(out_dir: &Path) {
+fn write_mod_rs(out_dir: &Path) -> io::Result<()> {
     let malt_dir = out_dir.join("malt");
     let mut modules = Vec::new();
 
@@ -212,7 +213,7 @@ fn write_mod_rs(out_dir: &Path) {
     for m in &modules {
         content.push_str(&format!("pub mod {m};\n"));
     }
-    fs::write(malt_dir.join("mod.rs"), &content).unwrap();
+    fs::write(malt_dir.join("mod.rs"), &content)?;
 
     // Handle persist/ subdirectory
     let persist_dir = malt_dir.join("persist");
@@ -237,13 +238,13 @@ fn write_mod_rs(out_dir: &Path) {
         for m in &persist_mods {
             pc.push_str(&format!("pub mod {m};\n"));
         }
-        fs::write(persist_dir.join("mod.rs"), &pc).unwrap();
+        fs::write(persist_dir.join("mod.rs"), &pc)?;
     }
 
     // Root mod.rs
     fs::write(
         out_dir.join("mod.rs"),
         "// Generated by malt-protocol build.rs. DO NOT EDIT.\n\npub mod malt;\n",
-    )
-    .unwrap();
+    )?;
+    Ok(())
 }

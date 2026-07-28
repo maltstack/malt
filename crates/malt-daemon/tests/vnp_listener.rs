@@ -36,7 +36,8 @@ use malt_gateway::auth::{AuthScope, TokenStore};
 
 fn make_coordinator_with_session() -> (Arc<Mutex<Coordinator>>, u32) {
     let dir = tempfile::tempdir().unwrap();
-    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+        .expect("create debounce store");
     let mut coord = Coordinator::new(PoolConfig::default(), store);
     let sid = coord
         .create_session(None, IsolationTier::Bare, None)
@@ -59,7 +60,9 @@ fn start_test_listener_with_auth(coordinator: Arc<Mutex<Coordinator>>) -> (Strin
     let addr = listener.local_addr().unwrap().to_string();
     let counter = Arc::new(AtomicU64::new(1));
     let tokens = Arc::new(TokenStore::new());
-    let token = tokens.generate_token(AuthScope::Admin);
+    let token = tokens
+        .generate_token(AuthScope::Admin)
+        .expect("generate test token");
     std::thread::spawn(move || {
         accept_vnp_connections(listener, coordinator, counter, tokens);
     });
@@ -250,7 +253,8 @@ fn send_enter_key(writer: &mut FrameWriter<TcpStream>, session_id: u32) {
 #[test]
 fn vnp_handshake_succeeds() {
     let dir = tempfile::tempdir().unwrap();
-    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+        .expect("create debounce store");
     let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
     let addr = start_test_listener_seeded(coordinator);
 
@@ -271,7 +275,8 @@ fn vnp_handshake_succeeds() {
 #[test]
 fn vnp_create_session_applies_policy_and_returns_stored_status() {
     let dir = tempfile::tempdir().unwrap();
-    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+        .expect("create debounce store");
     let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
     let addr = start_test_listener_seeded(coordinator);
 
@@ -566,7 +571,8 @@ fn an_unauthenticated_client_is_refused_and_learns_no_session_names() {
 
     // A session with a distinctive name, so a leak is unmistakable.
     let dir = tempfile::tempdir().unwrap();
-    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+        .expect("create debounce store");
     let mut coord = Coordinator::new(PoolConfig::default(), store);
     coord
         .create_session(

@@ -31,7 +31,7 @@ pub struct DebouncedStore {
 }
 
 impl DebouncedStore {
-    pub fn new(store: SessionStore) -> Self {
+    pub fn new(store: SessionStore) -> Result<Self, StoreError> {
         let (tx, rx) = mpsc::channel::<DirtyMsg>();
         let store = Arc::new(store);
         let thread_store = Arc::clone(&store);
@@ -39,11 +39,11 @@ impl DebouncedStore {
         std::thread::Builder::new()
             .name("malt-debounce-flush".to_string())
             .spawn(move || background_thread(rx, thread_store))
-            .expect("failed to spawn debounce flush thread");
+            .map_err(StoreError::Io)?;
 
-        Self {
+        Ok(Self {
             inner: Arc::new(Inner { tx, store }),
-        }
+        })
     }
 
     /// Mark a session dirty. The latest value overwrites any pending dirty entry.
@@ -192,7 +192,8 @@ mod tests {
     #[test]
     fn flush_all_is_immediate() {
         let dir = tempfile::tempdir().unwrap();
-        let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+        let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+            .expect("create debounce store");
 
         // Mark daemon state dirty and flush immediately — no 1s wait.
         store.mark_dirty_daemon(make_state(7));
@@ -213,7 +214,8 @@ mod tests {
     #[test]
     fn daemon_latest_value_wins() {
         let dir = tempfile::tempdir().unwrap();
-        let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+        let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+            .expect("create debounce store");
 
         // Two rapid mark_dirty_daemon calls — only the latest should be saved.
         store.mark_dirty_daemon(make_state(1));
@@ -227,7 +229,8 @@ mod tests {
     #[test]
     fn flushes_after_one_second_idle() {
         let dir = tempfile::tempdir().unwrap();
-        let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+        let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+            .expect("create debounce store");
 
         store.mark_dirty_daemon(make_state(99));
 
@@ -241,7 +244,8 @@ mod tests {
     #[test]
     fn clone_shares_flush_channel() {
         let dir = tempfile::tempdir().unwrap();
-        let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+        let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+            .expect("create debounce store");
         let clone = store.clone();
 
         clone.mark_dirty_daemon(make_state(55));
@@ -258,7 +262,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let inner = SessionStore::new(dir.path().to_path_buf());
-        let store = DebouncedStore::new(inner);
+        let store = DebouncedStore::new(inner).expect("create debounce store");
 
         // Nothing persisted yet.
         assert!(store.list_sessions().unwrap().is_empty());

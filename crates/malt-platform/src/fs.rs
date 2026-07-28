@@ -247,6 +247,20 @@ pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     }
 }
 
+/// Restrict a credential file to its owner on platforms with POSIX modes.
+/// Other platforms retain their existing permission behavior.
+pub fn set_owner_only_permissions(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        set_mode(path, 0o600)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 /// Return the effective POSIX-style mode for a path.
 pub fn get_mode(path: &Path) -> io::Result<u32> {
     #[cfg(unix)]

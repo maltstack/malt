@@ -15,13 +15,11 @@ pub struct GpuRenderer {
 }
 
 impl GpuRenderer {
-    pub async fn new(window: Arc<Window>) -> Self {
+    pub async fn new(window: Arc<Window>) -> anyhow::Result<Self> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
-        let surface = instance
-            .create_surface(window.clone())
-            .expect("failed to create wgpu surface");
+        let surface = instance.create_surface(window.clone())?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -29,12 +27,11 @@ impl GpuRenderer {
                 ..Default::default()
             })
             .await
-            .expect("no suitable GPU adapter found");
+            .ok_or_else(|| anyhow::anyhow!("no suitable GPU adapter found"))?;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default(), None)
-            .await
-            .expect("failed to create wgpu device");
+            .await?;
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps
@@ -42,7 +39,13 @@ impl GpuRenderer {
             .iter()
             .find(|f| f.is_srgb())
             .copied()
-            .unwrap_or(caps.formats[0]);
+            .or_else(|| caps.formats.first().copied())
+            .ok_or_else(|| anyhow::anyhow!("GPU surface reported no texture formats"))?;
+        let alpha_mode = caps
+            .alpha_modes
+            .first()
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("GPU surface reported no alpha modes"))?;
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -51,18 +54,18 @@ impl GpuRenderer {
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
         };
         surface.configure(&device, &config);
 
-        Self {
+        Ok(Self {
             surface,
             device,
             queue,
             config,
             size,
-        }
+        })
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {

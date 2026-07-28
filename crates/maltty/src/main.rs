@@ -30,7 +30,13 @@ impl ApplicationHandler for Maltty {
                     return;
                 }
             };
-            self.app = Some(app::App::new(window, &self.api_addr, self.session_id));
+            match app::App::new(window, &self.api_addr, self.session_id) {
+                Ok(app) => self.app = Some(app),
+                Err(error) => {
+                    eprintln!("failed to initialize GPU renderer: {error}");
+                    event_loop.exit();
+                }
+            }
         }
     }
 

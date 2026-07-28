@@ -74,7 +74,7 @@ impl LayoutStrategy for GridStrategy {
         }
 
         if row_nodes.len() == 1 {
-            return row_nodes.into_iter().next().expect("checked non-empty");
+            return row_nodes.remove(0);
         }
 
         LayoutNode::Split {

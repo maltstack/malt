@@ -35,8 +35,9 @@ handling is a compatibility-shim concern, not something that should leak
 into the protocol or session model.
 
 ### II. OS Calls Confined
-No `nix`, `windows-sys`, `libc`, or `std::os::unix` outside `malt-platform`.
-Every other crate goes through `malt-platform`'s cross-platform
+No `nix`, `windows-sys`, `libc`, or `std::os::*` outside `malt-platform`.
+The standalone `malt-elevate` helper is outside the layer system and is
+exempt. Every other crate goes through `malt-platform`'s cross-platform
 abstractions. This is what makes the rest of the codebase portable without
 `#[cfg]` sprawl.
 
@@ -48,7 +49,8 @@ them.
 
 ### IV. Safety Is Explicit
 Every `unsafe` block requires a `// SAFETY:` comment explaining why it's
-sound. No `unwrap()` or `expect()` outside `#[cfg(test)]` code. Two real
+sound. No `unwrap()` or `expect()` outside `#[cfg(test)]` code, including
+build scripts. Two real
 bugs (undersized `IO_COUNTERS` struct, hardcoded active-process-limit of 1
 in `job_objects.rs`) were found in 2026-07 specifically because tests
 exercised real code paths instead of constructing structs directly — trust

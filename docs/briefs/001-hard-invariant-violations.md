@@ -91,6 +91,28 @@ and does not parse strings or comments perfectly — so treat it as "about
 ninety, concentrated in a few files", not a target to drive to zero by count.
 Re-run it before starting; do not trust either number blind.
 
+## Resolution pass 2026-07-28
+
+The build-script policy is settled: build scripts are in scope for the
+invariant. They execute as part of the production build and must report
+missing environment, filesystem, or compiler-tool prerequisites as `Result`
+errors rather than panic through `unwrap()` or `expect()`. A build-time error
+is loud, but it is still an avoidable panic and keeping the wording narrower
+would make the invariant ambiguous.
+
+The runtime and build-script sweep is complete. A strict clippy scan over all
+workspace libraries and binaries (`clippy::unwrap_used` and
+`clippy::expect_used`) reports no non-test uses. The remaining occurrences
+are in test modules. Poisoned mutexes in the FD and fake HCS registries now
+recover their state with `into_inner()`.
+
+The OS-call survey is also complete. Production references to `std::os::*`,
+`libc`, `nix`, and `windows_sys` are confined to `malt-platform`; the
+standalone `malt-elevate` helper has no such references and remains exempt by
+the architecture wording. Descriptor probing, symlink creation, credential
+file permissions, and Windows child-handle conversion were moved behind
+platform APIs.
+
 Where they cluster:
 
 | Count | File |
@@ -113,13 +135,13 @@ record the answer, because otherwise the next person re-litigates it.
 
 This is three sweeps, not one. They are independent and can land separately.
 
-- [ ] T001 Re-run the measurement and record the current figure. **Do not use the numbers above as-is** — they are dated, and the brief's original 39 was already stale by more than double when checked.
-- [ ] T002 Decide whether `build.rs` files are in scope for Constitution IV, and **write the answer down** (in this brief or as an ADR if it generalises). A panic at build time is loud and immediate; a panic at runtime kills a daemon holding sessions. Those are not the same risk.
-- [ ] T003 Sweep the daemon runtime paths first — `elevate_client.rs` (19) and `vfs/fd.rs` (9). **The defect this prevents**: these run inside a live daemon holding other people's sessions, so a panic here is the case the invariant exists for.
-- [ ] T004 Sweep `isolation/hcs.rs` (7). Note some are recent; check whether any are in `// SAFETY:`-adjacent unsafe blocks where the panic is a deliberate assertion, and convert only what genuinely should return an error.
-- [ ] T005 Sweep `mash` (`expander.rs`, `executor.rs`). **Smoosh becomes a gate here** — `mash` is touched. Expected: `passed: 183, skipped unsupported: 3`, with `MASH` set.
-- [ ] T006 The **second half of this brief** is unaddressed by the above: OS calls outside `malt-platform` (Constitution II). Re-verify that list too — one instance (`dispatch.rs`'s `std::os::unix::fs::symlink`) was already fixed on 2026-07-27 during spec 008, so the count has almost certainly moved.
-- [ ] T007 Gates per sweep, not once at the end: `cargo test --workspace` (needs `MASH`), `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, Linux via `bash scripts/wsl-mirror.sh`. **macOS is not a target** (ADR-0006).
+- [x] T001 Re-run the measurement and record the current figure. The strict production scan is now zero; the dated raw count above remains historical context, not a target.
+- [x] T002 Decide whether `build.rs` files are in scope for Constitution IV, and write the answer down. Build scripts are in scope and now return build failures rather than using `unwrap()`/`expect()`.
+- [x] T003 Sweep the daemon runtime paths first — the FD registry now recovers poisoned mutexes, and the daemon's fallible startup paths no longer panic. `elevate_client.rs`'s counted occurrences were test-only.
+- [x] T004 Sweep `isolation/hcs.rs` (7). Fake backend registry locks now recover deliberately after poisoning.
+- [x] T005 Sweep `mash` (`expander.rs`, `executor.rs`). Parser assumptions and tool lookups now have explicit non-panicking paths.
+- [x] T006 Re-verify OS calls outside `malt-platform`. Production OS calls are now behind `malt-platform`; test-only platform probes remain in test code, and `malt-elevate` is exempt as a standalone helper.
+- [x] T007 Gates per sweep, not once at the end: Windows `cargo test --workspace`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, explicit Smoosh (`183 passed, 3 skipped unsupported`), and the WSL mirror's workspace build/test all pass. **macOS is not a target** (ADR-0006).
 
 **A caution specific to this brief.** Converting an `unwrap` to a `?` changes
 a panic into an error path, and an error path nothing handles is worse than a

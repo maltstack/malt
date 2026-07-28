@@ -115,11 +115,11 @@ These are non-negotiable. Violating any is a bug. (Also captured, with the
 day's process lessons added, in `.specify/memory/constitution.md`.)
 
 1. **VT codes in `malt-compat` only.** No other crate may import `vte` or handle escape sequences. ✅ Clean.
-2. **OS calls in `malt-platform` only.** No `nix`, `windows-sys`, `libc`, `std::os::unix` elsewhere. ✅ Clean — `PermissionsExt` violation in `mash/src/executor.rs` fixed in Phase A.
+2. **OS calls in `malt-platform` only.** No `nix`, `windows-sys`, `libc`, or `std::os::*` elsewhere in production code. The standalone `malt-elevate` helper is outside the layer system and is exempt. ✅ Clean — checked 2026-07-28.
 3. **`malt-protocol` is dependency-free within workspace.** Only external deps. ✅ Clean.
 4. **`malt-plugin-sdk` has zero internal deps.** ✅ Clean — only external deps (wasmtime, serde, thiserror).
 5. **All `unsafe` blocks require `// SAFETY:` comments.** ✅ Clean — enforced throughout, including the 2026-07-24 HCS port (27 unsafe blocks, all documented).
-6. **No `unwrap()` or `expect()` in non-test code.** ✅ Clean — all found uses are in `#[cfg(test)]` blocks.
+6. **No `unwrap()` or `expect()` in non-test code, including build scripts.** ✅ Clean — checked 2026-07-28; remaining uses are in test code only.
 7. **VNP is the only inter-component protocol.** ✅ Clean. Full bitpack envelope used post-handshake for all message types.
 8. **Shell ships when POSIX conformance suite passes.** Smoosh (183/183 Windows, 186/186 WSL) + Modernish. Not yet wired to CI. Fix in Phase C.
 9. **Layer violations are compile errors.** No upward dependencies in the crate graph. ✅ Clean.

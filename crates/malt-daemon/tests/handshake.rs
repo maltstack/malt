@@ -46,7 +46,9 @@ fn decode_hello_ack(data: &[u8]) -> HelloAck {
 /// authentication itself.
 fn store_with_token() -> (TokenStore, String) {
     let store = TokenStore::new();
-    let token = store.generate_token(AuthScope::Admin);
+    let token = store
+        .generate_token(AuthScope::Admin)
+        .expect("generate test token");
     (store, token)
 }
 
@@ -277,7 +279,9 @@ fn an_authenticated_client_receives_the_inventory() {
 #[test]
 fn the_resolved_scope_follows_the_credential() {
     let store = TokenStore::new();
-    let read_token = store.generate_token(AuthScope::Read);
+    let read_token = store
+        .generate_token(AuthScope::Read)
+        .expect("generate test token");
     let mut input = Cursor::new(encode_hello(&hello_with(Some(read_token))));
     let mut output = Vec::new();
 

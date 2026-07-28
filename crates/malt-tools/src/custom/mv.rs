@@ -39,7 +39,9 @@ pub fn mv(
     }
 
     // Last argument is destination
-    let dest = paths.pop().unwrap();
+    let Some(dest) = paths.pop() else {
+        return BuiltinResult::failure(1, "mv: missing file operand\n".into());
+    };
     let sources: Vec<_> = paths;
 
     let dest_path = Path::new(dest);

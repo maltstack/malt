@@ -160,7 +160,9 @@ impl<'a> LexerState<'a> {
 
     /// Lex a single token and add it to self.tokens.
     fn lex_token(&mut self) -> Result<(), LexError> {
-        let (pos, ch) = self.peek().unwrap();
+        let Some((pos, ch)) = self.peek() else {
+            return Ok(());
+        };
 
         let token = match ch {
             // Pipe / OrOr

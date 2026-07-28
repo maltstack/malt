@@ -25,16 +25,16 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(window: Window, api_addr: &str, session_id: u32) -> Self {
+    pub fn new(window: Window, api_addr: &str, session_id: u32) -> anyhow::Result<Self> {
         let window = Arc::new(window);
-        let renderer = pollster::block_on(GpuRenderer::new(window.clone()));
+        let renderer = pollster::block_on(GpuRenderer::new(window.clone()))?;
         let connection = HttpConnection::new(api_addr, session_id);
-        Self {
+        Ok(Self {
             window,
             renderer,
             connection,
             lines: Vec::new(),
-        }
+        })
     }
 
     pub fn window(&self) -> Option<&Window> {

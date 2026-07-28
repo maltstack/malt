@@ -246,7 +246,9 @@ fn apply_script(line: &str, script: &str) -> Result<String, String> {
             let regex = Regex::new(&regex_pattern).map_err(|e| format!("invalid regex: {}", e))?;
 
             if let Some(caps) = regex.captures(line) {
-                let mat = caps.get(0).unwrap();
+                let Some(mat) = caps.get(0) else {
+                    return Ok(line.to_string());
+                };
                 let replacement_expanded = expand_backreferences(replacement, &caps);
                 let result = format!(
                     "{}{}{}",
@@ -352,9 +354,10 @@ fn expand_backreferences(replacement: &str, caps: &regex::Captures) -> String {
             match chars.next() {
                 Some(d) if d.is_ascii_digit() => {
                     // \N is a backreference to capture group N
-                    let group_num = d.to_digit(10).unwrap() as usize;
-                    if let Some(group) = caps.get(group_num) {
-                        result.push_str(group.as_str());
+                    if let Some(group_num) = d.to_digit(10) {
+                        if let Some(group) = caps.get(group_num as usize) {
+                            result.push_str(group.as_str());
+                        }
                     }
                     // If group doesn't exist, replace with empty string
                 }

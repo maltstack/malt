@@ -217,12 +217,9 @@ mod tests {
         let link = dir.path().join("link.txt");
         fs::write(&target, "content").unwrap();
 
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-
-        #[cfg(windows)]
-        {
-            if let Err(err) = malt_platform::fs::create_symlink(&target, &link) {
+        if let Err(err) = malt_platform::fs::create_symlink(&target, &link) {
+            #[cfg(windows)]
+            {
                 let stderr = err.to_string();
                 assert!(
                     stderr.contains("1314") || stderr.contains("A required privilege is not held"),
@@ -230,6 +227,8 @@ mod tests {
                 );
                 return;
             }
+            #[cfg(not(windows))]
+            panic!("create symlink: {err}");
         }
 
         fs::remove_file(&target).unwrap();

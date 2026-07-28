@@ -11,13 +11,15 @@ use std::sync::{Arc, Mutex};
 
 fn make_backend() -> DaemonBackend {
     let dir = tempfile::tempdir().unwrap();
-    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+        .expect("create debounce store");
     let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
     DaemonBackend::new(coordinator)
 }
 
 fn make_backend_with_store(dir: &tempfile::TempDir) -> DaemonBackend {
-    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+        .expect("create debounce store");
     let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
     DaemonBackend::new(coordinator)
 }
@@ -28,7 +30,7 @@ fn make_backend_with_config(config: PoolConfig) -> DaemonBackend {
     // daemon owns asynchronous worker threads, so removing it early would be
     // a test-only race unrelated to execution ordering.
     let path = dir.keep();
-    let store = DebouncedStore::new(SessionStore::new(path));
+    let store = DebouncedStore::new(SessionStore::new(path)).expect("create debounce store");
     DaemonBackend::new(Arc::new(Mutex::new(
         Coordinator::try_new(config, store).unwrap(),
     )))

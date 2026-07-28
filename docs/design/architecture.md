@@ -2283,8 +2283,9 @@ Non-negotiable rules. Violating any is a bug, not a tradeoff.
    parsing libraries. Enforced by `deny.toml`.
 
 2. **OS calls in `malt-platform` only.** No direct use of `nix`,
-   `windows-sys`, `libc`, `std::os::unix`, or platform-specific APIs in any
-   other crate.
+    `windows-sys`, `libc`, `std::os::*`, or platform-specific APIs in any
+    other crate. The standalone `malt-elevate` helper is outside the layer
+    system and is exempt.
 
 3. **`malt-protocol` has zero workspace dependencies.** Only external deps
    (serde, bytes, vexil-runtime).
@@ -2295,8 +2296,8 @@ Non-negotiable rules. Violating any is a bug, not a tradeoff.
 
 5. **All `unsafe` blocks require `// SAFETY:` comments.**
 
-6. **No `unwrap()` or `expect()` in non-test code.** Use `?`, match, or error
-   types.
+6. **No `unwrap()` or `expect()` in non-test code, including build scripts.**
+   Use `?`, match, or error types.
 
 7. **Vexil schemas are the single source of truth for wire types.** No
    hand-written message types on the wire. All VNP message types are generated
@@ -2330,11 +2331,11 @@ Invariants are not conventions — they have mechanical enforcement:
 | Invariant | CI Enforcement |
 |-----------|---------------|
 | 1 (VT in malt-compat only) | `deny.toml` bans `vte`, `termwiz`, VT parsing deps in all other crates |
-| 2 (OS calls in malt-platform only) | `deny.toml` bans `nix`, `windows-sys`, `libc` in non-platform crates; clippy lint for `std::os::unix` / `std::os::windows` |
+| 2 (OS calls in malt-platform only) | `deny.toml` bans `nix`, `windows-sys`, `libc` in non-platform crates; clippy lint for `std::os::unix` / `std::os::windows`; `malt-elevate` is the standalone exception |
 | 3 (malt-protocol zero workspace deps) | `cargo metadata` check in CI — script verifies protocol's workspace dep list is empty |
 | 4 (SDK minimal deps) | Same `cargo metadata` check for plugin-sdk and app-sdk |
 | 5 (unsafe SAFETY comments) | `clippy::undocumented_unsafe_blocks` as deny |
-| 6 (no unwrap in non-test) | Custom clippy lint or `#[cfg_attr(not(test), deny(clippy::unwrap_used))]` |
+| 6 (no unwrap in non-test) | Custom clippy lint or `#[cfg_attr(not(test), deny(clippy::unwrap_used))]`, including build scripts |
 | 7 (Vexil schemas = truth) | Build script: generated types have `#[doc = "GENERATED"]`; CI grep rejects hand-written VNP message structs |
 | 8 (wire stability) | Golden file tests: known messages → known bytes, checked into repo |
 | 9 (input off bus) | Integration test: subscribe to all bus message types, send keystrokes, assert zero InputEvent messages received |

@@ -251,7 +251,7 @@ pub fn compose_prompt(
 
     // Stack all parts horizontally
     if parts.len() == 1 {
-        parts.into_iter().next().unwrap()
+        parts.remove(0)
     } else {
         FrameElement::Stack { children: parts }
     }
@@ -311,7 +311,7 @@ pub fn compose_prompt_from_ps1(ps1: &str, cwd: &str, exit_code: i32) -> FrameEle
 
     // Stack all parts horizontally
     if parts.len() == 1 {
-        parts.into_iter().next().unwrap()
+        parts.remove(0)
     } else {
         FrameElement::Stack { children: parts }
     }

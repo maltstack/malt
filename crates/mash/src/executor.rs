@@ -1334,7 +1334,12 @@ fn execute_simple_with_io(
         let mut stdin_reader = tool_stdin(resolved_io.stdin.take(), stdin_file.take(), env);
         let mut stdout_writer = tool_stdout(resolved_io.stdout.is_some(), env);
 
-        let tool_fn = tools_registry.get(resolved_dispatch_name).unwrap();
+        let Some(tool_fn) = tools_registry.get(resolved_dispatch_name) else {
+            return ExecResult::failure(
+                1,
+                format!("mash: internal tool registry error for {resolved_dispatch_name}\n"),
+            );
+        };
         let tool_result = tool_fn(&argv, &mut stdin_reader, &mut stdout_writer);
         let mut result = ExecResult {
             exit_code: tool_result.exit_code,
@@ -1737,7 +1742,12 @@ fn execute_simple(
         let mut stdout_writer = tool_stdout(resolved_io.stdout.is_some(), env);
 
         // Execute the tool.
-        let tool_fn = tools_registry.get(dispatch_name).unwrap();
+        let Some(tool_fn) = tools_registry.get(dispatch_name) else {
+            return ExecResult::failure(
+                1,
+                format!("mash: internal tool registry error for {dispatch_name}\n"),
+            );
+        };
         let tool_result = tool_fn(&argv, &mut stdin_reader, &mut stdout_writer);
 
         // Convert to ExecResult and apply redirects. The tool already
@@ -3336,7 +3346,10 @@ fn resolve_job_target(
     }
 
     if argv.is_empty() {
-        return Ok(jobs.last().cloned().expect("jobs non-empty"));
+        return jobs
+            .last()
+            .cloned()
+            .ok_or_else(|| ExecResult::failure(1, format!("mash: {builtin}: no current job\n")));
     }
 
     let spec = &argv[0];
@@ -6090,7 +6103,12 @@ fn execute_expanded_command(
         let mut stdin_reader = tool_stdin(resolved_io.stdin.take(), None, env);
         let mut stdout_writer = tool_stdout(resolved_io.stdout.is_some(), env);
 
-        let tool_fn = tools_registry.get(cmd_name).unwrap();
+        let Some(tool_fn) = tools_registry.get(cmd_name) else {
+            return ExecResult::failure(
+                1,
+                format!("mash: internal tool registry error for {cmd_name}\n"),
+            );
+        };
         let tool_result = tool_fn(argv, &mut stdin_reader, &mut stdout_writer);
         let mut result = ExecResult {
             exit_code: tool_result.exit_code,

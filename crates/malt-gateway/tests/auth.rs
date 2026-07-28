@@ -37,7 +37,9 @@ fn default_local_scope_is_admin() {
 #[test]
 fn token_generate_and_validate() {
     let store = TokenStore::new();
-    let token = store.generate_token(AuthScope::Admin);
+    let token = store
+        .generate_token(AuthScope::Admin)
+        .expect("generate test token");
     assert!(store.validate(&token).is_some());
     assert_eq!(store.validate(&token), Some(AuthScope::Admin));
 }
@@ -45,7 +47,9 @@ fn token_generate_and_validate() {
 #[test]
 fn token_revoke() {
     let store = TokenStore::new();
-    let token = store.generate_token(AuthScope::Read);
+    let token = store
+        .generate_token(AuthScope::Read)
+        .expect("generate test token");
     store.revoke(&token);
     assert!(store.validate(&token).is_none());
 }
@@ -59,8 +63,12 @@ fn invalid_token_rejected() {
 #[test]
 fn token_scope_preserved() {
     let store = TokenStore::new();
-    let read_token = store.generate_token(AuthScope::Read);
-    let admin_token = store.generate_token(AuthScope::Admin);
+    let read_token = store
+        .generate_token(AuthScope::Read)
+        .expect("generate test token");
+    let admin_token = store
+        .generate_token(AuthScope::Admin)
+        .expect("generate test token");
     assert_eq!(store.validate(&read_token), Some(AuthScope::Read));
     assert_eq!(store.validate(&admin_token), Some(AuthScope::Admin));
 }
@@ -74,8 +82,12 @@ fn token_scope_preserved() {
 #[test]
 fn two_tokens_generated_in_the_same_process_differ() {
     let store = TokenStore::new();
-    let a = store.generate_token(AuthScope::Admin);
-    let b = store.generate_token(AuthScope::Admin);
+    let a = store
+        .generate_token(AuthScope::Admin)
+        .expect("generate test token");
+    let b = store
+        .generate_token(AuthScope::Admin)
+        .expect("generate test token");
     assert_ne!(a, b, "each minted credential must be distinct");
     assert!(a.starts_with("malt_") && b.starts_with("malt_"));
 }
@@ -100,7 +112,9 @@ fn a_token_is_not_derivable_from_the_clock() {
     };
 
     let before = nanos();
-    let token = TokenStore::new().generate_token(AuthScope::Admin);
+    let token = TokenStore::new()
+        .generate_token(AuthScope::Admin)
+        .expect("generate test token");
     let after = nanos();
 
     // A guesser would not need the exact nanosecond, only a nearby one, so

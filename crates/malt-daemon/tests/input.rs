@@ -15,7 +15,8 @@ use std::time::Duration;
 
 fn make_backend() -> Arc<DaemonBackend> {
     let dir = tempfile::tempdir().unwrap();
-    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()));
+    let store = DebouncedStore::new(SessionStore::new(dir.path().to_path_buf()))
+        .expect("create debounce store");
     let coordinator = Arc::new(Mutex::new(Coordinator::new(PoolConfig::default(), store)));
     Arc::new(DaemonBackend::new(coordinator))
 }

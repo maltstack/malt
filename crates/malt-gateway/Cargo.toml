@@ -8,6 +8,7 @@ description = "HTTP REST API gateway for MALT"
 
 [dependencies]
 malt-protocol = { path = "../malt-protocol" }
+malt-platform = { path = "../malt-platform" }
 axum = "0.8"
 base64 = "0.22"
 tokio = { version = "1", features = ["rt", "net", "sync", "macros"] }

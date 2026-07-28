@@ -70,7 +70,10 @@ pub fn select_windows_amd64(
         .collect::<Vec<_>>();
     match candidates.len() {
         0 => Err(ManifestError::NoWindowsAmd64),
-        1 => Ok(candidates.into_iter().next().expect("one candidate")),
+        1 => candidates
+            .into_iter()
+            .next()
+            .ok_or(ManifestError::NoWindowsAmd64),
         _ => Err(ManifestError::AmbiguousWindowsAmd64),
     }
 }

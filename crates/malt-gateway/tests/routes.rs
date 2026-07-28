@@ -279,7 +279,9 @@ impl GatewayBackend for MockBackend {
 /// tests can use to authenticate their requests.
 fn app() -> (Router, String) {
     let token_store = Arc::new(TokenStore::new());
-    let token = token_store.generate_token(AuthScope::Admin);
+    let token = token_store
+        .generate_token(AuthScope::Admin)
+        .expect("generate test token");
     let rate_limiter = Arc::new(RateLimiter::new(1000));
     let router = with_auth(
         build_router(Arc::new(MockBackend::new())),
@@ -342,7 +344,9 @@ async fn list_sessions() {
 #[tokio::test]
 async fn isolation_capabilities_are_read_scoped_and_structured() {
     let store = TokenStore::new();
-    let read_token = store.generate_token(AuthScope::Read);
+    let read_token = store
+        .generate_token(AuthScope::Read)
+        .expect("generate test token");
     let router = with_auth(
         build_router(Arc::new(MockBackend::new())),
         Arc::new(store),
@@ -567,8 +571,12 @@ async fn history_requires_read_scope() {
     // Monitor is for liveness/inventory only; history is session content and
     // must sit behind Read, like /output.
     let token_store = Arc::new(TokenStore::new());
-    let monitor_token = token_store.generate_token(AuthScope::Monitor);
-    let read_token = token_store.generate_token(AuthScope::Read);
+    let monitor_token = token_store
+        .generate_token(AuthScope::Monitor)
+        .expect("generate test token");
+    let read_token = token_store
+        .generate_token(AuthScope::Read)
+        .expect("generate test token");
     let rate_limiter = Arc::new(RateLimiter::new(1000));
     let router = with_auth(
         build_router(Arc::new(MockBackend::new())),
@@ -706,7 +714,9 @@ async fn events_for_unknown_session_is_not_found_before_the_stream_opens() {
 #[tokio::test]
 async fn events_requires_read_scope() {
     let token_store = Arc::new(TokenStore::new());
-    let monitor_token = token_store.generate_token(AuthScope::Monitor);
+    let monitor_token = token_store
+        .generate_token(AuthScope::Monitor)
+        .expect("generate test token");
     let rate_limiter = Arc::new(RateLimiter::new(1000));
     let router = with_auth(
         build_router(Arc::new(MockBackend::new())),
@@ -812,7 +822,9 @@ async fn insufficient_scope_is_forbidden() {
     // must be rejected -- proves per-route scope checking, not just
     // "any valid token gets in."
     let token_store = Arc::new(TokenStore::new());
-    let monitor_token = token_store.generate_token(AuthScope::Monitor);
+    let monitor_token = token_store
+        .generate_token(AuthScope::Monitor)
+        .expect("generate test token");
     let rate_limiter = Arc::new(RateLimiter::new(1000));
     let router = with_auth(
         build_router(Arc::new(MockBackend::new())),
@@ -848,7 +860,9 @@ async fn monitor_scope_can_still_read_health() {
     // a Monitor-level route -- proves the scope check isn't accidentally
     // requiring Admin everywhere.
     let token_store = Arc::new(TokenStore::new());
-    let monitor_token = token_store.generate_token(AuthScope::Monitor);
+    let monitor_token = token_store
+        .generate_token(AuthScope::Monitor)
+        .expect("generate test token");
     let rate_limiter = Arc::new(RateLimiter::new(1000));
     let router = with_auth(
         build_router(Arc::new(MockBackend::new())),
@@ -873,7 +887,9 @@ async fn monitor_scope_can_still_read_health() {
 #[tokio::test]
 async fn rate_limit_exceeded_is_rejected() {
     let token_store = Arc::new(TokenStore::new());
-    let token = token_store.generate_token(AuthScope::Admin);
+    let token = token_store
+        .generate_token(AuthScope::Admin)
+        .expect("generate test token");
     let rate_limiter = Arc::new(RateLimiter::new(2));
     let router = with_auth(
         build_router(Arc::new(MockBackend::new())),

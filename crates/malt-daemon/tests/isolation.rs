@@ -10,7 +10,7 @@ fn coordinator() -> Coordinator {
     let directory = tempfile::tempdir().expect("temporary session store");
     // Keep the directory alive for the coordinator's entire test lifetime.
     let path = directory.keep();
-    let store = DebouncedStore::new(SessionStore::new(path));
+    let store = DebouncedStore::new(SessionStore::new(path)).expect("create debounce store");
     Coordinator::new(PoolConfig::default(), store)
 }
 

@@ -21,6 +21,40 @@ pub fn is_tty(fd: i32) -> bool {
     }
 }
 
+/// Returns `true` if the operating-system descriptor is valid.
+pub fn is_fd_open(fd: i32) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::fd::BorrowedFd;
+        // SAFETY: BorrowedFd is used only for the read-only validity probe and
+        // no ownership is taken from the caller.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_GETFD).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        unsafe extern "C" {
+            fn _close(fd: i32) -> i32;
+            fn _dup(fd: i32) -> i32;
+        }
+
+        // SAFETY: `_dup` only probes the CRT descriptor and returns -1 for an
+        // invalid descriptor; the duplicate is closed immediately on success.
+        let duplicated = unsafe { _dup(fd) };
+        if duplicated == -1 {
+            return false;
+        }
+        // SAFETY: `duplicated` was returned by `_dup` above.
+        unsafe { _close(duplicated) };
+        true
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = fd;
+        false
+    }
+}
+
 /// Returns `true` if `path` exists and has execute permission.
 ///
 /// On Unix, checks the execute bits via `PermissionsExt` on any path type

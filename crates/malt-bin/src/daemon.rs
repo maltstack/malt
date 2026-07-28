@@ -21,7 +21,7 @@ pub fn run_daemon(port: u16) -> Result<()> {
     rt.block_on(async {
         let data_dir = paths::data_dir();
         std::fs::create_dir_all(&data_dir)?;
-        let store = DebouncedStore::new(SessionStore::new(data_dir));
+        let store = DebouncedStore::new(SessionStore::new(data_dir))?;
         let coordinator = Arc::new(Mutex::new(Coordinator::try_new(
             PoolConfig::default(),
             store,

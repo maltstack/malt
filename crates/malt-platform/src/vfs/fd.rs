@@ -473,47 +473,74 @@ impl SharedFdRegistry {
 
     /// Register a file and return the FD number.
     pub fn register_file(&self, file: std::fs::File) -> u32 {
-        self.inner.lock().unwrap().register_file(file)
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .register_file(file)
     }
 
     /// Register a pipe and return (reader_fd, writer_fd).
     pub fn register_pipe(&self) -> io::Result<(u32, u32)> {
-        self.inner.lock().unwrap().register_pipe()
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .register_pipe()
     }
 
     /// Open an FD by number.
     pub fn open(&self, fd_num: u32) -> io::Result<std::fs::File> {
-        self.inner.lock().unwrap().open(fd_num)
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .open(fd_num)
     }
 
     /// Open an FD for reading.
     pub fn open_read(&self, fd_num: u32) -> io::Result<std::fs::File> {
-        self.inner.lock().unwrap().open_read(fd_num)
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .open_read(fd_num)
     }
 
     /// Open an FD for writing.
     pub fn open_write(&self, fd_num: u32) -> io::Result<std::fs::File> {
-        self.inner.lock().unwrap().open_write(fd_num)
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .open_write(fd_num)
     }
 
     /// Close an FD.
     pub fn close(&self, fd_num: u32) -> io::Result<()> {
-        self.inner.lock().unwrap().close(fd_num)
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .close(fd_num)
     }
 
     /// Check if FD is registered.
     pub fn is_registered(&self, fd_num: u32) -> bool {
-        self.inner.lock().unwrap().is_registered(fd_num)
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_registered(fd_num)
     }
 
     /// List all registered FDs.
     pub fn list_fds(&self) -> Vec<u32> {
-        self.inner.lock().unwrap().list_fds()
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .list_fds()
     }
 
     /// Register a file at a specific FD number.
     pub fn register_file_at(&self, fd: u32, file: std::fs::File) {
-        self.inner.lock().unwrap().register_file_at(fd, file);
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .register_file_at(fd, file);
     }
 }
 

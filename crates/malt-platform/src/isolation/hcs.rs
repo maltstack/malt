@@ -624,7 +624,7 @@ mod fake {
         let handle = next_handle();
         compute_registry()
             .lock()
-            .expect("compute registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(config.id.clone(), handle);
         let system = HcsComputeSystem {
             handle,
@@ -643,7 +643,7 @@ mod fake {
     pub fn open_compute_system(id: &str) -> Result<HcsComputeSystem, IsolationError> {
         let handle = compute_registry()
             .lock()
-            .expect("compute registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(id)
             .copied()
             .ok_or_else(|| {
@@ -659,7 +659,7 @@ mod fake {
     pub fn terminate_compute_system(handle: isize) -> Result<(), IsolationError> {
         let mut registry = compute_registry()
             .lock()
-            .expect("compute registry lock poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let maybe_id = registry
             .iter()
             .find_map(|(id, value)| (*value == handle).then(|| id.clone()));
@@ -680,7 +680,7 @@ mod fake {
     ) -> Result<HcsProcessLaunch, IsolationError> {
         let has_compute = compute_registry()
             .lock()
-            .expect("compute registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
             .any(|value| *value == compute_system);
         if !has_compute {
@@ -693,7 +693,7 @@ mod fake {
         let process_id = NEXT_PROCESS_ID.fetch_add(1, Ordering::Relaxed) as u32;
         process_registry()
             .lock()
-            .expect("process registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(handle, 0);
 
         Ok(HcsProcessLaunch {
@@ -711,7 +711,7 @@ mod fake {
     pub fn wait_process_exit(handle: isize) -> Result<i32, IsolationError> {
         process_registry()
             .lock()
-            .expect("process registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&handle)
             .copied()
             .ok_or_else(|| {
@@ -726,7 +726,7 @@ mod fake {
     pub fn close_process_handle(handle: isize) -> Result<(), IsolationError> {
         let removed = process_registry()
             .lock()
-            .expect("process registry lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&handle);
         if removed.is_some() {
             Ok(())

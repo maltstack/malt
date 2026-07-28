@@ -69,11 +69,8 @@ impl TokenStore {
     }
 
     /// Generate a new token with the given scope.
-    pub fn generate_token(&self, scope: AuthScope) -> String {
-        // Entropy failure is not a recoverable condition for a credential.
-        // Callers that need to handle it use `try_generate_token`.
+    pub fn generate_token(&self, scope: AuthScope) -> Result<String, AuthError> {
         self.try_generate_token(scope)
-            .expect("OS entropy unavailable; cannot mint a credential")
     }
 
     /// Fallible token minting, for paths that must report entropy failure
@@ -176,11 +173,7 @@ fn write_token_file(path: &Path, token: &str) -> Result<(), AuthError> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, token).map_err(persist)?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(persist)?;
-    }
+    malt_platform::fs::set_owner_only_permissions(&tmp).map_err(persist)?;
 
     std::fs::rename(&tmp, path).map_err(persist)?;
     Ok(())
