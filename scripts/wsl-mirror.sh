@@ -45,7 +45,13 @@ set -euo pipefail
 MIRROR="${MALT_WSL_MIRROR:-$HOME/malt}"
 # Target dir on the Linux filesystem, never under /mnt/c: this is the whole
 # point of the mirror, and pointing it at a Windows path undoes the benefit.
-TARGET_DIR="${MALT_WSL_TARGET_DIR:-/tmp/malt-build}"
+#
+# Also NOT /tmp, despite that being the obvious choice and what AGENTS.md used
+# to say. On this distro /tmp is a 9.8 GB RAM-backed tmpfs inside a VM capped
+# at 20 GB, so a multi-GB target dir competes for memory with the build it is
+# supposed to speed up -- and vanished twice within minutes on 2026-07-28,
+# forcing full rebuilds. $HOME is on the real disk (953 GB free) and persists.
+TARGET_DIR="${MALT_WSL_TARGET_DIR:-$HOME/malt-build}"
 
 REF=""
 DO_BUILD=1

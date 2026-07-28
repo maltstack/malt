@@ -368,7 +368,13 @@ touches `malt-platform`, the daemon's process/PTY paths, or anything
 ### NTFS caching (critical)
 
 On WSL with NTFS-backed repo paths, cargo caching is unreliable due to NTFS mtime granularity.
-Use `CARGO_TARGET_DIR=/tmp/malt-build` for builds on WSL, or `cargo clean -p mash` followed by rebuild on Windows.
+Use a target dir on the Linux filesystem for WSL builds, or `cargo clean -p mash` followed by rebuild on Windows.
+
+**Not `/tmp`.** It is a RAM-backed tmpfs (9.8 GB, inside a 20 GB VM), so a
+target dir there competes for memory with the build — and it was observed
+emptying itself within minutes on 2026-07-28, forcing repeated full
+rebuilds. Use `~/malt-build`; `$HOME` is on real disk with ~950 GB free.
+`scripts/wsl-mirror.sh` defaults to this already.
 Stale binary symptoms: test failures that don't match expected behavior from source changes.
 
 ### Binary paths
