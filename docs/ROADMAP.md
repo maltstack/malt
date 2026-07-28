@@ -81,13 +81,20 @@ None of these exist; all were checked on 2026-07-28.
 
 ## Gateway hardening (D)
 
-Auth and the rate limiter are wired. What remains:
+**Now specced as `specs/010-gateway-hardening/`.** Scoping it on 2026-07-28
+verified each item and removed two:
 
-- **Fix the rate limiter's missing window** (`docs/briefs/003`) — it is wired,
-  which makes the flaw more dangerous than if it were absent.
-- Payload size limits on `POST /exec` and `POST /send` — no body limit found.
-- Per-endpoint scope enforcement, verified per route rather than assumed.
-- Global rate limit and `X-RateLimit` headers.
+- **Rate limiter has no window** (`docs/briefs/003`) — still true, and worse
+  than written: `refill`/`refill_all` have **zero production callers**, so a
+  client is refused until the daemon restarts. Spec 010 US1.
+- **No request body limit** on `/exec` and `/send` — still true. Spec 010 US2.
+- **No global ceiling, no retry hints** on refusals — still true. Spec 010 US3.
+- ~~Per-endpoint scope enforcement~~ — **not a gap.** `middleware.rs` maps
+  `(Method, path)` to a scope and defaults `_ => AuthScope::Admin`, so an
+  unmapped route demands the *highest* scope. Two sources of truth is a
+  maintainability concern with a fail-closed mode, not a hole.
+- ~~VNP frame writer bound~~ (`docs/briefs/004`) — **already fixed**;
+  `framing.rs:203` bounds the length before the cast. Brief marked resolved.
 
 ## Persistence (B3)
 

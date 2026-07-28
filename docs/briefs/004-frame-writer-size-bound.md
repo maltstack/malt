@@ -1,6 +1,13 @@
 # Brief 004 — `FrameWriter` lacks the reader's size bound
 
 **Severity**: Medium · **Verified**: 2026-07-26 · **Source**: audit A-14
+**Status**: **RESOLVED — verified 2026-07-28 while scoping `specs/010-gateway-hardening`.**
+`crates/malt-protocol/src/framing.rs:203` bounds `payload_len` against
+`PROTOCOL_MAX_FRAME_SIZE` and returns `FrameTooLarge` before the `as u32`
+cast at line 209. Both failure modes below are prevented: nothing over 16 MiB
+is emitted, so the cast cannot wrap and a peer is never handed a frame its
+own reader must reject. The description below is kept as the record of what
+was wrong, not what is.
 
 ## What is wrong
 
