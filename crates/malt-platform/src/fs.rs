@@ -421,13 +421,46 @@ mod tests {
     #[cfg(windows)]
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// `normalize_device_path` promises two different things per platform, so
+    /// the test asserts two different things. It previously asserted only the
+    /// Windows mapping, unconditionally, which is why it failed the first time
+    /// this suite ever completed on Linux (2026-07-28) -- a hanging pipe test
+    /// had blocked every earlier run from reaching it.
+    ///
+    /// Not `#[cfg(windows)]`-gated away: the Unix contract ("returns the path
+    /// unchanged") is a real promise that `mash` depends on when it opens
+    /// `/dev/null`, and it deserves cover on the platform where it applies.
     #[test]
     fn test_normalize_device_path() {
-        assert_eq!(normalize_device_path("/dev/null"), "NUL");
-        assert_eq!(normalize_device_path("/dev/stdin"), "CON");
-        assert_eq!(normalize_device_path("/dev/stdout"), "CON");
-        assert_eq!(normalize_device_path("/dev/tty"), "CON");
-        assert_eq!(normalize_device_path("/dev/zero"), "NUL");
+        #[cfg(windows)]
+        {
+            assert_eq!(normalize_device_path("/dev/null"), "NUL");
+            assert_eq!(normalize_device_path("/dev/stdin"), "CON");
+            assert_eq!(normalize_device_path("/dev/stdout"), "CON");
+            assert_eq!(normalize_device_path("/dev/tty"), "CON");
+            assert_eq!(normalize_device_path("/dev/zero"), "NUL");
+        }
+
+        #[cfg(not(windows))]
+        {
+            // Unix has these devices for real; rewriting them would break the
+            // thing the Windows mapping exists to emulate.
+            for path in [
+                "/dev/null",
+                "/dev/stdin",
+                "/dev/stdout",
+                "/dev/tty",
+                "/dev/zero",
+            ] {
+                assert_eq!(
+                    normalize_device_path(path),
+                    path,
+                    "device paths must be passed through untouched on Unix"
+                );
+            }
+        }
+
+        // Platform-independent: a path that is not a device is never rewritten.
         assert_eq!(
             normalize_device_path("/some/other/path"),
             "/some/other/path"

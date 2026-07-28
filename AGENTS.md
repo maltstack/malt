@@ -304,6 +304,32 @@ cargo test -p mash --test executor
 # Expected: 228 passed, 0 failed
 ```
 
+### Build parallelism
+
+`~/.cargo/config.toml` on this machine caps `[build] jobs = 6` on a 16-core
+host. **Not a repo setting** — a machine preference, deliberately kept out of
+the repo so it never reaches CI or another developer's core count.
+
+The cap exists for concurrent work across *several* projects, not for one
+build. A single build using 14 of 16 cores is fine; three cargo invocations
+each assuming they own the machine is 48 rustc processes on 16 cores, and
+that oversubscription is what makes the desktop stutter.
+
+Uncap per-run when a long build is the only thing happening — no edit needed:
+
+```bash
+cargo build -j 16
+cargo test -j 16
+```
+
+**`cargo test` parallelism is separate and cargo has no setting for it**: test
+binaries run one thread per core *on top of* build jobs. Cap with
+`-- --test-threads=N` or `RUST_TEST_THREADS`. It matters here because supervisor
+and Smoosh tests spawn real processes.
+
+WSL is capped independently in `~/.wslconfig` (`processors=8`), so a slow
+Linux build is not the same problem as a stuttering desktop.
+
 ### Test conventions
 
 - `tempfile::tempdir()` for anything touching the filesystem.

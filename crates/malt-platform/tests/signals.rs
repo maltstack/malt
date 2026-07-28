@@ -60,6 +60,71 @@ fn signal_by_name_unknown_returns_none() {
     assert_eq!(signal_by_name("999"), None);
 }
 
+/// A long-running child, spawned the way each platform actually spells it.
+///
+/// `ping -n 30` is Windows syntax; on Linux `-n` means "numeric output" and
+/// the count flag is `-c`. Both tests below used the Windows form
+/// unconditionally, which is one of the reasons they had never passed on
+/// Linux -- the other being the exit-status convention, see below.
+fn spawn_long_running() -> std::process::Child {
+    use std::process::{Command, Stdio};
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("ping");
+        c.args(["-n", "30", "127.0.0.1"]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("sleep");
+        c.arg("30");
+        c
+    };
+    cmd.stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawning a long-running child must succeed")
+}
+
+/// Assert that `status` reflects termination by `Term`.
+///
+/// The two platforms report this differently and neither is wrong:
+///
+/// * **Unix** — a signal-killed process has *no* exit code. `code()` returns
+///   `None` and the signal is read via `ExitStatusExt::signal()`. The
+///   128+signum form is a *shell* convention for `$?`, not something
+///   `ExitStatus` reports.
+/// * **Windows** — there are no signals, so `signals/windows.rs` emulates one
+///   by terminating with exit code 128+signum, making the shell convention
+///   the literal process exit code.
+///
+/// The old assertion demanded `Some(143)` on both, so it could only ever have
+/// passed on Windows.
+fn assert_terminated_by_signal(status: std::process::ExitStatus, kind: SignalKind) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            status.signal(),
+            Some(signal_number(kind) as i32),
+            "process should have been terminated by the signal we sent"
+        );
+        assert_eq!(
+            status.code(),
+            None,
+            "a signal-killed process has no exit code on Unix"
+        );
+    }
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            status.code(),
+            Some(128 + signal_number(kind) as i32),
+            "Windows emulates the signal with the 128+signum exit code documented in signals/windows.rs"
+        );
+    }
+}
+
 /// The success path was untested: `send_signal_nonexistent_pid` only checks
 /// the error case. This spawns a real long-running process and confirms
 /// `send_signal(..., Term)` actually terminates it — and that the exit
@@ -67,14 +132,7 @@ fn signal_by_name_unknown_returns_none() {
 /// "the process died somehow".
 #[test]
 fn send_signal_term_actually_terminates_process_with_correct_exit_code() {
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new("ping")
-        .args(["-n", "30", "127.0.0.1"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn ping (must be present on any Windows host)");
+    let mut child = spawn_long_running();
 
     assert!(
         child
@@ -87,26 +145,14 @@ fn send_signal_term_actually_terminates_process_with_correct_exit_code() {
     send_signal(child.id(), SignalKind::Term).expect("send_signal(Term) should succeed");
 
     let status = child.wait().expect("wait after signal should succeed");
-    let expected_code = 128 + signal_number(SignalKind::Term) as i32;
-    assert_eq!(
-        status.code(),
-        Some(expected_code),
-        "exit code should follow the 128+signum convention documented in signals/windows.rs"
-    );
+    assert_terminated_by_signal(status, SignalKind::Term);
 }
 
 /// Same success-path gap for `Int` (Ctrl+C event) — the only prior coverage
 /// was the nonexistent-PID error path.
 #[test]
 fn send_signal_int_succeeds_against_running_process() {
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new("ping")
-        .args(["-n", "30", "127.0.0.1"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn ping (must be present on any Windows host)");
+    let mut child = spawn_long_running();
 
     // GenerateConsoleCtrlEvent targets a process *group*; ping isn't in our
     // console's process group by default, so the realistic, honest thing to

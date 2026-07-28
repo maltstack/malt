@@ -670,10 +670,34 @@ mod tests {
         writer.write_all(b"pipe test")?;
         drop(writer);
 
-        // Read from reader
+        // Closing our handle is not enough. `open` returns a **dup**, while
+        // the registry keeps owning the original fd -- so dropping the dup
+        // leaves a write end open and the reader below never sees EOF.
+        //
+        // This is the correct shell model (`exec 3>&-` closes the entry in the
+        // fd table, not your copy of it), but it is easy to miss: this test
+        // previously dropped only the dup and hung forever, and because it is
+        // `#[cfg(unix)]` it never ran until `is_pipe` was repaired on
+        // 2026-07-27. It then blocked a full Linux suite for an hour.
+        registry.close(writer_fd)?;
+
+        // Read on a worker thread with a deadline. If EOF ever becomes
+        // unreachable again this fails in seconds instead of hanging the whole
+        // workspace run -- `cargo test` has no per-test timeout, so a test that
+        // can block forever is strictly worse than one that fails.
         let mut reader = registry.open(reader_fd)?;
-        let mut contents = String::new();
-        reader.read_to_string(&mut contents)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Detached on purpose: if the read blocks, this thread is unreclaimable
+        // and the assertion below fails the test, which is the outcome we want.
+        std::thread::spawn(move || {
+            let mut contents = String::new();
+            let result = reader.read_to_string(&mut contents).map(|_| contents);
+            let _ = tx.send(result);
+        });
+
+        let contents = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("reading a pipe whose write ends are all closed must reach EOF")?;
         assert_eq!(contents, "pipe test");
 
         Ok(())
