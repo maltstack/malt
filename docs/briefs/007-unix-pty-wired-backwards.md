@@ -42,6 +42,42 @@ child, so even with the right fd the child would have no controlling terminal.
 line appears at all. Linux returns `EIO` on a master when no slave is open,
 which here is always.
 
+## macOS confirms it, from the other end of the pipe (added 2026-07-28)
+
+The brief originally said macOS was untested and must not be recorded as
+verified without running it. CI has now run it, and it fails — differently,
+which is itself the confirmation:
+
+```
+spawn_and_check_exit  (crates/malt-daemon/tests/supervisor.rs)
+assertion failed: matches!(state, ProcessState::Exited(0))
+```
+
+That test spawns `/bin/echo hello` through `ProcessSupervisor::spawn`, the one
+caller of `spawn_with_pty`. It passes on Linux and fails only on macOS.
+
+The mechanism is the same inverted fd arrangement seen from the child's side
+rather than the parent's:
+
+| | Who touches the pty | What the OS does with no slave open |
+|---|---|---|
+| **Linux** | parent *reads* the master | `EIO`, zero bytes — output never arrives |
+| **macOS** | child *writes* to the master | `SIGPIPE`, so the child dies |
+
+`crates/malt-platform/src/process/unix.rs:161` maps `Signaled(sig)` to
+`128 + sig`, so a `SIGPIPE` death surfaces as exit code **141** rather than 0.
+BSD-derived kernels raise `SIGPIPE`/`EIO` for a write to a master with no
+slave; Linux tolerates it, buffering into a slave side nobody reads.
+
+**Still a prediction, not a measurement**: the assertion did not report the
+observed code. It has been changed to print the state and name 141 explicitly
+(`supervisor.rs`), so the next macOS CI run either confirms the mechanism or
+falsifies it. Do not write "confirmed 141" here until a run says so.
+
+**Consequence for the fix:** both symptoms come from the same line, so fixing
+the fd arrangement should close this test and un-ignore the compat-pane one
+together. If it closes only one, the diagnosis was incomplete.
+
 ## Why it matters
 
 **Unix compat panes have never worked.** Not intermittently, not under load —
@@ -67,7 +103,10 @@ catch than the usual kind, because every reachability check passes.
   stdin/stdout/stderr; the parent keeps the master.
 - The child calls `setsid()` and `TIOCSCTTY` before exec, so it has a real
   controlling terminal — otherwise job control and terminal-aware programs
-  still misbehave even once bytes flow.
+  still misbehave even once bytes flow. **Note this needs work in
+  `malt-platform::process`**: `SpawnConfig` exposes no `pre_exec` hook to
+  callers today (it uses one internally for `setpgid`), so this half of the
+  fix is not reachable from `pty/spawn.rs` as things stand.
 - A decision, recorded, on **when the parent closes its slave copy**. Holding
   it open keeps buffered output readable after the child exits (which is the
   bug being fixed); never closing it means the reader thread blocks forever
@@ -92,9 +131,9 @@ catch than the usual kind, because every reachability check passes.
   and still delivers nothing; the output is already lost because no slave ever
   existed. The fd arrangement is the fix; the `EIO` handling is cleanup after
   it.
-- **macOS is untested here.** It shares the Unix path so it is almost
-  certainly affected, but the repro above is Linux only. Do not record macOS
-  as verified without running it.
+- **macOS is affected too, via `SIGPIPE` rather than `EIO`** — see the section
+  above. The original form of this gotcha said macOS was untested; CI has since
+  run it and it fails. The exact exit code is still unmeasured.
 - The restored compat process is also not placed in the session's isolation
   job object — already noted in `coordinator.rs:1217-1223` and
   `docs/BACKLOG.md`. Separate gap; do not bundle it into this fix.

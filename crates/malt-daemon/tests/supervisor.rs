@@ -54,7 +54,10 @@ fn spawn_and_check_exit() {
     assert!(!exited.is_empty());
     let (pane_id, state) = &exited[0];
     assert_eq!(*pane_id, PaneId(1));
-    assert!(matches!(state, ProcessState::Exited(0)));
+    assert!(
+        matches!(state, ProcessState::Exited(0)),
+        "/bin/echo should exit 0, got {state:?}. A code of 141 is 128+SIGPIPE and          means the child was killed writing to its stdout: `spawn_with_pty` hands          the child dups of the pty *master* while nothing holds the slave, so the          write has no reader. See docs/briefs/007-unix-pty-wired-backwards.md --          the same defect shows up on Linux as EIO when the parent reads instead."
+    );
 }
 
 #[test]
