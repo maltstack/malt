@@ -2,6 +2,8 @@
 
 **Severity**: High · **Verified**: 2026-07-27 · **Source**: CI's Linux/macOS
 advisory job, root-caused in WSL with a live repro
+**Status**: **RESOLVED 2026-07-28.** Kept as the record — the diagnosis and the
+slave-lifetime decision are the parts worth reading.
 
 ## What is wrong
 
@@ -130,7 +132,34 @@ That chain is the whole safety argument: **if `check_exited` stops removing
 reaped processes, reader threads leak.** Anyone changing that function should
 know it is load-bearing for pty teardown.
 
-## What done looks like
+## What was done
+
+- `open_pty` returns the slave instead of dropping it; `spawn_unix` gives the
+  child `slave.try_clone()` for stdin/stdout/stderr, and the parent keeps the
+  master. `PtyProcess` owns the slave, per the decision above.
+- `SpawnConfig` gained `controlling_tty: Option<i32>`, and the **existing**
+  `pre_exec` closure in `process/unix.rs` now calls `setsid()` then
+  `TIOCSCTTY` before its `setpgid`. The brief previously called this half
+  unreachable because `SpawnConfig` exposed no `pre_exec` hook — true, but
+  beside the point: the closure was already there for `setpgid`, so this was
+  four lines inside it plus a config field, not new machinery.
+- `spawn_pty_reader` treats `EIO` as end-of-stream rather than logging a read
+  error, since on a master that is what it means.
+- The 4-tuple return became a named `OpenedPty` type — clippy's
+  `very_complex_type` fired, correctly.
+
+**Verification.** `restore_compat_pane_relaunches_process_and_forwards_real_output`
+is no longer `#[ignore]`d and passes on Linux **by observing the marker text
+reach the grid**, which is what it was written to check and had never once
+done. Windows 117 suites, Linux 116, fmt and clippy `-D warnings` clean on
+both.
+
+**macOS is unverified by me** and left to CI. The prediction to check is in the
+section above: if the fd arrangement was the whole story, `spawn_and_check_exit`
+goes green. If it stays red, the diagnosis was incomplete — and
+`supervisor.rs` now prints the observed state so the next run says which.
+
+## What done looks like (original)
 
 - `open_pty` retains the slave and `spawn_with_pty` gives it to the child as
   stdin/stdout/stderr; the parent keeps the master.

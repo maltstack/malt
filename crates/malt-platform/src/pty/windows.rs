@@ -62,17 +62,7 @@ impl Drop for ConPty {
 /// The ConPTY internally duplicates the pipe endpoints it needs, so after
 /// `CreatePseudoConsole` we close `input_read` and `output_write` (our copies)
 /// and hand back `output_read` and `input_write` as the reader/writer.
-pub(super) fn open_pty(
-    size: WinSize,
-) -> Result<
-    (
-        Arc<dyn Pty>,
-        std::fs::File,
-        std::fs::File,
-        Option<std::fs::File>,
-    ),
-    PtyError,
-> {
+pub(super) fn open_pty(size: WinSize) -> Result<super::OpenedPty, PtyError> {
     use std::os::windows::io::FromRawHandle;
 
     let coord = COORD {

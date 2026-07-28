@@ -57,17 +57,7 @@ fn set_cloexec(fd: &OwnedFd) -> Result<(), PtyError> {
 /// with no slave open is dead — Linux fails the parent's reads with `EIO`,
 /// and BSD/macOS kills the child with `SIGPIPE` on write. See
 /// `docs/briefs/007-unix-pty-wired-backwards.md`.
-pub(super) fn open_pty(
-    size: WinSize,
-) -> Result<
-    (
-        Arc<dyn Pty>,
-        std::fs::File,
-        std::fs::File,
-        Option<std::fs::File>,
-    ),
-    PtyError,
-> {
+pub(super) fn open_pty(size: WinSize) -> Result<super::OpenedPty, PtyError> {
     let winsize = Some(nix::pty::Winsize {
         ws_col: size.cols,
         ws_row: size.rows,

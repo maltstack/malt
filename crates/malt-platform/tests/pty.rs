@@ -20,11 +20,13 @@ fn open_multiple_ptys() {
             cols: 80 + i * 10,
             rows: 24,
         };
-        let (pty, reader, writer) = open_pty(size).unwrap();
-        handles.push((pty, reader, writer));
+        let (pty, reader, writer, slave) = open_pty(size).unwrap();
+        // Keep `slave` alive with the rest: dropping it closes the child's
+        // end and kills the pty (brief 007).
+        handles.push((pty, reader, writer, slave));
     }
     // Resize each one.
-    for (pty, _, _) in &handles {
+    for (pty, _, _, _) in &handles {
         pty.resize(WinSize {
             cols: 100,
             rows: 30,
@@ -57,7 +59,7 @@ fn writer_is_writable() {
     use std::io::Write;
 
     let size = WinSize { cols: 80, rows: 24 };
-    let (_pty, _reader, mut writer) = open_pty(size).unwrap();
+    let (_pty, _reader, mut writer, _slave) = open_pty(size).unwrap();
 
     // Writing to the input pipe should succeed even without a child process.
     writer.write_all(b"hello").unwrap();

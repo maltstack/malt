@@ -23,23 +23,29 @@ pub trait Pty: Send + Sync {
     fn resize(&self, size: WinSize) -> Result<(), PtyError>;
 }
 
-/// Open a new PTY pair.
+/// What [`open_pty`] hands back, with independent ownership:
 ///
-/// Returns `(pty_handle, reader, writer)` with independent ownership:
 /// - `pty_handle` — resize control (implements [`Pty`])
 /// - `reader` — reads output from the child process
 /// - `writer` — writes input to the child process
-pub fn open_pty(
-    size: WinSize,
-) -> Result<
-    (
-        Arc<dyn Pty>,
-        std::fs::File,
-        std::fs::File,
-        Option<std::fs::File>,
-    ),
-    PtyError,
-> {
+/// - `slave` — the child's end of the pty
+///
+/// `slave` is `None` on Windows, which has no slave fd (ConPTY attaches via
+/// `STARTUPINFOEX`), and always `Some` on Unix — where **the caller must keep
+/// it alive for as long as it intends to read**. A pty whose last slave has
+/// closed stops delivering: Linux fails the reader with `EIO` and discards
+/// anything buffered, and BSD/macOS kills the writing child with `SIGPIPE`.
+/// See `docs/briefs/007-unix-pty-wired-backwards.md`.
+pub type OpenedPty = (
+    Arc<dyn Pty>,
+    std::fs::File,
+    std::fs::File,
+    Option<std::fs::File>,
+);
+
+/// Open a new PTY pair. See [`OpenedPty`] for what the parts are and which of
+/// them must outlive the reader.
+pub fn open_pty(size: WinSize) -> Result<OpenedPty, PtyError> {
     #[cfg(unix)]
     {
         unix::open_pty(size)

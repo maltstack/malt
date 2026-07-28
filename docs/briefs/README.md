@@ -23,7 +23,7 @@ confirmation.
 | [004 — writer lacks the reader's frame bound](004-frame-writer-size-bound.md) | Medium | 2026-07-26 | `FrameWriter` casts length to `u32` unchecked while `FrameReader` enforces a 16 MiB max |
 | [005 — the lint gate is green but unenforced](005-enforce-quality-gates-in-ci.md) | Medium | 2026-07-26 | Four gates pass locally and nothing prevents a regression landing |
 | [006 — HCS backend access-violates](006-hcs-backend-access-violation.md) | High | 2026-07-26 | **RESOLVED** — null `HCS_OPERATION` handle passed to `HcsStartComputeSystem`/`HcsTerminateComputeSystem`. All three recorded hypotheses were wrong; underneath it, `HCS_E_ACCESS_DENIED`. vexil-v2 has the identical bug |
-| [007 — Unix PTY wired backwards](007-unix-pty-wired-backwards.md) | High | 2026-07-27 | `open_pty` drops the slave and hands the child dups of the *master*; first read on the master returns EIO with zero bytes, so Unix compat panes have never delivered output |
+| [007 — Unix PTY wired backwards](007-unix-pty-wired-backwards.md) | High | 2026-07-28 | **RESOLVED** — `open_pty` dropped the slave and handed the child dups of the *master*, so no slave was ever open: Linux failed the parent's reads with EIO, macOS killed the child with SIGPIPE. Child now gets the slave, with `setsid`+`TIOCSCTTY`; parent retains it so short-lived output survives |
 
 ## Not written up, and why
 
