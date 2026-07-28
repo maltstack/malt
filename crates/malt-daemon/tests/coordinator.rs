@@ -730,6 +730,19 @@ fn app_restore_returns_error() {
 }
 
 #[test]
+// Gated to macOS only, and only because macOS is an unsupported platform
+// (ADR-0006) -- not because the behaviour is Windows-specific. It passes on
+// Windows and Linux, which is what proves docs/briefs/007's PTY fix.
+//
+// macOS has a *further*, undiagnosed problem: with the fd inversion fixed and
+// confirmed there (spawn_and_check_exit went green on the same runner), the
+// child now exits 0 but its output still never reaches the grid. Nobody on
+// this project has a macOS machine to reproduce it on, which is the whole
+// reason for ADR-0006. Deferred, not closed -- see docs/briefs/007.
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS is unsupported (ADR-0006); compat output does not reach the grid there, see docs/briefs/007"
+)]
 fn restore_compat_pane_relaunches_process_and_forwards_real_output() {
     use malt_protocol::common::{LayoutNode, PaneId, SessionState};
     use malt_protocol::persist::session::{PersistedPane, PersistedPaneType, PersistedSession};

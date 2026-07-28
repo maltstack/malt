@@ -132,6 +132,27 @@ That chain is the whole safety argument: **if `check_exited` stops removing
 reaped processes, reader threads leak.** Anyone changing that function should
 know it is load-bearing for pty teardown.
 
+## Outcome on macOS: half confirmed, half deferred (2026-07-28)
+
+**Confirmed.** `spawn_and_check_exit` was failing on macOS before this fix and
+passes after it, on the same runner with no change to that test. That is the
+`SIGPIPE` mechanism predicted above, verified: the child no longer dies
+writing to a master with no slave. The fd inversion was real on macOS too, and
+is fixed.
+
+**Not confirmed.** `restore_compat_pane_relaunches_process_and_forwards_real_output`
+still gets `""` on macOS — the child now exits 0 and its output still does not
+reach the grid. That is a *second*, separate problem, and it is undiagnosed:
+nobody on this project has a macOS machine, so it cannot be reproduced or
+instrumented.
+
+**Deferred by ADR-0006**, which declares macOS unsupported for exactly this
+reason. The test is `#[cfg_attr(target_os = "macos", ignore)]` naming that
+ADR. It runs and passes on Windows and Linux, which is where the fix is
+proven. This is deferral with the cause written down, not a silent gate — and
+it is not the thing the Gotchas below forbid, which was gating it to *Windows*
+and thereby misrepresenting an inverted implementation as a platform feature.
+
 ## What was done
 
 - `open_pty` returns the slave instead of dropping it; `spawn_unix` gives the

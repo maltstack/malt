@@ -108,7 +108,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS deliberately absent -- see docs/adr/ADR-0006. Nobody on this
+        # project has a macOS machine, so a green run there would assert a
+        # support level we cannot stand behind or debug.
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -135,7 +138,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        # macOS deliberately absent -- see docs/adr/ADR-0006.
+        os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

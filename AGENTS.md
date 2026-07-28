@@ -28,6 +28,36 @@ interactive TUI.
 re-running the gates.** Numbers here drift; the suite does not. See *Session
 ritual* below.
 
+### Supported platforms
+
+**Windows** — primary. Blocking CI gates run here.
+**Linux** — supported. Advisory CI, and locally reproducible via
+`scripts/wsl-mirror.sh`, which is what makes it debuggable rather than
+merely observed.
+**macOS — unsupported** (ADR-0006, 2026-07-28).
+
+Nobody on this project has a macOS machine, so a green run there would assert
+a support level nobody can stand behind or debug. It is removed from CI. The
+macOS code stays in the tree — `isolation/sandbox.rs`, the probe facets, the
+`#[cfg]` arms — compile-gated and untouched, because it costs nothing to keep
+and is the obvious starting point if support is revived.
+
+Practical consequences:
+
+- **Make no macOS claim**, including "should work" or "untested but probably
+  fine". A macOS capability reported by the probe stays `Assumed`; it may
+  never be promoted to `Verified` without a run on a real host.
+- **A test that fails only on macOS may be gated**, naming ADR-0006. That is
+  not the same as hiding a failure on a supported platform, which
+  `docs/briefs/007` rightly forbids.
+- **Spec 007's T033 (macOS sandbox wiring) is out of scope** while ADR-0006
+  stands, as are `docs/ROADMAP.md`'s macOS entries.
+- One macOS finding is deferred, not lost: compat-pane output does not reach
+  the grid there even after the PTY fix. Recorded in `docs/briefs/007`.
+
+Reversing this needs a machine where someone can run the suite and attach a
+debugger — not a green badge. See ADR-0006 for the full bar.
+
 ### Where to look for what
 
 | Question | Answer lives in |
@@ -386,7 +416,10 @@ Stale binary symptoms: test failures that don't match expected behavior from sou
 
 `.github/workflows/ci.yml`. **Blocking:** Gates (Windows) and Smoosh (Windows,
 path-filtered to `crates/mash|malt-tools`). **Advisory:** cross-platform
-build+test and isolation-capability reporting on Windows/Linux/macOS.
+build+test on Linux, and isolation-capability reporting on Windows and Linux.
+
+macOS was removed from both matrices on 2026-07-28 (ADR-0006) — see *Supported
+platforms* above.
 
 Advisory means nothing forces anyone to look — so look. Three cross-platform
 defects surfaced on 2026-07-27 the first time Linux tests actually ran.

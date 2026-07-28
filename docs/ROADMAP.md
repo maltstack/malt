@@ -98,10 +98,14 @@ Auth and the rate limiter are wired. What remains:
 
 Mostly superseded. What ADR-0005 leaves open:
 
-- **Linux and macOS session backends** (007 T032/T033) — the platform modules
-  exist and are unwired; class 1 applies.
-- **The Unix PTY is inverted** (`docs/briefs/007`) — a prerequisite for
-  anything spawning processes on Linux or macOS.
+- **Linux session backends** (007 T032) — the platform modules exist and are
+  unwired; class 1 applies.
+- ~~macOS session backends (007 T033)~~ — **out of scope** while ADR-0006
+  stands. macOS is unsupported; do not pick this up as available work.
+- ~~The Unix PTY is inverted~~ — **fixed 2026-07-28** (`docs/briefs/007`).
+  The child now gets the slave with `setsid`/`TIOCSCTTY`; compat panes deliver
+  output on Linux for the first time. A macOS-only delivery gap remains,
+  deferred by ADR-0006.
 - Contained-tier completion: helper-owned HCS spawning plus a validated image
   layer configuration for session compute systems.
 
