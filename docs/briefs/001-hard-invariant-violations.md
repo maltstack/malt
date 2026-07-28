@@ -77,3 +77,52 @@ violations themselves. It means the next person to add an `unwrap` in
 - `mash`'s 15 include parser/expander internals where the invariant is
   genuinely arguable. Decide the policy before editing, or the same site
   will be re-litigated later.
+
+---
+
+## Re-measured 2026-07-28, and the number moved
+
+The brief says **39** non-test `unwrap`/`expect`. Re-counting on 2026-07-28
+with test modules excluded gives **90 across 21 files**. It has grown, mostly
+from specs 008 and 009 landing.
+
+The count is approximate — the scan tracks `#[cfg(test)] mod` by brace depth
+and does not parse strings or comments perfectly — so treat it as "about
+ninety, concentrated in a few files", not a target to drive to zero by count.
+Re-run it before starting; do not trust either number blind.
+
+Where they cluster:
+
+| Count | File |
+|---|---|
+| 19 | `crates/malt-daemon/src/elevate_client.rs` |
+| 17 | `crates/malt-config/build.rs` |
+| 9 | `crates/malt-protocol/build.rs` |
+| 9 | `crates/malt-platform/src/vfs/fd.rs` |
+| 7 | `crates/malt-platform/src/isolation/hcs.rs` |
+| 6 | `crates/mash/src/expander.rs` |
+
+**26 of the 90 are in `build.rs` files.** Constitution IV says "no `unwrap()`
+or `expect()` outside `#[cfg(test)]` code", which was written about runtime
+library code. A build script that panics fails the build loudly at build time,
+which is arguably the correct behaviour and certainly not the failure mode the
+invariant guards against. **Settle that question before touching them** — and
+record the answer, because otherwise the next person re-litigates it.
+
+## Tasks (added 2026-07-28, for handoff)
+
+This is three sweeps, not one. They are independent and can land separately.
+
+- [ ] T001 Re-run the measurement and record the current figure. **Do not use the numbers above as-is** — they are dated, and the brief's original 39 was already stale by more than double when checked.
+- [ ] T002 Decide whether `build.rs` files are in scope for Constitution IV, and **write the answer down** (in this brief or as an ADR if it generalises). A panic at build time is loud and immediate; a panic at runtime kills a daemon holding sessions. Those are not the same risk.
+- [ ] T003 Sweep the daemon runtime paths first — `elevate_client.rs` (19) and `vfs/fd.rs` (9). **The defect this prevents**: these run inside a live daemon holding other people's sessions, so a panic here is the case the invariant exists for.
+- [ ] T004 Sweep `isolation/hcs.rs` (7). Note some are recent; check whether any are in `// SAFETY:`-adjacent unsafe blocks where the panic is a deliberate assertion, and convert only what genuinely should return an error.
+- [ ] T005 Sweep `mash` (`expander.rs`, `executor.rs`). **Smoosh becomes a gate here** — `mash` is touched. Expected: `passed: 183, skipped unsupported: 3`, with `MASH` set.
+- [ ] T006 The **second half of this brief** is unaddressed by the above: OS calls outside `malt-platform` (Constitution II). Re-verify that list too — one instance (`dispatch.rs`'s `std::os::unix::fs::symlink`) was already fixed on 2026-07-27 during spec 008, so the count has almost certainly moved.
+- [ ] T007 Gates per sweep, not once at the end: `cargo test --workspace` (needs `MASH`), `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, Linux via `bash scripts/wsl-mirror.sh`. **macOS is not a target** (ADR-0006).
+
+**A caution specific to this brief.** Converting an `unwrap` to a `?` changes
+a panic into an error path, and an error path nothing handles is worse than a
+panic nobody hits — it fails silently. Where you introduce a new error return,
+check what the caller does with it. That is the same failure this repo has hit
+repeatedly under a different name.

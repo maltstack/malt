@@ -97,6 +97,43 @@ Multi-crate Rust workspace. Paths are repo-relative from the worktree root.
 
 ---
 
+
+---
+
+## Status as of 2026-07-28 — read before picking anything up
+
+Four things changed since these tasks were written. Two open items are now
+unblocked, one is out of scope, and one prerequisite that blocked *both*
+platform tasks has been fixed.
+
+| Task | Status |
+|---|---|
+| **T032** (Linux) | **UNBLOCKED.** It depended on the Unix PTY, which was inverted — `open_pty` dropped the slave and handed the child dups of the master, so no process spawned through `spawn_with_pty` could deliver output. Fixed 2026-07-28, `docs/briefs/007`. Linux compat panes now work, and the full Linux suite is green (116 suites) |
+| **T033** (macOS) | **OUT OF SCOPE.** ADR-0006 declares macOS unsupported: nobody on this project has a machine to test on, and it is removed from CI. The `sandbox.rs` code stays in the tree. **Do not pick this up** while that ADR stands |
+| **T028** (HCS contained spawn) | **Still blocked**, and the reason is now precise rather than vague: `HCS_E_ACCESS_DENIED`. Needs a privileged helper *and* a base image layer — specs 008 and 009 respectively. Not a hardware wait; scoped work that belongs to those specs |
+| **T027, T037, T042, T043** | Unchanged and available |
+
+**Verification environment has also changed**, and it matters for T032:
+
+- Linux is now locally reproducible via `bash scripts/wsl-mirror.sh` — roughly
+  50-second cycles instead of ~3 minutes per CI round trip. Three
+  cross-platform defects were found on 2026-07-27 only once that existed.
+- **Do not put the target dir in `/tmp`** on WSL: it is a 9.8 GB RAM-backed
+  tmpfs and was observed emptying itself within minutes. The mirror script
+  defaults to `~/malt-build` already.
+- `cargo test --workspace` is not green without `MASH` set. The Smoosh failure
+  looks like a regression and is not one.
+
+**One caveat specific to T032.** The Linux isolation modules
+(`namespaces`, `cgroups`, `seccomp`, `rlimit`) exist and have never had a
+caller — the same class-1 shape that has been wrong six times in this repo.
+The task already says not to write new backends before confirming the existing
+ones are absent or broken. That instruction is now more important, not less:
+the PTY fix proved that a Unix path can look complete, compile, have callers,
+and still be wired backwards.
+
+---
+
 ## Phase 5: User Story 3 - Distinct levels actually differ (Priority: P2)
 
 **Goal**: a stronger tier constrains more than a weaker one.
