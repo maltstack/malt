@@ -3,7 +3,7 @@ use malt_platform::pty::{open_pty, WinSize};
 #[test]
 fn open_and_resize() {
     let size = WinSize { cols: 80, rows: 24 };
-    let (pty, _reader, _writer) = open_pty(size).unwrap();
+    let (pty, _reader, _writer, _slave) = open_pty(size).unwrap();
     let new_size = WinSize {
         cols: 120,
         rows: 40,
@@ -38,7 +38,7 @@ fn open_multiple_ptys() {
 #[test]
 fn resize_multiple_times() {
     let size = WinSize { cols: 80, rows: 24 };
-    let (pty, _reader, _writer) = open_pty(size).unwrap();
+    let (pty, _reader, _writer, _slave) = open_pty(size).unwrap();
 
     for cols in [40, 80, 120, 200, 10] {
         pty.resize(WinSize { cols, rows: 24 }).unwrap();

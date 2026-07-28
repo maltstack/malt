@@ -210,6 +210,17 @@ pub struct SpawnConfig {
     /// File descriptors to close in the child process on Unix before `exec`.
     #[cfg(unix)]
     pub close_fds: Vec<i32>,
+    /// Make this fd the child's controlling terminal, on Unix.
+    ///
+    /// The child calls `setsid()` to become a session leader and then
+    /// `TIOCSCTTY` to claim the terminal. Without both, a process attached to
+    /// a pty still has no controlling terminal: job control, `/dev/tty` and
+    /// signal delivery on Ctrl-C all misbehave.
+    ///
+    /// The fd should be a pty slave. It is used only between `fork` and
+    /// `exec`; ownership stays with the caller.
+    #[cfg(unix)]
+    pub controlling_tty: Option<i32>,
 }
 
 impl SpawnConfig {
@@ -232,6 +243,8 @@ impl SpawnConfig {
             extra_fds: Vec::new(),
             #[cfg(unix)]
             close_fds: Vec::new(),
+            #[cfg(unix)]
+            controlling_tty: None,
         }
     }
 
@@ -262,6 +275,16 @@ impl SpawnConfig {
     /// Set the working directory.
     pub fn cwd(mut self, dir: impl Into<PathBuf>) -> Self {
         self.cwd = Some(dir.into());
+        self
+    }
+
+    /// Make `fd` the child's controlling terminal (Unix only).
+    ///
+    /// See [`SpawnConfig::controlling_tty`] for why both `setsid` and
+    /// `TIOCSCTTY` are needed.
+    #[cfg(unix)]
+    pub fn controlling_tty(mut self, fd: i32) -> Self {
+        self.controlling_tty = Some(fd);
         self
     }
 

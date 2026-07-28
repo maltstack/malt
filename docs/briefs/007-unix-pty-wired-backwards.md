@@ -97,6 +97,39 @@ This is the repo's recurring defect class in a variant worth naming: not a
 mechanism that is *unwired*, but one that is **wired backwards**. Harder to
 catch than the usual kind, because every reachability check passes.
 
+## Decision: the parent retains the slave (settled 2026-07-28)
+
+The brief asked for this to be chosen deliberately rather than fallen into.
+Both options are defensible and the failure modes are opposite:
+
+| | Parent closes slave after spawn | **Parent retains slave (chosen)** |
+|---|---|---|
+| Short-lived child | output can be lost — last slave closes at child exit, and Linux may return `EIO` instead of the buffered bytes | output always readable |
+| EOF | arrives naturally when the child exits | only when the parent drops its slave |
+| Failure mode | silent data loss | a reader thread blocked forever if nothing drops the pty |
+
+**Chosen: the parent retains it**, because the losing case for the alternative
+is exactly what this feature has to do —
+`restore_compat_pane_relaunches_process_and_forwards_real_output` spawns
+`/bin/echo`, which exits before anyone can read, and asserts the marker reaches
+the grid. A design whose weakness is "loses the output of short-lived
+processes" cannot pass that test for the right reason.
+
+The cost is the blocked-reader risk, which is real: an unjoined thread waiting
+on an fd nobody closes is precisely how
+`docs/findings/2026-07-27-elevate-build-lock-and-teardown.md` began. It is
+answered by making ownership explicit rather than by hoping:
+
+- `PtyProcess` owns the slave; dropping it closes the slave.
+- `ProcessSupervisor::check_exited` already removes a reaped process from its
+  map, which drops `PtyProcess` — so the slave closes when the child is reaped.
+- The reader treats `EIO` as end-of-stream, so it exits at that point instead
+  of logging an error.
+
+That chain is the whole safety argument: **if `check_exited` stops removing
+reaped processes, reader threads leak.** Anyone changing that function should
+know it is load-bearing for pty teardown.
+
 ## What done looks like
 
 - `open_pty` retains the slave and `spawn_with_pty` gives it to the child as

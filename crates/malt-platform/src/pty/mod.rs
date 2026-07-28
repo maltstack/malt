@@ -29,7 +29,17 @@ pub trait Pty: Send + Sync {
 /// - `pty_handle` — resize control (implements [`Pty`])
 /// - `reader` — reads output from the child process
 /// - `writer` — writes input to the child process
-pub fn open_pty(size: WinSize) -> Result<(Arc<dyn Pty>, std::fs::File, std::fs::File), PtyError> {
+pub fn open_pty(
+    size: WinSize,
+) -> Result<
+    (
+        Arc<dyn Pty>,
+        std::fs::File,
+        std::fs::File,
+        Option<std::fs::File>,
+    ),
+    PtyError,
+> {
     #[cfg(unix)]
     {
         unix::open_pty(size)

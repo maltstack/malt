@@ -19,6 +19,19 @@ pub struct PtyProcess {
     pub reader: File,
     /// Write input to the child (master side).
     pub writer: File,
+    /// The child's end of the pty, retained deliberately.
+    ///
+    /// `None` on Windows, which has no slave fd (ConPTY attaches via
+    /// `STARTUPINFOEX`).
+    ///
+    /// On Unix this must stay alive for as long as anyone intends to read
+    /// `reader`. A pty whose last slave has closed stops delivering: Linux
+    /// returns `EIO` to the reader, discarding anything still buffered, so a
+    /// short-lived child's output would be lost the instant it exited.
+    /// Dropping `PtyProcess` closes it and is what finally gives the reader
+    /// its end-of-stream — see the decision recorded in
+    /// `docs/briefs/007-unix-pty-wired-backwards.md`.
+    pub slave: Option<File>,
 }
 
 /// Spawn a child process attached to a new PTY.
@@ -31,10 +44,17 @@ pub fn spawn_with_pty(
     cwd: &std::path::Path,
     size: WinSize,
 ) -> Result<PtyProcess, PtySpawnError> {
-    let (pty, reader, writer) = open_pty(size)?;
+    let (pty, reader, writer, slave) = open_pty(size)?;
 
     #[cfg(unix)]
-    let child = spawn_unix(program, args, cwd, &reader, &writer)?;
+    let child = spawn_unix(
+        program,
+        args,
+        cwd,
+        slave
+            .as_ref()
+            .ok_or_else(|| PtyError::Open(std::io::Error::other("unix pty returned no slave")))?,
+    )?;
 
     #[cfg(windows)]
     let child = spawn_windows(program, args, cwd)?;
@@ -44,6 +64,7 @@ pub fn spawn_with_pty(
         pty,
         reader,
         writer,
+        slave,
     })
 }
 
@@ -63,24 +84,28 @@ fn spawn_unix(
     program: &std::path::Path,
     args: &[String],
     cwd: &std::path::Path,
-    reader: &File,
-    writer: &File,
+    slave: &File,
 ) -> Result<Child, PtySpawnError> {
     use crate::process::{Io, SpawnConfig};
+    use std::os::fd::AsRawFd;
 
-    // On Unix, the reader/writer are duped from the master fd.
-    // We pass clones as the child's stdin/stdout/stderr so the child
-    // writes to the master, and we read from it.
-    let stdin_file = writer.try_clone()?;
-    let stdout_file = reader.try_clone()?;
-    let stderr_file = reader.try_clone()?;
+    // The child gets the **slave**; the parent keeps the master. This is the
+    // arrangement a pty requires, and getting it backwards is what
+    // docs/briefs/007 documents: the child used to be handed dups of the
+    // master, leaving no slave open anywhere, which makes the pty inert.
+    let stdin_file = slave.try_clone()?;
+    let stdout_file = slave.try_clone()?;
+    let stderr_file = slave.try_clone()?;
 
+    // Make it the child's controlling terminal, otherwise job control and
+    // anything that opens /dev/tty still misbehaves even once bytes flow.
     let config = SpawnConfig::new(program)
         .args(args.iter().map(|s| std::ffi::OsString::from(s)))
         .cwd(cwd)
         .stdin(Io::File(stdin_file))
         .stdout(Io::File(stdout_file))
-        .stderr(Io::File(stderr_file));
+        .stderr(Io::File(stderr_file))
+        .controlling_tty(slave.as_raw_fd());
 
     let child = crate::process::spawn(config)?;
     Ok(child)

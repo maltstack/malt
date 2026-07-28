@@ -45,14 +45,29 @@ fn set_cloexec(fd: &OwnedFd) -> Result<(), PtyError> {
 
 /// Open a new Unix PTY pair.
 ///
-/// Returns `(pty_handle, reader, writer)`:
+/// Returns `(pty_handle, reader, writer, slave)`:
 /// - `pty_handle` retains the original master fd for resize
 /// - `reader` and `writer` are independent dup'd handles to the master fd
-/// - The slave fd is dropped here; it will be passed to child processes
-///   via `SpawnConfig` separately.
+/// - `slave` is the **child's** end (always `Some` on Unix), and the caller
+///   must keep it alive
+///
+/// The slave used to be dropped here, with a comment claiming it would be
+/// passed to the child "via `SpawnConfig` separately". It never was: the child
+/// was handed dups of the *master*, so no process held a slave at all. A pty
+/// with no slave open is dead — Linux fails the parent's reads with `EIO`,
+/// and BSD/macOS kills the child with `SIGPIPE` on write. See
+/// `docs/briefs/007-unix-pty-wired-backwards.md`.
 pub(super) fn open_pty(
     size: WinSize,
-) -> Result<(Arc<dyn Pty>, std::fs::File, std::fs::File), PtyError> {
+) -> Result<
+    (
+        Arc<dyn Pty>,
+        std::fs::File,
+        std::fs::File,
+        Option<std::fs::File>,
+    ),
+    PtyError,
+> {
     let winsize = Some(nix::pty::Winsize {
         ws_col: size.cols,
         ws_row: size.rows,
@@ -77,9 +92,12 @@ pub(super) fn open_pty(
     let reader = std::fs::File::from(reader_fd);
     let writer = std::fs::File::from(writer_fd);
 
-    // Drop slave fd — it will be passed to child process via SpawnConfig.
-    drop(slave);
+    // Hand the slave back rather than dropping it. The caller gives it to the
+    // child and keeps its own copy alive for the pty's lifetime, so a
+    // short-lived child's output stays readable after it exits (brief 007's
+    // recorded decision).
+    let slave_file = std::fs::File::from(slave);
 
     let pty_handle = Arc::new(UnixPty { master_fd: master });
-    Ok((pty_handle, reader, writer))
+    Ok((pty_handle, reader, writer, Some(slave_file)))
 }

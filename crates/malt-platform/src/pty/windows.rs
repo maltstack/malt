@@ -64,7 +64,15 @@ impl Drop for ConPty {
 /// and hand back `output_read` and `input_write` as the reader/writer.
 pub(super) fn open_pty(
     size: WinSize,
-) -> Result<(Arc<dyn Pty>, std::fs::File, std::fs::File), PtyError> {
+) -> Result<
+    (
+        Arc<dyn Pty>,
+        std::fs::File,
+        std::fs::File,
+        Option<std::fs::File>,
+    ),
+    PtyError,
+> {
     use std::os::windows::io::FromRawHandle;
 
     let coord = COORD {
@@ -125,5 +133,8 @@ pub(super) fn open_pty(
     let writer = unsafe { std::fs::File::from_raw_handle(input_write) };
 
     let pty_handle = Arc::new(ConPty { hpc });
-    Ok((pty_handle, reader, writer))
+    // `None`: ConPTY has no slave fd to hand a child. The pseudoconsole is
+    // attached via STARTUPINFOEX instead, so there is nothing for the caller
+    // to keep alive. The Option exists for the Unix arm.
+    Ok((pty_handle, reader, writer, None))
 }

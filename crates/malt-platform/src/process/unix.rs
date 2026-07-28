@@ -72,6 +72,10 @@ pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
     cmd.stdout(io_to_stdio(config.stdout)?);
     cmd.stderr(io_to_stdio(config.stderr)?);
 
+    // Resolve the controlling-terminal fd for the pre_exec closure. Copied out
+    // now because the closure must not touch `config` after fork.
+    let ctty = config.controlling_tty;
+
     // Resolve process group for the pre_exec closure.
     let pg = match &config.process_group {
         ProcessGroup::Inherit => None,
@@ -87,6 +91,20 @@ pub(super) fn spawn(config: SpawnConfig) -> Result<Child, SpawnError> {
     // We only call async-signal-safe functions here.
     unsafe {
         cmd.pre_exec(move || {
+            // Controlling terminal first: setsid() must run before any other
+            // process-group work, since it creates a new session and makes
+            // this process its leader. A process that already leads a group
+            // gets EPERM, which is why this precedes the setpgid below.
+            if let Some(fd) = ctty {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // TIOCSCTTY with arg 0: claim this terminal, but do not steal
+                // it from another session.
+                if libc::ioctl(fd, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
             if let Some(pgid) = pg {
                 let result = nix::unistd::setpgid(
                     nix::unistd::Pid::from_raw(0),

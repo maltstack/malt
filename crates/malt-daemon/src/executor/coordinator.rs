@@ -21,7 +21,7 @@ use malt_session::pane::CommandBlock;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 enum SessionLifecycle {
     Active {
@@ -1514,6 +1514,18 @@ fn spawn_pty_reader(
                         {
                             break; // session gone
                         }
+                    }
+                    // On a pty master, EIO means the last slave closed -- which
+                    // is this transport's end-of-stream, not a fault. It
+                    // arrives when `PtyProcess` is dropped as the child is
+                    // reaped (brief 007's decision), so logging it as an error
+                    // would make every normal teardown look like a failure.
+                    Err(ref e) if e.raw_os_error() == Some(5) => {
+                        debug!(
+                            pane_id = pane_id.0,
+                            "pty reader: EIO, treating as end of stream"
+                        );
+                        break;
                     }
                     Err(e) => {
                         warn!(pane_id = pane_id.0, error = %e, "pty reader: read error, stopping");
