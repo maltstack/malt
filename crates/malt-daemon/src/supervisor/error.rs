@@ -18,4 +18,14 @@ pub enum SupervisorError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("failed to signal process for pane {pane_id:?}: {source}")]
+    Signal {
+        pane_id: PaneId,
+        #[source]
+        source: malt_platform::signals::SignalError,
+    },
+
+    #[error("process for pane {0:?} did not exit before the termination deadline")]
+    TerminationTimedOut(PaneId),
 }

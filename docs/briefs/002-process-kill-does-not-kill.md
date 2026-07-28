@@ -1,6 +1,6 @@
 # Brief 002 — `ProcessSupervisor::kill` does not kill anything
 
-**Severity**: High · **Verified**: 2026-07-26 · **Source**: audit A-06
+**Severity**: High · **Verified**: 2026-07-26 · **Status**: Resolved 2026-07-28 · **Source**: audit A-06
 
 ## What is wrong
 
@@ -59,7 +59,7 @@ containment guarantee ends and the process does not.
 
 ---
 
-## Tasks (added 2026-07-28, for handoff)
+## Tasks (completed 2026-07-28)
 
 **This got worse on 2026-07-28 and the brief predates it.** `PtyProcess` now
 owns the pty slave (`docs/briefs/007`), so removing a map entry closes the
@@ -76,9 +76,9 @@ SignalKind)` is cross-platform and re-exported from
 exit code 128+signum; its Unix arm sends the real signal. Both were given
 real-process tests on 2026-07-28.
 
-- [ ] T001 Make `ProcessSupervisor::kill` (`crates/malt-daemon/src/supervisor/mod.rs:73`) actually terminate the process before removing it from `self.processes`. **Order matters**: signal first, then reap, then remove — removing first drops `PtyProcess` and closes the pty out from under a still-running child.
-- [ ] T002 Decide and record whether `kill` is graceful (`Term`, wait, escalate) or immediate. The brief does not settle this and the choice is visible to callers. If you escalate, bound the wait — a `kill` that can block indefinitely is a different bug.
-- [ ] T003 Handle the already-exited case without treating it as failure. A process that exited between the caller's decision and the signal is the outcome the caller wanted; `ProcessNotFound` is right only when the pane was never tracked.
-- [ ] T004 Add a test that spawns a **real long-running process**, kills it, and asserts the OS no longer has it — by observing the process, not by `kill` returning `Ok`. **The defect this prevents**: the current implementation returns `Ok` and passes any test that only checks the return value. That is precisely why this survived. Use the platform-appropriate long-runner: `sleep 30` on Unix, `ping -n 30 127.0.0.1` on Windows (`crates/malt-platform/tests/signals.rs` has a helper doing exactly this split).
-- [ ] T005 Add a test that killing a pane with a pty does not leave the reader thread blocked, and that `check_exited` still behaves for processes that exit on their own. **The defect this prevents**: `check_exited`'s removal is now load-bearing for pty teardown (brief 007's recorded decision) — if `kill` and `check_exited` disagree about who removes an entry, threads leak.
-- [ ] T006 Gates: `cargo test --workspace` (needs `MASH` set), `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`. Verify on Linux via `bash scripts/wsl-mirror.sh`. **Smoosh does not apply** — `mash` is untouched. **macOS is not a target** (ADR-0006).
+- [x] T001 `kill` now signals, reaps, then removes; failure leaves the `ManagedProcess` and its PTY handles intact for a retry.
+- [x] T002 Policy: graceful `TERM` for 500 ms, then force termination and a 2-second reap deadline. Unix escalates to `SIGKILL` for the PTY process group; Windows uses bounded `taskkill /T /F` for the process tree.
+- [x] T003 `kill` reaps an already-exited tracked child as success. `ProcessNotFound` remains only for an untracked pane.
+- [x] T004 `crates/malt-daemon/tests/supervisor.rs` kills a real `sleep`/`ping` process and confirms its PID is no longer live. The Windows force-termination path is separately exercised in `crates/malt-platform/tests/signals.rs`.
+- [x] T005 The PTY reader test blocks in a real read, kills the pane, and observes EOF/EIO; it also verifies `check_exited` reaps a self-exiting process. `ManagedProcess` now retains the Unix slave through reaping, preserving the ownership required by brief 007.
+- [x] T006 Passed on Windows: `cargo build --workspace`, `cargo test --workspace` with `MASH` set, `cargo fmt --all -- --check`, and `cargo clippy --workspace --all-targets -- -D warnings`. The targeted supervisor suite also passed on Linux with artifacts stored under the Linux home directory. **Smoosh does not apply** — `mash` is untouched. **macOS is not a target** (ADR-0006).

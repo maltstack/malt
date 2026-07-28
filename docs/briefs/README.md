@@ -18,7 +18,7 @@ confirmation.
 | Brief | Severity | Verified | One line |
 |---|---|---|---|
 | [001 — hard invariant violations](001-hard-invariant-violations.md) | High | 2026-07-26 | 39 non-test `unwrap`/`expect` and 6 files calling OS APIs outside `malt-platform`, while AGENTS.md marks both invariants clean |
-| [002 — `kill` does not kill](002-process-kill-does-not-kill.md) | High | 2026-07-26 | `ProcessSupervisor::kill` removes a map entry and returns `Ok`; the process keeps running |
+| [002 — `kill` does not kill](002-process-kill-does-not-kill.md) | High | 2026-07-28 | **RESOLVED** — `kill` now sends bounded `TERM`, escalates to tree termination, reaps, and only then removes bookkeeping; session destruction retains retryable state on failure. |
 | [003 — rate limiter has no window](003-rate-limiter-has-no-window.md) | High | 2026-07-26 | A "per window" limiter with no window: a client is banned permanently after N requests |
 | [004 — writer lacks the reader's frame bound](004-frame-writer-size-bound.md) | Medium | 2026-07-28 | **RESOLVED** — `framing.rs:203` now bounds `payload_len` against `PROTOCOL_MAX_FRAME_SIZE` before the cast, so neither the emitted-then-rejected nor the wrapping-length case can occur. Verified while scoping spec 010 |
 | [005 — the lint gate is green but unenforced](005-enforce-quality-gates-in-ci.md) | Medium | 2026-07-28 | **RESOLVED** — `.github/workflows/ci.yml` runs the four gates as a blocking Windows job plus Smoosh; the index row had gone stale after the workflow landed |

@@ -41,6 +41,9 @@ pub struct ManagedProcess {
     pty_handle: Option<Arc<dyn Pty>>,
     reader: Option<File>,
     writer: Option<File>,
+    // Retain the Unix slave until the process is reaped so the master reader
+    // receives buffered short-lived output instead of immediate EIO.
+    slave: Option<File>,
 }
 
 impl ManagedProcess {
@@ -52,6 +55,7 @@ impl ManagedProcess {
         pty_handle: Arc<dyn Pty>,
         reader: File,
         writer: File,
+        slave: Option<File>,
     ) -> Self {
         Self {
             pane_id,
@@ -62,6 +66,7 @@ impl ManagedProcess {
             pty_handle: Some(pty_handle),
             reader: Some(reader),
             writer: Some(writer),
+            slave,
         }
     }
 
@@ -76,6 +81,7 @@ impl ManagedProcess {
             pty_handle: None,
             reader: None,
             writer: None,
+            slave: None,
         }
     }
 
@@ -147,6 +153,7 @@ impl fmt::Debug for ManagedProcess {
             .field("has_child", &self.child.is_some())
             .field("has_pty", &self.pty_handle.is_some())
             .field("has_io", &self.has_io())
+            .field("has_slave", &self.slave.is_some())
             .finish()
     }
 }

@@ -692,40 +692,47 @@ impl Coordinator {
         }
     }
 
-    /// Destroy a session. Sends shutdown and joins the thread.
-    pub fn destroy_session(&mut self, id: SessionId) {
-        if let Some(handle) = self.sessions.remove(&id.0) {
-            let contained_teardown = contained_teardown_for_handle(&handle);
-            match handle.lifecycle {
-                SessionLifecycle::Active {
+    /// Destroy a session after terminating any supervisor-owned pane process.
+    ///
+    /// If process termination fails, the session and its PTY ownership remain
+    /// intact so callers can retry rather than losing control of a live child.
+    pub fn destroy_session(&mut self, id: SessionId) -> Result<(), DaemonError> {
+        self.kill_supervised_process_for_session(&id)?;
+        let handle = self
+            .sessions
+            .remove(&id.0)
+            .ok_or_else(|| DaemonError::SessionNotFound(id.clone()))?;
+        let contained_teardown = contained_teardown_for_handle(&handle);
+        match handle.lifecycle {
+            SessionLifecycle::Active {
+                cmd_tx,
+                ingress,
+                control_thread,
+                worker_thread,
+                ..
+            } => {
+                ingress.close();
+                // Let the active worker finalize exactly once and drain
+                // admitted-but-not-started requests as shutting down.
+                // The reaper shuts down the control actor only after the
+                // worker has stopped; `destroy_session` itself never
+                // joins under the coordinator.
+                spawn_session_reaper_after_worker(
                     cmd_tx,
-                    ingress,
                     control_thread,
                     worker_thread,
-                    ..
-                } => {
-                    ingress.close();
-                    // Let the active worker finalize exactly once and drain
-                    // admitted-but-not-started requests as shutting down.
-                    // The reaper shuts down the control actor only after the
-                    // worker has stopped; `destroy_session` itself never
-                    // joins under the coordinator.
-                    spawn_session_reaper_after_worker(
-                        cmd_tx,
-                        control_thread,
-                        worker_thread,
-                        contained_teardown,
-                    );
-                }
-                SessionLifecycle::Dormant { .. } => {
-                    // No thread to shut down.
-                    tear_down_contained_session(contained_teardown);
-                }
+                    contained_teardown,
+                );
             }
-            let _ = self.store.delete_session(&id);
-            info!(?id, "session destroyed");
-            self.persist_daemon_state();
+            SessionLifecycle::Dormant { .. } => {
+                // No thread to shut down.
+                tear_down_contained_session(contained_teardown);
+            }
         }
+        let _ = self.store.delete_session(&id);
+        info!(?id, "session destroyed");
+        self.persist_daemon_state();
+        Ok(())
     }
 
     /// Route a message to a specific session.
@@ -1006,6 +1013,9 @@ impl Coordinator {
         let ids: Vec<u32> = self.sessions.keys().copied().collect();
         for id in ids {
             let session_id = SessionId(id);
+            if let Err(error) = self.kill_supervised_process_for_session(&session_id) {
+                warn!(?session_id, %error, "shutdown_graceful: supervised process remains available for retry");
+            }
             let (cmd_tx_clone, session_name, session_isolation, selected_image, contained_teardown) = {
                 let handle = match self.sessions.get(&session_id.0) {
                     Some(h) => h,
@@ -1105,7 +1115,9 @@ impl Coordinator {
                 Some(SessionLifecycle::Active { .. })
             );
             if is_active {
-                self.destroy_session(SessionId(id));
+                if let Err(error) = self.destroy_session(SessionId(id)) {
+                    warn!(%error, session_id = id, "shutdown_all: session was retained after process termination failed");
+                }
             }
             // Dormant handles are intentionally left in place — their data is
             // already on disk and should survive daemon restart.
@@ -1383,6 +1395,19 @@ impl Coordinator {
             _unknown: vec![],
         };
         self.store.mark_dirty_daemon(state);
+    }
+
+    fn kill_supervised_process_for_session(&mut self, id: &SessionId) -> Result<(), DaemonError> {
+        let pane_id = self
+            .sessions
+            .get(&id.0)
+            .ok_or_else(|| DaemonError::SessionNotFound(id.clone()))?
+            .first_pane
+            .clone();
+        if self.supervisor.get(&pane_id).is_some() {
+            self.supervisor.kill(&pane_id)?;
+        }
+        Ok(())
     }
 }
 

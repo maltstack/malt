@@ -18,11 +18,15 @@ pub use malt_protocol::common::SignalKind;
 pub use unix::process_exists;
 #[cfg(unix)]
 pub use unix::send_signal;
+#[cfg(unix)]
+pub use unix::terminate_process;
 
 #[cfg(windows)]
 pub use windows::process_exists;
 #[cfg(windows)]
 pub use windows::send_signal;
+#[cfg(windows)]
+pub use windows::terminate_process;
 
 // ── Error type ───────────────────────────────────────────────────────────
 

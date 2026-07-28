@@ -35,6 +35,24 @@ pub fn send_signal(pid: u32, signal: SignalKind) -> Result<(), SignalError> {
     })
 }
 
+/// Forcefully terminate the process group led by `pid`.
+///
+/// Unlike [`send_signal`], this is not a protocol-visible POSIX signal. It is
+/// the supervisor's escalation path after a bounded graceful `TERM` wait.
+/// PTY children create a session, making their PID the process-group leader,
+/// so this also terminates descendants that did not exit with their leader.
+pub fn terminate_process(pid: u32) -> Result<(), SignalError> {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+
+    let raw_pid = i32::try_from(pid).map_err(|_| SignalError::NoSuchProcess { pid })?;
+    kill(Pid::from_raw(-raw_pid), nix::sys::signal::Signal::SIGKILL).map_err(|e| match e {
+        nix::errno::Errno::ESRCH => SignalError::NoSuchProcess { pid },
+        nix::errno::Errno::EPERM => SignalError::PermissionDenied { pid },
+        other => SignalError::Io(std::io::Error::from_raw_os_error(other as i32)),
+    })
+}
+
 /// Check whether a process with the given PID exists.
 pub fn process_exists(pid: u32) -> bool {
     use nix::sys::signal::kill;

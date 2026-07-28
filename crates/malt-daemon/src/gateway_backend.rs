@@ -534,7 +534,9 @@ impl GatewayBackend for DaemonBackend {
 
     fn destroy_session(&self, id: u32) -> Result<(), GatewayError> {
         let mut coord = self.coordinator.lock().unwrap_or_else(|e| e.into_inner());
-        coord.destroy_session(SessionId(id));
+        coord
+            .destroy_session(SessionId(id))
+            .map_err(map_execution_error)?;
         Ok(())
     }
 

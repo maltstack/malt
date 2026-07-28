@@ -30,6 +30,9 @@ pub enum DaemonError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("process supervision failed: {0}")]
+    Supervisor(#[from] crate::supervisor::SupervisorError),
+
     #[error("name conflict: cannot find unique name for '{0}' after 100 attempts")]
     NameConflict(String),
 

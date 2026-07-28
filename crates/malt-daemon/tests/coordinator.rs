@@ -44,7 +44,7 @@ fn destroy_session() {
     let id = coord
         .create_session(None, IsolationTier::Bare, None)
         .unwrap();
-    coord.destroy_session(id);
+    coord.destroy_session(id).unwrap();
     assert_eq!(coord.session_count(), 0);
 }
 
@@ -83,7 +83,7 @@ fn session_ids_never_recycled() {
     let id1 = coord
         .create_session(None, IsolationTier::Bare, None)
         .unwrap();
-    coord.destroy_session(id1.clone());
+    coord.destroy_session(id1.clone()).unwrap();
     let id2 = coord
         .create_session(None, IsolationTier::Bare, None)
         .unwrap();
@@ -154,7 +154,7 @@ fn send_attach_command() {
         None,
         "detaching must release authority so the session is not stranded"
     );
-    coord.destroy_session(id);
+    coord.destroy_session(id).unwrap();
 }
 
 #[test]
@@ -552,7 +552,7 @@ fn destroy_dormant_session_removes_from_store() {
         store.flush_all();
 
         // Destroy the dormant session.
-        coord.destroy_session(sid.clone());
+        coord.destroy_session(sid.clone()).unwrap();
         assert_eq!(coord.session_count(), 0);
 
         // Verify it's gone from the store.
@@ -969,7 +969,7 @@ fn last_detach_after_queued_write_input_keeps_session_active_and_runs_command() 
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(output.contains("queued-at-detach"), "output was {output:?}");
-    coord.destroy_session(id);
+    coord.destroy_session(id).unwrap();
 }
 
 #[test]
@@ -1009,7 +1009,7 @@ fn destroy_closes_intake_promptly_but_finalizes_active_work_once() {
         .submit_execution(id.clone(), "echo pending".to_string())
         .unwrap();
     let started = Instant::now();
-    coord.destroy_session(id);
+    coord.destroy_session(id).unwrap();
     assert!(started.elapsed() < Duration::from_secs(1));
     assert!(active
         .recv_timeout(Duration::from_secs(2))

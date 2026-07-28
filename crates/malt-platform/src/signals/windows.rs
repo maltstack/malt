@@ -66,19 +66,74 @@ pub fn send_signal(pid: u32, signal: SignalKind) -> Result<(), SignalError> {
     }
 }
 
+/// Forcefully terminate the process tree rooted at `pid`.
+///
+/// Windows has no SIGKILL equivalent. `taskkill /T /F` is the supported system
+/// utility for terminating a process and its descendants; call it by its
+/// System32 path rather than resolving an untrusted command name from PATH.
+pub fn terminate_process(pid: u32) -> Result<(), SignalError> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let system_root = std::env::var_os("SystemRoot").ok_or_else(|| {
+        SignalError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "SystemRoot is not set; cannot locate taskkill.exe",
+        ))
+    })?;
+    let taskkill = std::path::PathBuf::from(system_root)
+        .join("System32")
+        .join("taskkill.exe");
+    let mut child = Command::new(taskkill)
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait()? {
+            Some(status) if status.success() => return Ok(()),
+            Some(_) if !process_exists(pid) => return Err(SignalError::NoSuchProcess { pid }),
+            Some(status) => {
+                return Err(SignalError::Io(std::io::Error::other(format!(
+                    "taskkill exited with {status} while terminating pid {pid}"
+                ))));
+            }
+            None if Instant::now() >= deadline => {
+                child.kill()?;
+                let _ = child.wait()?;
+                return Err(SignalError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("taskkill timed out while terminating pid {pid}"),
+                )));
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
 /// Check whether a process with the given PID exists.
 pub fn process_exists(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    const STILL_ACTIVE: u32 = 259;
 
     // SAFETY: OpenProcess is a standard Win32 call; the handle is checked.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle.is_null() {
         return false;
     }
+    let mut exit_code = 0u32;
+    // SAFETY: `handle` is valid and `exit_code` is a valid writable pointer.
+    let running =
+        unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0 && exit_code == STILL_ACTIVE;
     // SAFETY: handle is valid and was just opened; must be closed.
     unsafe { CloseHandle(handle) };
-    true
+    running
 }
 
 // ── WindowsSignalBroker (tokio feature) ──────────────────────────────────

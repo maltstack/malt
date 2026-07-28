@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use malt_platform::signals::terminate_process;
 use malt_platform::signals::{
     process_exists, send_signal, signal_by_name, signal_name, signal_number, SignalError,
     SignalKind,
@@ -169,4 +171,18 @@ fn send_signal_int_succeeds_against_running_process() {
     // Clean up regardless of whether Ctrl+C actually killed it.
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(windows)]
+#[test]
+fn force_termination_uses_taskkill_and_confirms_the_process_is_gone() {
+    let mut child = spawn_long_running();
+    let pid = child.id();
+
+    terminate_process(pid).expect("taskkill should terminate the process tree");
+    let _ = child.wait().expect("terminated process should be waitable");
+    assert!(
+        !process_exists(pid),
+        "a terminated process must not be reported as live while handles remain open"
+    );
 }
