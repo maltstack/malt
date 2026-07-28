@@ -4,128 +4,43 @@ Instructions for AI agents (and anyone else) working in this repo. Claude
 Code loads this via the `@AGENTS.md` import in `CLAUDE.md` — see that file
 if you're looking for why there are two files; there aren't, really.
 
-## Engineering Standards
+**Read order if you are new here:** *Start Here* for what this is, then
+*Non-Negotiables*, then *How Work Goes Wrong Here* — that third section is the
+one that will actually save you time, because every entry in it cost someone a
+day.
 
-**No time constraints. No deadlines. Every line of code is production-ready and mission-critical.**
+---
 
-- No stubs, no `todo!()`, no `unimplemented!()`, no placeholder logic
-- No hand-waving ("this could be improved later", "for now we just...")
-- No deferring — if a component is needed, implement it fully
-- No shortcuts that would need to be revisited
-- No half-measures: if the architecture specifies X, implement X completely
-- All error paths handled — no silent ignores, no bare `unwrap()` outside tests
-- All tests pass before any task is marked complete
+## Start Here
 
-This is the standard for every change, regardless of scope.
+MALT (structured terminal platform) inverts the traditional terminal model:
+**the daemon is the authority, not the renderer.** The daemon owns session
+state, layout, pane identity, and structured output. Clients are
+interchangeable consumers of a typed `RenderCommand` stream. All
+inter-component communication uses VNP (Vexil Native Protocol) — typed,
+schema-defined, bitpack-encoded.
 
-## Session Ritual (added 2026-07-24, see ADR-0001)
+19 Rust crates + 1 SvelteKit web client. `malt` starts a daemon with an
+in-process POSIX shell (`mash`), serves HTTP + VNP socket APIs, and opens an
+interactive TUI.
 
-This project has been abandoned-via-rewrite three times (vexil-v2 → malt →
-malt-stack) after multi-day uncommitted sprints. Two habits meant to prevent
-a fourth:
+**Do not trust any status claim in this file, including this one, without
+re-running the gates.** Numbers here drift; the suite does not. See *Session
+ritual* below.
 
-1. **Rebuild + retest before resuming work after any gap.** Don't trust a
-   stale status doc — `cargo build --workspace && cargo test --workspace`
-   (see `docs/adr/` for `vexilc` PATH setup) and update the numbers below if
-   they've drifted.
-2. **Commit at real checkpoints, not multi-day piles.** If a change is big
-   enough to feel risky to commit, that's a signal to commit sooner, not
-   later. If something starts looking like it needs a bigger architectural
-   rethink mid-task, write that down as a proposal (an ADR draft is fine)
-   instead of silently pivoting into it.
+### Where to look for what
 
-## Survey Before Building (added 2026-07-26)
-
-**The most common defect in this repo is not a missing mechanism. It is a
-mechanism that exists, is tested, and is called by nothing.** Five instances
-so far, each found only after someone started building a replacement:
-
-| What existed | What was missing |
+| Question | Answer lives in |
 |---|---|
-| `TokenStore`/`AuthContext`/`RateLimiter`, fully unit-tested | never wired into `build_router` — every route open |
-| `AuthorityTracker`, complete with tests | driven only by `AttachClient`, which only a *test* ever sent |
-| `InputClaim`/`InputAuthorityChanged` schema + codec constants | no handler anywhere |
-| `OutputChunk` in `schemas/shell.vexil`, doc saying "MASH sets it at emission time" | nothing ever emitted one |
-| 12 of 14 `malt-platform::isolation` modules, 13–17 tests each | zero callers outside their own crate |
+| What is the target design? | `docs/design/architecture.md` — target state, **not** a status tracker |
+| Why was this decided? | `docs/adr/` — check before re-deciding anything |
+| How do we know it works? | `docs/findings/` — dated evidence from actually running things |
+| What should I work on? | `docs/BACKLOG.md` (prioritized) and `docs/briefs/` (scoped, verified) |
+| What was built, and why, per feature? | `specs/NNN-*/` |
+| What exists today, subsystem by subsystem? | `docs/implemented.md` — dated; re-verify before relying on it |
+| What happened before 2026-07-24? | `docs/history/pre-2026-07-24.md` |
 
-So a survey that answers *"does this exist?"* is the wrong survey. It has
-returned "no, build it" five times when the answer was "yes, wire it".
-
-**What a survey must establish, in this order:**
-
-1. **Does the thing exist?** Search schemas, codec constants, and type
-   definitions — not just function names. `OutputChunk` was found only by
-   reading `schemas/`, and its `@type` constant was already allocated.
-2. **Is it called from production code?** Grep for callers and **exclude the
-   defining crate and all test files**. This is the step that keeps getting
-   skipped. A definition with no external caller is the signature of this
-   defect.
-3. **If it is called, is the caller reachable?** `AttachClient` had exactly
-   one sender and it was a test, which made the tracker look wired for
-   months. "Has a caller" is not "is reachable from a real request."
-4. **Do its tests exercise real behaviour, or construct types?** Two real
-   `job_objects.rs` bugs survived because tests built structs instead of
-   calling Win32. Test *count* is not evidence of function — see Principle IV.
-5. **Only then**: check sibling projects (`vexil-v2` especially) for a
-   working equivalent, per the note under Project Relationships.
-
-**Record the survey.** If it changes the shape of the work, it belongs in
-`docs/findings/` before planning proceeds — see
-`docs/findings/2026-07-26-isolation-prior-art-survey.md` for the shape,
-including its "what this survey did not establish" section. A survey that
-only records what was found, and not what remains unverified, invites the
-next person to over-trust it.
-
-## A Value Carries Its Own Truth (added 2026-07-27)
-
-**Nothing may re-derive at use time what was already decided at creation
-time.** Three defects in this repo have been the same mistake wearing
-different clothes:
-
-| What was re-derived | From what | Result |
-|---|---|---|
-| A session's isolation level | reconstructed separately by each surface | create, list and query could disagree — spec 007 |
-| How a session is contained | two `Env` fields, one inert, one working | reported containment and actual containment could drift — spec 008 |
-| Whether an HCS handle is fake or native | the `MALT_HCS_FAKE` env var, read *again* at wait/close time | a fake handle reached the native API and faulted the process — `docs/findings/2026-07-27-elevate-build-lock-and-teardown.md` |
-
-The third is the sharpest illustration, because the global it consulted was
-correct when the handle was created and wrong by the time the handle was
-used. Nothing was concurrent-unsafe in the usual sense; the answer simply
-expired. **A branch on mutable global state is a decision with no
-expiry date attached, and the value it governs does not know when it went
-stale.**
-
-The fix in all three cases had the same shape: the value carries its own
-provenance. One isolation status every surface reads; one carrier conveying
-containment; a handle that remembers the backend that made it.
-
-**When reviewing:** if a function decides *what kind of thing* its argument
-is by consulting configuration, an environment variable, a feature flag or a
-global registry, ask why that fact is not travelling with the argument. If
-the answer is "it was set correctly when we started", that is the defect.
-
-### The corollary for tests
-
-This class hides from interactive runs. The HCS fault above reproduced
-**100% under agent harnesses and never once in a human terminal** — not
-because the harness was broken, but because console I/O is slow enough to
-close the timing window that exposed it. (CI never got a verdict: a clippy
-failure blocked the `Test` step, so the suite had not run there in ~110
-commits.) The other two environments that run without a console are **CI and
-the helper service itself** — which is to say, production.
-
-So a suite that passes in a terminal has not been tested in the context it
-ships into. **When only automation reproduces a crash, suspect the code
-before the automation** — most of a day was lost on 2026-07-27 doing the
-reverse.
-
-## What is MALT?
-
-MALT (structured terminal platform) inverts the traditional terminal model: the daemon is the authority, not the renderer. The daemon owns session state, layout, pane identity, and structured output. Clients are interchangeable consumers of a typed RenderCommand stream. All inter-component communication uses VNP (Vexil Native Protocol) — typed, schema-defined, bitpack-encoded messages.
-
-**Current state:** Foundation + Phase A + Phase B1 implemented. 18 Rust crates + 1 SvelteKit web client. 1,200+ tests, all green (verified 2026-07-24 after a 3.5-month dormancy — see `docs/findings/2026-07-24-live-daemon-session.md` for what "green" did and didn't turn out to mean in practice). The `malt` command starts a daemon with an in-process mash (POSIX shell), serves HTTP + VNP socket APIs, and opens an interactive TUI. Full VNP bitpack encoding used end-to-end (no JSON post-handshake). Real `.vx` config file loading wired. Session store hardened (.bak backup, corruption quarantine, debounced 1s flush, XDG-compliant data dir, counter restore on startup) — confirmed surviving a real 3.5-month restart, not just a test fixture. MCP server available for AI agents. WASM plugin host ready. GPU terminal (maltty) scaffolded. Many architecture spec features remain unimplemented — see Implementation Roadmap below, and `docs/BACKLOG.md` for concrete near-term items.
-
-## Project Relationships
+### Sibling projects
 
 ```
 orix/vexil-lang/    Vexil schema language compiler + runtime — actively developed, MALT's build dependency
@@ -143,7 +58,313 @@ MALT depends on `vexil-lang` for schema compilation and `vexil-runtime` for enco
 
 `~/projects/vexil-v2/` is a legacy prototype. Code quality and engineering standards are poor — do not port code verbatim. It does contain working implementations of systems not yet built in MALT (isolation, scrollback, plugin lifecycle, etc.) that can be used as **reference for logic and algorithms**. When implementing a Phase B–I feature, check vexil-v2 for a working equivalent first.
 
-## Repo Structure
+---
+
+## Non-Negotiables
+
+**No time constraints. No deadlines. Every line of code is production-ready
+and mission-critical.**
+
+- No stubs, no `todo!()`, no `unimplemented!()`, no placeholder logic
+- No hand-waving ("this could be improved later", "for now we just...")
+- No deferring — if a component is needed, implement it fully
+- No shortcuts that would need to be revisited
+- No half-measures: if the architecture specifies X, implement X completely
+- All error paths handled — no silent ignores, no bare `unwrap()` outside tests
+- All tests pass before any task is marked complete
+
+This is the standard for every change, regardless of scope.
+
+### Hard invariants
+
+These are non-negotiable. Violating any is a bug. Also captured, with the
+day's process lessons, in `.specify/memory/constitution.md`.
+
+These are non-negotiable. Violating any is a bug. (Also captured, with the
+day's process lessons added, in `.specify/memory/constitution.md`.)
+
+1. **VT codes in `malt-compat` only.** No other crate may import `vte` or handle escape sequences. ✅ Clean.
+2. **OS calls in `malt-platform` only.** No `nix`, `windows-sys`, `libc`, `std::os::unix` elsewhere. ✅ Clean — `PermissionsExt` violation in `mash/src/executor.rs` fixed in Phase A.
+3. **`malt-protocol` is dependency-free within workspace.** Only external deps. ✅ Clean.
+4. **`malt-plugin-sdk` has zero internal deps.** ✅ Clean — only external deps (wasmtime, serde, thiserror).
+5. **All `unsafe` blocks require `// SAFETY:` comments.** ✅ Clean — enforced throughout, including the 2026-07-24 HCS port (27 unsafe blocks, all documented).
+6. **No `unwrap()` or `expect()` in non-test code.** ✅ Clean — all found uses are in `#[cfg(test)]` blocks.
+7. **VNP is the only inter-component protocol.** ✅ Clean. Full bitpack envelope used post-handshake for all message types.
+8. **Shell ships when POSIX conformance suite passes.** Smoosh (183/183 Windows, 186/186 WSL) + Modernish. Not yet wired to CI. Fix in Phase C.
+9. **Layer violations are compile errors.** No upward dependencies in the crate graph. ✅ Clean.
+10. **Invariants are CI-enforced via `deny.toml`.** ✅ Clean — `deny.toml` added in Phase A.
+11. **Vendor, never depend on unstable siblings.** Added 2026-07-24 (ADR-0001). If something from malt-stack or another sibling project is useful, port it in as owned source — never a live path/git dependency.
+12. **No silent scope-jumps; commit at real checkpoints.** Added 2026-07-24. If a task starts looking like it needs a bigger rethink, write that down (an ADR draft, a backlog item) instead of pivoting into it mid-task.
+
+---
+
+## How Work Goes Wrong Here
+
+Five recurring failure classes, each learned the expensive way. They are
+listed together because they are easy to confuse and their fixes differ.
+
+### 1. It exists, it is tested, and nothing calls it
+
+**The most common defect in this repo is not a missing mechanism.** Six
+instances, each found only after someone started building a replacement:
+
+| What existed | What was missing |
+|---|---|
+| `TokenStore`/`AuthContext`/`RateLimiter`, fully unit-tested | never wired into `build_router` — every route open |
+| `AuthorityTracker`, complete with tests | driven only by `AttachClient`, which only a *test* ever sent |
+| `InputClaim`/`InputAuthorityChanged` schema + codec constants | no handler anywhere |
+| `OutputChunk` in `schemas/shell.vexil`, doc saying "MASH sets it at emission time" | nothing ever emitted one |
+| 12 of 14 `malt-platform::isolation` modules, 13–17 tests each | zero callers outside their own crate |
+| `malt-elevate`'s ten privileged operations | nine returned `stub_success` — success for work never done |
+
+So a survey answering *"does this exist?"* is the wrong survey. It returned
+"no, build it" six times when the answer was "yes, wire it."
+
+**A survey must establish, in this order:**
+
+1. **Does it exist?** Search schemas, codec constants and type definitions —
+   not just function names. `OutputChunk` was found only by reading
+   `schemas/`, with its `@type` constant already allocated.
+2. **Is it called from production code?** Grep for callers, **excluding the
+   defining crate and all test files.** This is the step that gets skipped.
+3. **Is that caller reachable?** `AttachClient` had exactly one sender and it
+   was a test, which made the tracker look wired for months.
+4. **Do its tests exercise behaviour, or construct types?** See class 4.
+5. **Only then** check sibling projects for a working equivalent.
+
+**Record the survey.** If it changes the shape of the work it belongs in
+`docs/findings/` before planning proceeds — see
+`docs/findings/2026-07-26-isolation-prior-art-survey.md`, including its "what
+this survey did not establish" section. A survey that records only what was
+found invites the next person to over-trust it.
+
+### 2. Wired backwards
+
+Rarer than class 1 and harder to catch, because **every reachability check
+passes.** The mechanism exists, is called, and is reachable — and is wrong.
+
+`docs/briefs/007`: the Unix PTY drops the slave fd and hands the child dups of
+the *master*, so nothing holds the slave and the first read returns `EIO` with
+zero bytes. Unix compat panes have never delivered output. The code says what
+it does in a comment, and the comment reads as deliberate.
+
+**When a subsystem has never been exercised on a platform, "it compiles and
+has callers" tells you nothing.** Run it.
+
+### 3. A value that re-derives its own truth
+
+**Nothing may re-derive at use time what was decided at creation time.**
+
+| What was re-derived | From what | Result |
+|---|---|---|
+| A session's isolation level | reconstructed separately by each surface | create, list and query could disagree — spec 007 |
+| How a session is contained | two `Env` fields, one inert, one working | reported vs actual containment could drift — spec 008 |
+| Whether an HCS handle is fake or native | the `MALT_HCS_FAKE` env var, read *again* at wait/close | a fake handle reached the native API and faulted the process — `docs/findings/2026-07-27-elevate-build-lock-and-teardown.md` |
+
+The third is sharpest: the global was correct when the handle was created and
+wrong when it was used. Nothing was concurrent-unsafe in the usual sense — the
+answer simply expired. **A branch on mutable global state is a decision with
+no expiry date, and the value it governs does not know when it went stale.**
+
+Every fix had one shape: **the value carries its own provenance.** One
+isolation status every surface reads; one carrier conveying containment; a
+handle that remembers the backend that made it.
+
+**When reviewing:** if a function decides *what kind of thing* its argument is
+by consulting configuration, an env var, a feature flag or a global registry,
+ask why that fact is not travelling with the argument. "It was set correctly
+when we started" is the defect, stated aloud.
+
+### 4. Tests that pass by construction
+
+Test *count* is not evidence of function.
+
+Two real `job_objects.rs` bugs survived months of green tests — an undersized
+`IO_COUNTERS` struct silently failing every job creation, and a hardcoded
+active-process-limit of 1 silently rejecting the second process in any job —
+because the tests built structs instead of calling Win32. Both were found the
+day someone wrote a test that made the real call.
+
+**If a file's tests only check `Send`/`Debug` bounds or construct types
+directly, that is a reason to add a test that calls the real thing — not
+evidence the code works.** 54 isolation tests passing in 0.01 s is what this
+looks like from the outside.
+
+### 5. Shared process state, and where verification happens
+
+**When a test flakes, suspect a different test.** Four instances:
+
+- `mash/tests/executor.rs` — a test called `set_current_dir` without holding
+  `CWD_LOCK`. It never failed itself; it yanked the CWD out from under
+  whichever lock-holding test was running, so the failures surfaced in
+  `heredoc_redirect_feeds_stdin_to_cat` and
+  `exec_input_redirect_registers_readable_shell_fd` instead. It looked like
+  three independent flaky tests for months.
+- `CWD_LOCK` had 9 of 19 call sites using poison-fragile `.lock().unwrap()`,
+  so one panic cascaded into unrelated failures. Use
+  `.lock().unwrap_or_else(|e| e.into_inner())`.
+- `malt-platform/src/fs.rs`'s `MALT_SESSION_ID` env-var tests, same pattern.
+- An unjoined HCS reaper thread read an env var after the test that set it had
+  already finished — which is class 3 as well.
+
+If a test mutates shared process state (CWD, env vars, global statics) without
+holding a lock for its whole duration, treat that as a bug the moment anything
+flakes.
+
+**`thread::sleep` cannot establish a precondition**, only make a race likely to
+resolve one way. Four daemon tests used `sleep(50ms)` to mean "the first
+command has started"; under parallel load it hadn't, and `gateway_backend.rs`
+failed 3 runs in 5. Wait on observable state —
+`Coordinator::execution_queue_state` exists for this. Note `active` is set by
+the worker *before* the control actor records history, so waiting on `active`
+is not sufficient when the assertion is about history.
+
+**Where you verify changes what you can see.** An unjoined thread faulting at
+teardown reproduced **100% under agent harnesses and never once in a human
+terminal** — console I/O is slow enough to close the timing window. The two
+environments that run *without* a console are **CI and the helper service** —
+which is to say, production.
+
+So a suite that passes in a terminal has not been tested in the context it
+ships into, and **when only automation reproduces a crash, suspect the code
+before the automation.** Most of 2026-07-27 went the other way.
+
+---
+
+## Working Practice
+
+### Session ritual
+
+This project has been abandoned-via-rewrite three times (vexil-v2 → malt →
+malt-stack) after multi-day uncommitted sprints. Two habits prevent a fourth:
+
+1. **Rebuild + retest before resuming after any gap.** Don't trust a status
+   doc — including this one. Run the gates below.
+2. **Commit at real checkpoints, not multi-day piles.** If a change feels too
+   big to commit, that is a signal to commit sooner, not later.
+
+### No silent scope-jumps
+
+If something looks like it needs a bigger rethink mid-task, write it down — an
+ADR draft, a backlog entry, a brief — instead of pivoting into it. A
+scope-jump written down is a proposal; one absorbed mid-feature is how this
+project was abandoned three times. (Constitution IX.)
+
+### Feature work goes through Spec Kit
+
+`/speckit-specify` → `/speckit-plan` → `/speckit-tasks` → `/speckit-implement`,
+producing `specs/NNN-feature/`. The `malt` preset appends this repo's standing
+rules to each artifact. Use `/speckit-malt-brief` for work that is smaller
+than a feature but larger than a backlog line.
+
+---
+
+## Build, Test, Verify
+
+### The gates
+
+```bash
+cargo build --workspace
+cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+**`vexilc` must be on PATH.** `malt-protocol`'s `build.rs` shells out to it,
+so *nothing* in the workspace compiles without it — and it fails as
+`failed to run vexilc: No such file or directory` from a build script, which
+reads like a code error rather than a missing prerequisite. CI installs a
+pinned revision (`.github/actions/setup-vexilc`); pin the same one locally:
+
+```bash
+cargo install --git https://github.com/vexil-lang/vexil     --rev fc8c51f31f1f25f0b2885fc98696ad1c5ee543c7 vexilc
+```
+
+Pinned rather than latest on purpose: a different `vexilc` can emit different
+generated code, so an unpinned local build compiles something other than what
+CI compiles.
+
+**Run clippy with `-D warnings`.** Plain `cargo clippy` is not the gate: a
+warn-level lint (`items_after_test_module`) sat in `gateway_backend.rs` while
+local runs looked clean, failed CI's blocking job, and — because clippy runs
+before tests — meant **the test suite had not run in CI for ~110 commits.**
+
+Smoosh POSIX conformance is a gate whenever `mash` or `malt-tools` changes.
+When it does not apply, say so explicitly, so its absence is not read as an
+oversight.
+
+```powershell
+cargo build -p mash
+$env:MASH = (Resolve-Path .\target\debug\mash.exe).Path
+cargo test -p mash --test smoosh_runner smoosh_conformance_tests -- --nocapture
+# Expected: passed: 183, skipped unsupported: 3
+
+cargo test -p mash --test executor
+# Expected: 228 passed, 0 failed
+```
+
+### Test conventions
+
+- `tempfile::tempdir()` for anything touching the filesystem.
+- VNP listener tests bind random ports (`bind("127.0.0.1:0")`).
+- Supervisor tests spawn real processes (`echo`, `sleep`/`ping`).
+- Gateway route tests use a mock backend via `tower::ServiceExt::oneshot`.
+- Plugin SDK tests build minimal WASM with the `wat` crate.
+- No test requires a GPU — `maltty` is build-verified only.
+- A test that cannot run truthfully on this host **skips loudly with the
+  reason**. It never passes quietly, and it is never deleted to make a suite
+  green (`docs/briefs/007` is `#[ignore]`d with its reason, not `#[cfg]`-ed
+  out).
+
+### Linux: use the WSL mirror
+
+```bash
+bash scripts/wsl-mirror.sh                          # sync HEAD, build, test workspace
+bash scripts/wsl-mirror.sh -- -p malt-daemon --test coordinator
+```
+
+Keeps a real git clone on the **Linux** filesystem (`~/malt`) and builds into
+`/tmp/malt-build`, because building from `/mnt/c` goes through 9p and hits the
+NTFS caching problem above. Sync is fetch + hard reset from the Windows
+checkout, so the mirror is disposable — **never edit or commit there.** It
+resolves worktree `.git` files (whose `gitdir:` is a Windows path) so it works
+from a worktree as well as the main checkout.
+
+**Why it matters, not just that it is faster.** Three cross-platform defects
+were found on 2026-07-27 only once Linux tests could actually run, and the
+inverted Unix PTY (`docs/briefs/007`) was root-caused in a handful of
+50-second cycles. Through CI that is ~3 minutes per bit of information, and
+CI's Linux job is advisory — so nothing forces anyone to look. **If a change
+touches `malt-platform`, the daemon's process/PTY paths, or anything
+`#[cfg]`-gated, run it here before pushing.**
+
+### NTFS caching (critical)
+
+On WSL with NTFS-backed repo paths, cargo caching is unreliable due to NTFS mtime granularity.
+Use `CARGO_TARGET_DIR=/tmp/malt-build` for builds on WSL, or `cargo clean -p mash` followed by rebuild on Windows.
+Stale binary symptoms: test failures that don't match expected behavior from source changes.
+
+### Binary paths
+
+- **Repo build (default):** `target/debug/mash`
+- **WSL build:** `/tmp/malt-build/debug/mash`
+
+### CI
+
+`.github/workflows/ci.yml`. **Blocking:** Gates (Windows) and Smoosh (Windows,
+path-filtered to `crates/mash|malt-tools`). **Advisory:** cross-platform
+build+test and isolation-capability reporting on Windows/Linux/macOS.
+
+Advisory means nothing forces anyone to look — so look. Three cross-platform
+defects surfaced on 2026-07-27 the first time Linux tests actually ran.
+
+**"Last known green" is `gh run list --branch main`, not a list in this file.**
+A hardcoded checkpoint list was kept here until 2026-07-28 and was stale
+within days of every entry.
+
+---
+
+## Repo Map
 
 ```
 specs/                        # GitHub Spec Kit territory (adopted 2026-07-24) — per-feature
@@ -209,7 +430,7 @@ schemas/
   persist/                     # Persistence schemas
 ```
 
-## Crate Architecture (strict layering — no upward deps)
+### Crate architecture (strict layering — no upward deps)
 
 ```
 L0  malt-platform     OS abstractions: PTY, process, signals, sockets, spawn_with_pty, isolation
@@ -240,25 +461,7 @@ Clients:
     malt-web           Browser terminal: SvelteKit 2 + Svelte 5
 ```
 
-## Hard Invariants
-
-These are non-negotiable. Violating any is a bug. (Also captured, with the
-day's process lessons added, in `.specify/memory/constitution.md`.)
-
-1. **VT codes in `malt-compat` only.** No other crate may import `vte` or handle escape sequences. ✅ Clean.
-2. **OS calls in `malt-platform` only.** No `nix`, `windows-sys`, `libc`, `std::os::unix` elsewhere. ✅ Clean — `PermissionsExt` violation in `mash/src/executor.rs` fixed in Phase A.
-3. **`malt-protocol` is dependency-free within workspace.** Only external deps. ✅ Clean.
-4. **`malt-plugin-sdk` has zero internal deps.** ✅ Clean — only external deps (wasmtime, serde, thiserror).
-5. **All `unsafe` blocks require `// SAFETY:` comments.** ✅ Clean — enforced throughout, including the 2026-07-24 HCS port (27 unsafe blocks, all documented).
-6. **No `unwrap()` or `expect()` in non-test code.** ✅ Clean — all found uses are in `#[cfg(test)]` blocks.
-7. **VNP is the only inter-component protocol.** ✅ Clean. Full bitpack envelope used post-handshake for all message types.
-8. **Shell ships when POSIX conformance suite passes.** Smoosh (183/183 Windows, 186/186 WSL) + Modernish. Not yet wired to CI. Fix in Phase C.
-9. **Layer violations are compile errors.** No upward dependencies in the crate graph. ✅ Clean.
-10. **Invariants are CI-enforced via `deny.toml`.** ✅ Clean — `deny.toml` added in Phase A.
-11. **Vendor, never depend on unstable siblings.** Added 2026-07-24 (ADR-0001). If something from malt-stack or another sibling project is useful, port it in as owned source — never a live path/git dependency.
-12. **No silent scope-jumps; commit at real checkpoints.** Added 2026-07-24. If a task starts looking like it needs a bigger rethink, write that down (an ADR draft, a backlog item) instead of pivoting into it mid-task.
-
-## CLI Commands (all working)
+### CLI commands
 
 ```
 malt                          # Auto: start daemon → create session → attach TUI
@@ -291,67 +494,46 @@ first start); nothing to configure for normal CLI/agent use on the same
 machine. See `docs/BACKLOG.md`'s Gateway-auth entry for what does and
 doesn't have a token mechanism yet.
 
-## What's Implemented
+---
 
-### Daemon (malt-daemon)
-- **Message bus:** Per-session synchronous dispatcher, bounded ring buffers, priority eviction (Low→Normal→High), Reliable never evicted, Critical separate inbox, flow control (25% per-producer, 60% global)
-- **Session-sharded executor:** Per-session thread with own bus, authority tracker, compat translator, mash shell environment
-- **Mash integration:** In-process POSIX shell — parse → execute_list → capture stdout/stderr → feed compat translator
-- **Coordinator:** Session lifecycle, message routing, output retrieval via reply channels; `DebouncedStore` field; counter restore from `DaemonState` on startup; session name uniqueness (auto-suffix `-2`…`-100`); `persist_daemon_state` after every create/destroy
-- **Process supervisor:** spawn_with_pty, kill, check_exited, resize (for future compat pane processes) — not yet wired to session isolation tiers, unlike mash's own external-command spawn path (see `docs/BACKLOG.md`)
-- **Session store:** Bitpack persistence (Pack/Unpack), atomic writes (temp+rename → `.bak` backup), corruption quarantine (`.corrupt.{ts}.vxb`), save/load/list/delete; `DebouncedStore` wrapper with background 1s flush thread and `flush_all()`
-- **Command lifecycle events (2026-07-25, spec 004):** `GET /sessions/{id}/events` streams `command_started`/`command_finished` as Server-Sent Events, with `Last-Event-ID` resume from a bounded per-session event log (1024) and a defined slow-consumer policy — a subscriber that stops reading is told it lagged and dropped, never accommodated by growing its 256-event channel. Published from the same two control-actor handlers that drive command history, so the two cannot disagree. `malt watch` is the first-party consumer. **Note: this does not use the `Bus`** — its `Reliable` tier grows without bound, which is unsafe for an untrusted subscriber; the Bus still has zero consumers, see `docs/BACKLOG.md`. See `specs/004-command-lifecycle-events/`.
-- **Command execution history (2026-07-25, spec 003):** `SessionExecutor` owns a `PaneRuntime`; `run_mash_command` pushes an *open* `CommandBlock` before executing and finalizes it after, so a daemon that stops mid-command persists an honestly-unfinished record. Persisted via `PersistedPane.command_blocks`, restored on `spawn_with_cwd` (which also resumes `next_command_id` from the restored max). Retrieved via `GET /sessions/{id}/history`, `malt history`, or the MCP `get_command_history` tool — a dormant session answers from its snapshot rather than being woken. See `specs/003-command-execution-history/`.
-- **VNP listener:** TCP socket on port+1, **authenticated** VNP handshake, typed bitpack envelope dispatch post-handshake — KeyEvent/Resize/FrameAck/InputClaim inbound, RenderBatch/InitialState/InputAuthorityChanged outbound. No JSON in the message loop.
-- **VNP authentication (2026-07-25, spec 005 US1):** the transport used to accept every connection and send the session inventory during the handshake, before establishing any identity — audit A-01. It now validates the same bearer token as the HTTP surface *before* disclosing anything; the inventory is passed to the handshake as a `FnOnce`, so "authenticate first" is structural rather than a convention someone has to remember. A 10 s deadline applies before the first blocking read (set on the stream, not the write-side clone — a receive timeout is per-descriptor on Windows), and `MAX_PENDING_HANDSHAKES` bounds unidentified connections.
-- **Raw input + input authority (2026-07-25, spec 005):** `send` writes raw bytes to whatever is reading — it no longer submits them as a command to execute, which had made it impossible to answer a prompt and possible to run text the caller never intended. Input carries an `InputOrigin`; at most one attached client holds authority, non-holders are refused with a reason naming the holder rather than silently dropped, and authority releases on disconnect (clean or abrupt) with no timeout. `GET /sessions/{id}/authority` reports the holder at Read scope. `POST /sessions/{id}/eof` (`malt eof`) ends the current read so a command consuming to end-of-input can finish. See `specs/005-raw-input-authority/` and `docs/findings/2026-07-25-spec-005-quickstart-verification.md`.
-- **Streaming command output (2026-07-26, spec 006):** a running command's output used to reach anyone only once at completion. `mash`'s `Env` now carries an `OutputSink`; the session worker installs one per command, and every leaf dispatch point (builtins, in-process tools, external processes, pipelines) forwards output to it as produced rather than after the fact — including `cat`/`grep`/`sed`/`head`, whose `ToolFn` signature grew a writer alongside its reader so a tool emits as it works (`wc` still emits once: it has exactly one summary line, known only once input is exhausted). The control actor feeds the compat grid and dispatches a `RenderBatch` per chunk, and a bounded per-session `OutputLog` (4 MiB, byte- not count-bounded, with a reserved subscriber slot so a lagged consumer can always be told so rather than silently dropped) lets both VNP clients and `GET /sessions/{id}/output/stream` (SSE, `Last-Event-ID` resume) resume from a position instead of only seeing what arrives after they attach. `malt watch --output` is the first-party CLI consumer. Command substitution and pipeline stages explicitly clear the sink on their `env.clone()` (a captured value or an internal pipe must never leak to a live viewer), and redirected output still lands only in the file — the writer is an additional destination, never a replacement for the buffer `apply_output_redirects` acts on. See `specs/006-streaming-command-output/` and `docs/BACKLOG.md`'s now-closed "Gateway/agent-driven execution never notified" entry.
-- **Input bridge:** `input_bridge` module — `vnp_key_to_input_event` converts VNP `KeyEvent` → mash `InputEvent`
-- **RendererHost + Editor wiring:** Session executor owns a `RendererHost` and `Editor`; `RegisterVnpClient` returns `InitialState`, `KeyInput` drives the line editor, `dispatch_render` pushes `RenderBatch` to per-client `SyncSender<RenderBatch>(4)` channels
-- **Gateway backend:** GatewayBackend impl wrapping Coordinator, exec via RunCommand with reply channel
-- **Config loading:** `VxDecoder` trait + `DaemonConfig`/`UserConfig` impls; `load_or_default_daemon/user` parse real `.vx` files via `vexil_lang::compile` + `vexil_store::parse`; missing fields use `Default`, wrong-type fields log `warn` and use `Default`
-- **XDG storage:** daemon startup uses `malt_config::paths::data_dir()` for all persistence; `std::fs::create_dir_all` ensures path exists before `SessionStore` construction
-- **Session isolation (2026-07-24):** `IsolationTier` is applied for real on the mash external-command spawn path via Windows Job Objects — see ADR-0001 and `docs/findings/2026-07-24-live-daemon-session.md`. Backgrounded commands (`&`) through the daemon's `/exec` route don't appear to survive — not yet root-caused, see `docs/BACKLOG.md`.
+## Implementer Notes
 
-### VT Emulator (malt-compat)
-- Cell/Row grid, TerminalGrid (cursor, scroll, erase, resize)
-- VT parser via vte 0.15 (SGR colors/attributes, cursor movement, erase, scroll)
-- CompatTranslator: feed bytes → VtPassthrough FrameElement
+### Code standards
 
-### Renderer (malt-renderer)
-- FrameWalker: tree traversal, depth limit (64), node limit (10K), capability degradation (TrueColor/Basic256/None)
-- DirtyTracker: frame diffing for delta-only emission
-- ClientState: frame_seq, lagging detection (30 frames), shedding (10s timeout)
-- RendererHost: pipeline orchestration, per-client state, InitialState snapshots
-- **Known bug (2026-07-24):** output grid rendering has a cursor-position "staircase" bug — successive lines render with growing left-padding instead of resetting to column 0. P0 in `docs/BACKLOG.md`; the single biggest known gap to daily-driver usability.
+- `thiserror` for library errors; `anyhow` in binary crates only.
+- `tracing` for all logging. No `eprintln!`/`println!` in library crates.
+- `#[non_exhaustive]` on public enums that will grow.
+- `#[derive(Debug, Clone, PartialEq)]` on data types.
+- Explicit re-exports only — no `pub use foo::*`.
+- Rust edition 2021.
+- Key deps: `vte` 0.15, `axum` 0.8, `ratatui` 0.30, `crossterm` 0.29, `clap` 4, `reqwest` 0.13, `wasmtime` 29, `wgpu` 24, `winit` 0.30, `windows-sys` 0.61.
 
-### API Gateway (malt-gateway)
-- HTTP REST: axum 0.8, 17 endpoints + /shutdown
-- GatewayBackend trait (extractable subsystem)
-- Auth: scopes (Monitor < Read < Interact < Admin), TokenStore with bearer tokens, token file persistence
-- SSE event stream: `GET /sessions/{id}/events` (Read scope), `Last-Event-ID` resume, bounded per-subscriber delivery
-- SSE output stream (2026-07-26, spec 006): `GET /sessions/{id}/output/stream` (Read scope) — same `Last-Event-ID`/bounded-delivery shape as the event stream, but carrying base64-encoded stdout/stderr chunks instead of lifecycle events
-- Token bucket rate limiter
-- Shadow tree: FrameElement → semantic JSON (styled spans with RGB)
+### Type notes
 
-### MCP Server (malt-mcp)
-- JSON-RPC 2.0 over stdio
-- 7 tools: list_sessions, create_session, run_command, get_output, get_command_history, send_input, destroy_session
-- Delegates to daemon HTTP API — confirmed working by calling the underlying gateway routes directly (`/sessions/{id}/send` etc.), not just by reading the code
+- FrameElement/RenderCommand **union variants** have NO `_unknown` field
+- Message structs (RenderBatch, InitialState, etc.) DO have `_unknown: Vec<u8>`
+- `style` in FrameElement::Text/Paragraph is `Box<ResolvedStyle>` — `ResolvedStyle` has a `token_name: Option<String>` field (added after the initial schema; six test fixtures missed it and broke the build until fixed 2026-07-24 — if you hand-construct a `ResolvedStyle` in a test, don't forget it)
+- `direction` in FrameElement::Split is `Box<Direction>`
+- `child` fields are `Box<FrameElement>`, `fallback` is `Option<Box<FrameElement>>`
+- `rgb` type = `(u8, u8, u8)` tuple in generated code
+- `PaneId(u32)`, `SessionId(u32)` — NOT Copy, use `.clone()`
+- `encode_message`/`encode_envelope` return `Result` (not infallible)
+- `ToolFn` is `fn(&[String], &mut dyn Read)` — a *reader*, not a pre-read
+  `&[u8]` (changed 2026-07-25). Tools that consume to the end call
+  `malt_tools::read_all`; tools that stop early (`head -n`) must read
+  incrementally, or they wait for an end a live session never reaches. There
+  are three tool-dispatch sites in `executor.rs` and all call `tool_stdin` —
+  keep it that way; guarding them individually is how two were once missed.
+- mash `Env` created per session thread via `Env::from_os()` + `set_interactive(true)`
+- mash `execute_list` is synchronous — perfect for session executor's thread model
+- `Env` carries one `IsolationContext`; its shared established state holds the
+  Windows Job Object (or, when implemented, HCS container identity). Clones
+  share that carrier with coordinator status, so reports cannot name a
+  different mechanism from the MASH spawn path.
 
-### WASM Plugin Host (malt-plugin-sdk)
-- wasmtime 29 integration with fuel metering
-- PluginManifest (JSON): name, version, permissions, hooks, fuel_budget
-- PluginHost: load/unload/call with fuel budgets
-- Zero internal workspace dependencies
+---
 
-### Clients
-- **malt-bin:** clap CLI with auto-workflow (start daemon → create session → attach TUI)
-- **malt-tui:** ratatui rendering (DrawText, DrawRect, Clear, clip), crossterm input, `VnpConnection` uses full bitpack handshake + typed envelope for all messages (send_key_event, send_resize, poll_commands), styled output with RGB colors
-- **maltty:** wgpu window, surface setup, dark background clear, daemon HTTP connection, input mapping (scaffold — text rendering pending)
-- **malt-web:** SvelteKit MVP, styled span grid rendering, keyboard input, session polling
-
-## Priorities (correctness-first, see ADR-0003)
+## Where the Project Is Going
 
 The phased feature roadmap that used to live here (Phase A–I) is retired
 as of 2026-07-24 — see `docs/adr/ADR-0003-correctness-first-strategic-pivot.md`
@@ -414,184 +596,10 @@ maintaining multiple competing client experiences. `malt-tui` (VNP mode)
 is the single reference human client; `maltty` and `malt-web` are frozen
 as-is.
 
-### Historical: Phase A — Foundation Hardening ✅ COMPLETE
-- ✅ Fix Invariant 2: moved `PermissionsExt` usage into malt-platform
-- ✅ Fix Invariant 5: added `// SAFETY:` to `malt-platform/src/env.rs:25,27`
-- ✅ Add `deny.toml` to workspace root
-- ✅ Wire-format golden file tests for envelope encode/decode stability
-
-### Historical: Phase B1 — Config + Persistence ✅ COMPLETE
-(specs: `docs/superpowers/specs/2026-03-31-phase-b1-persistence-hardening-design.md`)
-- ✅ malt-config: `VxDecoder` trait + real `.vx` file parsing via `vexil_lang::compile`
-- ✅ Corruption handler: `.corrupt.{ts}.vxb` quarantine, `.bak` backup on atomic overwrite
-- ✅ Session name uniqueness + numeric suffix (`-2`…`-100`) on conflict
-- ✅ Persistence debouncing: `DebouncedStore` with 1s timer + `flush_all()`
-- ✅ XDG storage conventions: `malt_config::paths::data_dir()` wired at daemon startup
-- ✅ Counter restore: `Coordinator` loads `DaemonState` on construction
-
-## Code Standards
-
-- `thiserror` for library errors; `anyhow` in binary crates only.
-- `tracing` for all logging. No `eprintln!`/`println!` in library crates.
-- `#[non_exhaustive]` on public enums that will grow.
-- `#[derive(Debug, Clone, PartialEq)]` on data types.
-- Explicit re-exports only — no `pub use foo::*`.
-- Rust edition 2021.
-- Key deps: `vte` 0.15, `axum` 0.8, `ratatui` 0.30, `crossterm` 0.29, `clap` 4, `reqwest` 0.13, `wasmtime` 29, `wgpu` 24, `winit` 0.30, `windows-sys` 0.61.
-
-## Type Notes (for implementers)
-
-- FrameElement/RenderCommand **union variants** have NO `_unknown` field
-- Message structs (RenderBatch, InitialState, etc.) DO have `_unknown: Vec<u8>`
-- `style` in FrameElement::Text/Paragraph is `Box<ResolvedStyle>` — `ResolvedStyle` has a `token_name: Option<String>` field (added after the initial schema; six test fixtures missed it and broke the build until fixed 2026-07-24 — if you hand-construct a `ResolvedStyle` in a test, don't forget it)
-- `direction` in FrameElement::Split is `Box<Direction>`
-- `child` fields are `Box<FrameElement>`, `fallback` is `Option<Box<FrameElement>>`
-- `rgb` type = `(u8, u8, u8)` tuple in generated code
-- `PaneId(u32)`, `SessionId(u32)` — NOT Copy, use `.clone()`
-- `encode_message`/`encode_envelope` return `Result` (not infallible)
-- `ToolFn` is `fn(&[String], &mut dyn Read)` — a *reader*, not a pre-read
-  `&[u8]` (changed 2026-07-25). Tools that consume to the end call
-  `malt_tools::read_all`; tools that stop early (`head -n`) must read
-  incrementally, or they wait for an end a live session never reaches. There
-  are three tool-dispatch sites in `executor.rs` and all call `tool_stdin` —
-  keep it that way; guarding them individually is how two were once missed.
-- mash `Env` created per session thread via `Env::from_os()` + `set_interactive(true)`
-- mash `execute_list` is synchronous — perfect for session executor's thread model
-- `Env` carries one `IsolationContext`; its shared established state holds the
-  Windows Job Object (or, when implemented, HCS container identity). Clones
-  share that carrier with coordinator status, so reports cannot name a
-  different mechanism from the MASH spawn path.
-
-## Testing
-
-- 1,200+ tests across the workspace, all green as of 2026-07-24 (see the
-  Session Ritual above — re-verify after any gap, don't trust this number
-  blindly).
-- Tests use `tempfile::tempdir()` for file I/O isolation.
-- VNP listener tests use random ports (`bind("127.0.0.1:0")`).
-- Supervisor tests spawn real processes (echo, sleep/ping).
-- Gateway route tests use mock backend with `tower::ServiceExt::oneshot`.
-- Plugin SDK tests use `wat` crate for minimal WASM modules.
-- No tests requiring GPU (maltty build-only verification).
-- **Shared-process-state races are a real, recurring test bug class in this
-  repo.** A third was found 2026-07-25 in `mash/tests/executor.rs`:
-  `function_prefix_redirect_expansion_precedes_assignment_word_expansion`
-  called `set_current_dir` without holding `CWD_LOCK`. It never failed
-  itself — it yanked the CWD out from under whichever lock-holding test was
-  running, so the failures surfaced in `heredoc_redirect_feeds_stdin_to_cat`
-  and `exec_input_redirect_registers_readable_shell_fd`. That is why this
-  looked like three independent flaky tests for months. **When a test flakes,
-  suspect a different test**, and grep the whole binary for the shared-state
-  mutation rather than debugging the test that reported the failure.
-
-- **`thread::sleep` cannot establish a precondition**, only make a race
-  likely to resolve one way. Fixed 2026-07-25 across four daemon tests that
-  used `sleep(50ms)` to mean "the first command has started by now"; under
-  parallel load it hadn't, and `gateway_backend.rs` failed 3 runs in 5. Wait
-  on observable state instead — `Coordinator::execution_queue_state` exists
-  for exactly this. Note that `active` is set by the worker *before* the
-  control actor records history, so waiting on `active` is not sufficient
-  when the assertion is about history; wait on the record itself.
-
-- Two earlier instances of the same class were found and fixed 2026-07-24: a `CWD_LOCK` mutex
-  protecting tests that call `cd` (mutating the process-wide working
-  directory) wasn't held by two tests doing relative-path file I/O, and 9
-  of its 19 call sites used poison-fragile `.lock().unwrap()` instead of
-  `.lock().unwrap_or_else(|e| e.into_inner())`, so one panic cascaded into
-  unrelated test failures. Same pattern separately in
-  `malt-platform/src/fs.rs`'s `MALT_SESSION_ID` env-var tests. If a test
-  mutates shared process state (CWD, env vars, global statics) and doesn't
-  hold a lock for its whole duration, treat that as a bug, not a
-  coincidence, if it ever flakes.
-- **Two real bugs were found in `job_objects.rs` in 2026-07 specifically
-  because new tests exercised the real Win32 calls instead of constructing
-  structs directly** (undersized `IO_COUNTERS` struct silently failing
-  every job creation; a hardcoded active-process-limit of 1 silently
-  rejecting the second process in any job). If a file's tests only check
-  `Send`/`Debug` bounds or construct types directly without calling the
-  real functions, that's a signal to add a test that actually does, not
-  evidence the code works.
-
-### Windows PowerShell quick reference
-```powershell
-cargo build -p mash
-$env:MASH = (Resolve-Path .\target\debug\mash.exe).Path
-cargo test -p mash --test smoosh_runner smoosh_conformance_tests -- --nocapture
-# Expected: passed: 183, skipped unsupported: 3
-
-cargo test -p mash --test executor
-# Expected: 228 passed, 0 failed
-```
-
-### NTFS Caching (Critical)
-On WSL with NTFS-backed repo paths, cargo caching is unreliable due to NTFS mtime granularity.
-Use `CARGO_TARGET_DIR=/tmp/malt-build` for builds on WSL, or `cargo clean -p mash` followed by rebuild on Windows.
-Stale binary symptoms: test failures that don't match expected behavior from source changes.
-
-### Linux builds and tests: use the WSL mirror (added 2026-07-27)
-
-```bash
-bash scripts/wsl-mirror.sh                          # sync HEAD, build, test workspace
-bash scripts/wsl-mirror.sh -- -p malt-daemon --test coordinator
-```
-
-Keeps a real git clone on the **Linux** filesystem (`~/malt`) and builds into
-`/tmp/malt-build`, because building from `/mnt/c` goes through 9p and hits the
-NTFS caching problem above. Sync is fetch + hard reset from the Windows
-checkout, so the mirror is disposable — **never edit or commit there.** It
-resolves worktree `.git` files (whose `gitdir:` is a Windows path) so it works
-from a worktree as well as the main checkout.
-
-**Why it matters, not just that it is faster.** Three cross-platform defects
-were found on 2026-07-27 only once Linux tests could actually run, and the
-inverted Unix PTY (`docs/briefs/007`) was root-caused in a handful of
-50-second cycles. Through CI that is ~3 minutes per bit of information, and
-CI's Linux job is advisory — so nothing forces anyone to look. **If a change
-touches `malt-platform`, the daemon's process/PTY paths, or anything
-`#[cfg]`-gated, run it here before pushing.**
-
-### Binary Paths
-- **Repo build (default):** `target/debug/mash`
-- **WSL build:** `/tmp/malt-build/debug/mash`
+---
 
 ## Known Issues (evidence-based)
 
 - **Process substitution (`<(...)`, `>()`) unimplemented.** Lexer tokenizes these as `Word`, executor has no support. No executor code exists for process substitution.
 - **`{`/`}` brace tokenization context sensitivity.** Current `is_word_break` treats `{` and `}` contextually, which may need further analysis for edge cases.
 - **Terminal grid rendering "staircase" bug** and **backgrounded commands not surviving through `/exec`** — see `docs/BACKLOG.md` P0/P1, both found 2026-07-24 by actually running the daemon, not by reading code.
-
-## Historical Changes (2026-04-10, pre-dormancy)
-
-Real fixes at the time, kept here as a reference for the specific
-before/after behavior — not a current status list. See git log and
-`docs/adr/`/`docs/BACKLOG.md` for anything after 2026-07-24.
-
-### 1. `#` removed from `is_word_break` (`lexer.rs`)
-- **Before**: `#` was in the word-break character set, causing `echo hello#world` to tokenize as `echo`, `hello` (with `#world` silently dropped as a comment).
-- **After**: `#` only starts a comment at token-start position (handled at lexer.rs:949). Inside a word, `#` is a literal character. POSIX-compliant behavior verified with Smoosh 183/183.
-
-### 2. `${#@}` and `${#*}` return parameter count (`expander.rs`)
-- **Before**: `${#@}` and `${#*}` fell through to `env.get_str(name).chars().count()`, returning the character length of the joined string (e.g., 5 for "a b c") instead of the count of positional parameters.
-- **After**: Added explicit handling for `name == "@"` and `name == "*"` in the `${#VAR}` expansion code path (expander.rs:498-530), returning `env.get_str("#")` (the count of positional parameters).
-
-### 3. Multi-pass alias expansion (`parser.rs`)
-- **Before**: `preparse_expanded` ran a single pass over alias expansion, so `alias LOOP='while'; alias DO='do'; alias DONE='done'` wouldn't fully expand (LOOP wouldn't see that DO is an alias).
-- **After**: Refactored into `preparse_expanded` (public, iterates up to 100 passes until output is stable) and `preparse_expanded_pass` (single-pass logic). Also expanded `ends_with_sep` to include `;|&` characters (not just whitespace) so aliases ending with command-separator tokens reset `in_command_position`.
-
-### 4. `collect_grammar_aliases_from_script` preserves all aliases (`parser.rs`)
-- **Before**: Only kept LOOP/DO/DONE aliases from the script, filtering out all others. User-defined aliases in scripts were unavailable for preparse expansion.
-- **After**: Changed to call `collect_aliases_from_script` directly, preserving all aliases.
-
-### 5. Heredoc expansion error message prefix (`executor.rs:5188`)
-- **Before**: `format!("{e}\n")` — no prefix, producing stderr like `x: z`.
-- **After**: `format!("mash: heredoc expansion: {e}\n")` — matches the pattern used by here-string (`mash: here-string expansion: {e}\n`) and regular redirect (`mash: redirect: {e}\n`). The test `heredoc_expansion_error_aborts_noninteractive_script` and the `redirect_error_aborts_noninteractive_shell` check both expect `"heredoc expansion:"` in stderr.
-
-### 6. Windows env var case normalization (`env.rs:410-429`)
-- **Problem**: On Windows, `std::env::vars()` returns keys with their original casing (e.g., `Path` not `PATH`). POSIX shell variable names are case-sensitive and the codebase uses uppercase names like `"PATH"`, `"HOME"`, etc. for lookups. The HashMap lookup `env.get("PATH")` wouldn't find `Path`, causing `find_in_path` to fail and pipelines like `echo hello | findstr hello` to produce empty output.
-- **Fix**: In `Env::from_os()`, selected well-known environment variable names are uppercased via `key.to_ascii_uppercase()` before insertion. Only variables that POSIX shells reference by uppercase name are normalized (PATH, HOME, TEMP, TMP, COMSPEC, SYSTEMROOT, WINDIR, USERPROFILE, HOMEDRIVE, HOMEPATH, PSMODULEPATH, PATHEXT). Other variable names are preserved in their original case to maintain POSIX case-sensitivity for user-defined variables.
-- **Evidence**: `echo hello | findstr hello` now outputs `hello`. `echo hello world | findstr world` outputs `hello world`. Pipeline tests `pipeline_echo_findstr` and `pipeline_filters` now pass.
-
-## Last Known Green Checkpoints
-- `dd7ad26` — preparse alias isolation + PSREPLACE fix (Smoosh 186/186 WSL, 183/183 Windows)
-- `1296955` — mash: revert pre-tokenized lexer, preserve artifacts (last commit before the 3.5-month dormancy)
-- `009711b` — docs: reorganize specs/ into docs/design/, adopt GitHub Spec Kit (2026-07-24, full workspace green — see git log for the 10 commits between these two)
