@@ -36,6 +36,7 @@ ritual* below.
 | Why was this decided? | `docs/adr/` — check before re-deciding anything |
 | How do we know it works? | `docs/findings/` — dated evidence from actually running things |
 | What should I work on? | `docs/BACKLOG.md` (prioritized) and `docs/briefs/` (scoped, verified) |
+| What shape does the remaining work have? | `docs/ROADMAP.md` — a map by domain, **not** an order |
 | What was built, and why, per feature? | `specs/NNN-*/` |
 | What exists today, subsystem by subsystem? | `docs/implemented.md` — dated; re-verify before relying on it |
 | What happened before 2026-07-24? | `docs/history/pre-2026-07-24.md` |
