@@ -10,6 +10,38 @@ use std::sync::Mutex;
 /// prevent races when the test suite runs in parallel.
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
+/// Restores the process working directory when dropped.
+///
+/// **Declare it *after* any `tempfile::TempDir` the test will `cd` into.**
+/// Drop order is the reverse of declaration, so a guard declared second is
+/// dropped first — restoring the CWD *before* the directory is removed.
+///
+/// Getting that order wrong leaves the process sitting in a deleted
+/// directory. On Linux the next `current_dir()` anywhere in this binary then
+/// fails with `ENOENT`, and the failure surfaces in whatever test runs next
+/// rather than the one that caused it — eight tests failed this way, none of
+/// them the culprit.
+///
+/// Windows hides the whole problem: it refuses to delete a directory that is
+/// a process's working directory, so the removal silently fails and the CWD
+/// stays valid. These tests were green there for months.
+///
+/// `CWD_LOCK` does not help with this. The lock prevents *interleaving*; it
+/// does nothing about a test that never puts the CWD back.
+struct CwdGuard(std::path::PathBuf);
+
+impl CwdGuard {
+    fn new() -> Self {
+        Self(std::env::current_dir().expect("read cwd before test changes it"))
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
+}
+
 fn run(input: &str) -> (ExecResult, Env) {
     let cmds = parse(input).expect("parse failed");
     let mut env = Env::from_os();
@@ -441,6 +473,8 @@ fn ln_symbolic_links_satisfy_test_predicates() {
     }
 
     let dir = tempfile::tempdir().unwrap();
+    // Declared after `dir` so it restores the CWD before `dir` is removed.
+    let _cwd = CwdGuard::new();
     let cmd = format!(
         "cd '{}'; echo hi >file; mkdir dir; ln -s file link_file; ln -s dir link_dir; \
          [ -e file ] && [ -e link_file ] && [ -f file ] && [ -f link_file ] && \
@@ -1015,6 +1049,8 @@ fn builtin_readonly() {
 fn builtin_cd_and_pwd() {
     let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
+    // Declared after `dir` so it restores the CWD before `dir` is removed.
+    let _cwd = CwdGuard::new();
     let path = dir.path().to_string_lossy().replace('\\', "/");
     let cmd = format!("cd {} && pwd", path);
     let output = run_stdout(&cmd);
@@ -1036,6 +1072,8 @@ fn builtin_cd_home() {
 fn builtin_cd_dash() {
     let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
+    // Declared after `dir` so it restores the CWD before `dir` is removed.
+    let _cwd = CwdGuard::new();
     let path = dir.path().to_string_lossy().replace('\\', "/");
     let cmd = format!("FIRST=$PWD; cd {}; cd -", path);
     let output = run_stdout(&cmd);
@@ -1047,6 +1085,8 @@ fn builtin_cd_dash() {
 fn builtin_cd_updates_oldpwd() {
     let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
+    // Declared after `dir` so it restores the CWD before `dir` is removed.
+    let _cwd = CwdGuard::new();
     let path = dir.path().to_string_lossy().replace('\\', "/");
     let cmd = format!("BEFORE=$PWD; cd {}", path);
     let (_, env) = run(&cmd);
